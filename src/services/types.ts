@@ -74,7 +74,7 @@ export interface ReaderSettings {
 export const DEFAULT_SETTINGS: ReaderSettings = {
   theme: 'light',
   fontScale: 1,
-  lineHeight: 1.7,
+  lineHeight: 1.9,
   marginScale: 1,
   fontFamily: 'serif',
   writingMode: 'auto',

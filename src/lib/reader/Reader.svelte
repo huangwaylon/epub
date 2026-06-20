@@ -5,7 +5,7 @@
   import { settings } from '../../stores/settings.svelte'
   import { getBookFile } from '../../services/library'
   import { getBookMeta, getProgress, putProgress } from '../../services/storage/db'
-  import { ReaderController, type RelocateDetail, type TapInfo, type SelectionInfo } from '../../services/reader'
+  import { ReaderController, type RelocateDetail, type TapInfo, type SelectionInfo, type TocItem } from '../../services/reader'
   import { extractTextAt, looksJapanese } from '../../services/jp/extract'
   import { lookup, type LookupResult } from '../../services/jp/lookup'
   import { isDictReady, downloadDictionary } from '../../services/jp/dictdb'
@@ -41,7 +41,7 @@
   let chromeVisible = $state(true)
   let fraction = $state(0)
   let sectionLabel = $state('')
-  let toc = $state<any[]>([])
+  let toc = $state<TocItem[]>([])
 
   let tocOpen = $state(false)
   let settingsOpen = $state(false)
@@ -77,6 +77,12 @@
     lastText: string
   }>({ open: false, x: 0, y: 0, loading: false, needsDownload: false, result: null, lastText: '' })
 
+  // Only persist reading progress once the user has actually moved (a turn, swipe,
+  // or TOC/annotation jump). This keeps the noisy relocations emitted while the
+  // first layout settles — which can report a bogus fraction — from being saved and
+  // restored on the next open.
+  let userInteracted = false
+
   const saveProgress = debounce((d: RelocateDetail) => {
     void putProgress({
       bookId,
@@ -91,7 +97,20 @@
     fraction = d.fraction
     currentCFI = d.cfi
     if (d.tocItem?.label) sectionLabel = d.tocItem.label
-    saveProgress(d)
+    // A real page turn (vs. a startup/programmatic relocation) invalidates any open
+    // popup or toolbar anchored to the previous page — close them.
+    if (d.reason === 'page' || d.reason === 'snap' || d.reason === 'scroll') {
+      userInteracted = true
+      closeOverlays()
+    }
+    if (userInteracted) saveProgress(d)
+  }
+
+  /** Close every transient overlay (dict popup, selection + highlight toolbars). */
+  function closeOverlays() {
+    dictState.open = false
+    hlEdit.open = false
+    sel.open = false
   }
 
   // ── Selection → highlight / copy / translate ──────────────────────────────
@@ -201,6 +220,7 @@
 
   function navAnnotation(cfi: string) {
     annotationsOpen = false
+    userInteracted = true
     controller?.goTo(cfi)
   }
 
@@ -221,22 +241,27 @@
   }
 
   function handleTap(info: TapInfo) {
-    // Dictionary lookup takes priority when enabled and a Japanese word is hit.
-    if (settings.tapToDefine && tryDefine(info)) return
-
-    // A stray tap while the popup is open just dismisses it.
-    if (dictState.open) {
+    // While a popup or edit toolbar is open, the next tap simply dismisses it and
+    // is consumed — predictable, and the user's reported "inconsistent dismiss" fix.
+    if (dictState.open || hlEdit.open) {
       dictState.open = false
+      hlEdit.open = false
       return
     }
 
-    if (info.zone === 'center') {
-      chromeVisible = !chromeVisible
+    // Edge rails always turn the page (foliate's goLeft/goRight are direction-aware,
+    // so this is correct for both LTR and vertical RTL books).
+    if (info.zone === 'left' || info.zone === 'right') {
+      userInteracted = true
+      chromeVisible = false
+      if (info.zone === 'left') controller?.goLeft()
+      else controller?.goRight()
       return
     }
-    chromeVisible = false
-    if (info.zone === 'left') controller?.goLeft()
-    else controller?.goRight()
+
+    // Centre zone: look up a tapped Japanese word, otherwise toggle the chrome.
+    if (settings.tapToDefine && tryDefine(info)) return
+    chromeVisible = !chromeVisible
   }
 
   /** Returns true if the tap landed on Japanese text and a lookup was started. */
@@ -261,8 +286,8 @@
       return
     }
     const res = await lookup(text)
-    // Ignore if a newer tap superseded this lookup.
-    if (dictState.lastText !== text) return
+    // Ignore if the popup was dismissed or a newer tap superseded this lookup.
+    if (!dictState.open || dictState.lastText !== text) return
     dictState.loading = false
     dictState.result = res
   }
@@ -280,6 +305,7 @@
 
   function navigate(href: string) {
     tocOpen = false
+    userInteracted = true
     controller?.goTo(href)
   }
 
@@ -300,6 +326,13 @@
       if (!file) throw new Error('Book file not found in storage.')
       meta = m ?? null
       bookFile = file
+      // Seed the displayed progress from the saved position so the bar is correct
+      // before the first relocate (and stays correct for a restored book).
+      if (progress) {
+        fraction = progress.fraction ?? 0
+        currentCFI = progress.cfi ?? ''
+        if (progress.label) sectionLabel = progress.label
+      }
       controller = new ReaderController(host, settings, {
         onRelocate,
         onTap,
@@ -326,6 +359,7 @@
   })
 
   onDestroy(() => {
+    if (pendingTap) clearTimeout(pendingTap)
     controller?.destroy()
     clearAnnotations()
   })

@@ -70,7 +70,7 @@ The other stores follow the identical pattern (all in `src/stores/`):
 | `$derived(...)` | `BookCover` (`hue`), `TocSheet` (`items`), `AnnotationsPanel` (`highlights`/`bookmarks`/`list`) | computed values |
 | `$props()` | every component | destructure incoming props (replaces `export let`) |
 | `$bindable(default)` | `Sheet.open`, `Segmented.value`, `DictionaryPopup.open`, `TranslationSheet.open` | two-way-bindable props |
-| `$effect(...)` | `BookCover` (objectURL lifecycle), `DictionaryPopup`/`SelectionToolbar` (re-position on open), `TranslationSheet` (re-translate on new selection) | side effects with optional cleanup return |
+| `$effect(...)` | `BookCover` (objectURL lifecycle), `Sheet` (move/restore focus on open/close), `DictionaryPopup`/`SelectionToolbar` (re-position via `placeAnchored` on open + anchor/content change), `TranslationSheet` (re-translate on new selection) | side effects with optional cleanup return |
 
 **Generics on components:** `Segmented.svelte` declares
 `<script lang="ts" generics="T extends string | number">`, so `value`/`options`/`onchange` are
@@ -171,9 +171,9 @@ Reusable primitives live in `src/lib/components/`; feature components in `src/li
 
 | Component | Key props (★ = `$bindable`) | Purpose |
 | --- | --- | --- |
-| `lib/components/Sheet.svelte` | `open?` ★, `title?`, `onclose?`, `children: Snippet`, `maxHeight='85dvh'` | Modal container. **Bottom sheet on phones; centered modal card ≥768px** (see §6). Scrim + drag-grip + optional header with close button. Closes on scrim/grip tap, close button, or **Escape**. `role="dialog" aria-modal`. |
+| `lib/components/Sheet.svelte` | `open?` ★, `title?`, `onclose?`, `children: Snippet`, `maxHeight='85dvh'` | Modal container. **Bottom sheet on phones; centered modal card ≥768px** (see §6). Scrim + drag-grip + optional header with a 44px close button. Closes on scrim/grip tap, close button, or **Escape**. `role="dialog" aria-modal`; on open it moves focus into the sheet (which carries `tabindex="-1"`) and restores focus to the trigger on close. |
 | `lib/components/Segmented.svelte` | `value` ★, `options: {value,label?,icon?}[]`, `onchange?` | Generic segmented control (`generics="T extends string\|number"`). Pill track in `--accent-soft`; active segment raised on `--paper-raised`. `aria-pressed` per option. Used for theme/font/writing-mode pickers. |
-| `lib/components/Icon.svelte` | `name`, `size=24`, `stroke=2`, `fill=false` | Inline 24×24 stroke icons from a module-level `PATHS: Record<string,string>` map. Renders one `<path>` with `currentColor`; `fill` toggles solid vs. outline (e.g. `bookmark` vs `bookmark-fill`). `aria-hidden`. |
+| `lib/components/Icon.svelte` | `name`, `size=24`, `stroke=2`, `fill=false` | Inline 24×24 stroke icons from a module-level `PATHS: Record<string,string>` map (only the icons actually used: `plus`, `gear`, `bookmark`, `translate`, `list`, `arrow-left`, `x`, `trash`, `search`, `book`, `note`, `copy`, `aa`). Renders one `<path>` with `currentColor`; `fill` toggles solid vs. outline on the **same** path (e.g. the active bookmark passes `fill` to the single `bookmark` path — there is no `-fill` entry). `aria-hidden`. |
 | `lib/components/UpdateToast.svelte` | (none — reads `pwa` store) | Floating pill toast when `pwa.needRefresh`. "Refresh" → `pwa.update()`; dismiss sets `needRefresh=false`. `z-index:60`, above sheets. |
 | `lib/library/BookCover.svelte` | `book: BookMeta` | Renders the cover `Blob` via an `objectURL` (created/revoked in a `$effect`). If no cover, draws a **generated placeholder** whose gradient + spine hue derives from the book id (`$derived hue = Σ charCodes(id[0..5]) % 360`). 2:3 aspect. |
 | `lib/library/Shelf.svelte` | (none — top-level shelf screen) | Library grid: header (`蔵書 / Library`), import (`<input type=file>`), settings gear, progress ring per book. Long-press / right-click opens a per-book action `Sheet` (Read / Remove). Empty + loading states. |
@@ -181,8 +181,8 @@ Reusable primitives live in `src/lib/components/`; feature components in `src/li
 | `lib/reader/ReaderSettings.svelte` | `onchange: (kind:'appearance'\|'layout'\|'writingmode')=>void` | Display sheet body: theme, font family (明朝/ゴシック), text-size/line-spacing/margin steppers, writing-direction `Segmented` (Auto/横書き/縦書き), and a custom switch toggle for tap-to-define. Reports which aspect changed so the reader re-applies efficiently. |
 | `lib/reader/TocSheet.svelte` | `toc: TocItem[]`, `currentLabel?`, `onnavigate: (href)=>void` | Flattens nested TOC (`$derived`), indents by depth, marks `currentLabel`, disables items with no `href`. |
 | `lib/reader/AnnotationsPanel.svelte` | `onnavigate: (cfi)=>void` | Tabbed Highlights / Bookmarks list from the `annotations` store (`$derived` filtered + sorted). Color bar (`HIGHLIGHT_HEX`) or bookmark icon; row → navigate; trash → `removeAnnotation`. |
-| `lib/reader/DictionaryPopup.svelte` | `open?` ★, `x`, `y`, `loading?`, `needsDownload?`, `result?: LookupResult\|null`, `ondownload?` | **Floating** (`position:fixed`) word-lookup card near the tap, clamped to viewport (prefers above, flips below). States: spinner / download-prompt / entries / no-match. Not a sheet. |
-| `lib/reader/SelectionToolbar.svelte` | `open?`, `rect`, `activeColor?`, `showCopy/Translate/Delete?`, `onColor/onCopy/onTranslate/onDelete?` | **Floating** pill toolbar above a text selection (clamped like the popup). 4 highlight swatches + copy/translate/delete actions. Replaces the native iOS callout. |
+| `lib/reader/DictionaryPopup.svelte` | `open?` ★, `x`, `y`, `loading?`, `needsDownload?`, `result?: LookupResult\|null`, `ondownload?` | **Floating** (`position:fixed`) word-lookup card near the tap, positioned via the shared `placeAnchored` util (prefers above, flips below, clamped to viewport + safe area). Re-runs positioning on `x`/`y` **and content** changes, so a re-tap or a loaded result repositions. States: spinner / download-prompt / entries / no-match. Has a focusable close (×) button. Not a sheet. |
+| `lib/reader/SelectionToolbar.svelte` | `open?`, `rect`, `activeColor?`, `showCopy/Translate/Delete?`, `onColor/onCopy/onTranslate/onDelete?` | **Floating** pill toolbar above a text selection (positioned via the same `placeAnchored` util). 4 highlight swatches + copy/translate/delete actions; all are 44px hit areas (the visible colour dot is 26px inside a 44px button). Replaces the native iOS callout. |
 | `lib/reader/TranslationSheet.svelte` | `open?` ★, `text=''` | Sheet body: shows source JP text → translation via `services/translate`, with engine label + copy. `$effect` re-runs on `(open, targetLang, text)` change. |
 
 ---
@@ -208,6 +208,17 @@ Trailing-edge debounce: `debounce(fn, ms)` returns a wrapper that clears and res
 call, firing `fn` only after `ms` of quiet. Generic over the arg tuple `A`. Used to coalesce
 high-frequency events (e.g. progress saves) — see usage in `services/reader.ts` /
 **docs/reader-engine.md**.
+
+### `placeAnchored` — `src/lib/util/anchoredPosition.ts`
+
+Shared positioning for the floating reader overlays.
+`placeAnchored(centerX, anchorTop, anchorBottom, w, h, opts?)` returns `{ left, top }` for a layer
+of size `w`×`h`: it horizontally centres on `centerX`, **prefers placing above** the anchor and
+**flips below** when there isn't room, and clamps the result inside the viewport while honouring the
+**safe-area insets** (it reads `--safe-top/bottom/left/right` off `:root`). `opts.gap` (default 12)
+is the anchor offset, `opts.margin` (default 10) the base edge inset. `DictionaryPopup` (with
+`gap: 16`) and `SelectionToolbar` both call it from their `requestAnimationFrame` positioning
+effect, so the two stay in sync and both respect the iPad's rounded corners / home indicator.
 
 ---
 
@@ -296,8 +307,9 @@ bottom-sheet ↔ centered-card behavior, scrim, and Escape handling for free.
 ```
 
 **Add an icon:** add a 24×24 `currentColor` path to the `PATHS` map in `Icon.svelte` (module
-script), then `<Icon name="my-icon" />`. Use `fill` for solid variants (provide a separate
-`name-fill` entry if you need both, as with `bookmark`).
+script), then `<Icon name="my-icon" />`. The map holds only the icons in active use — keep it that
+way. For a solid variant, pass `fill` to render the **same** path filled (as the active bookmark
+does); there is no separate `-fill` entry.
 
 **Add a theme:** add a `:root[data-theme='<name>']` block in `app.css` defining **all** semantic
 tokens (`--paper`, `--paper-raised`, `--ink*`, `--line*`, `--accent*`, `--hl-*`, `--scrim`, plus
@@ -315,11 +327,15 @@ the reader re-applies the right aspect — see **docs/development.md** and **doc
 ## 10. Gotchas
 
 - **Sheets are modal:** `Sheet` renders a `--scrim` backdrop (`z-index:40`) and closes on
-  scrim/grip tap, close button, or **Escape** (`<svelte:window onkeydown>`). It does not trap focus.
+  scrim/grip tap, the 44px close button, or **Escape** (`<svelte:window onkeydown>`). It doesn't
+  *trap* focus, but to honour `aria-modal` it moves focus into the sheet on open (the sheet has
+  `tabindex="-1"`) and restores focus to the trigger on close.
 - **Popup vs. toolbar are NOT sheets:** `DictionaryPopup` and `SelectionToolbar` are **floating**
-  (`position:fixed`), positioned in a `$effect` via `requestAnimationFrame` and **clamped to the
-  viewport** (prefer above the target, flip below if cramped). They have no scrim and don't close on
-  Escape; the reader controls their `open` state.
+  (`position:fixed`), positioned in a `$effect` via `requestAnimationFrame` using the shared
+  `placeAnchored` util (prefer above the target, flip below if cramped, clamp to viewport + safe
+  area). They have no scrim and don't close on Escape; the **reader** owns their `open` state. The
+  dictionary popup closes on any in-content tap, on a real page turn, or via its own × button (and
+  no longer gets stuck — that was a tap-routing bug fixed in the reader).
 - **Theme before first paint:** `main.ts` `await`s `initSettings()` (top-level await) before
   `mount(App, …)`, so `applyTheme()` has set `<html data-theme>` before the first frame — avoids a
   light→dark flash. `index.html` also ships static `theme-color` media metas as a pre-hydration

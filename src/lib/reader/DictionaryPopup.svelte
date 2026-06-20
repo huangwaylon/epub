@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { LookupResult } from '../../services/jp/lookup'
   import { dict } from '../../stores/dict.svelte'
+  import { placeAnchored } from '../util/anchoredPosition'
   import Icon from '../components/Icon.svelte'
 
   let {
@@ -23,22 +24,21 @@
 
   let card = $state<HTMLDivElement>()
 
-  // Position the card near the tap, clamped to the viewport with a small margin.
+  // Position near the tap, re-running when the anchor (x/y) or the content — hence
+  // the card's size — changes, so a re-tap on another word or a loaded result is
+  // placed correctly rather than left at the first position.
   let pos = $state({ left: 0, top: 0 })
   $effect(() => {
     if (!open) return
-    // Re-measure after render.
+    const ax = x
+    const ay = y
+    void loading
+    void needsDownload
+    void result
     requestAnimationFrame(() => {
       const w = card?.offsetWidth ?? 300
       const h = card?.offsetHeight ?? 160
-      const m = 10
-      let left = x - w / 2
-      left = Math.max(m, Math.min(window.innerWidth - w - m, left))
-      // Prefer above the tap; flip below if not enough room.
-      let top = y - h - 16
-      if (top < m + 50) top = y + 22
-      top = Math.max(m, Math.min(window.innerHeight - h - m, top))
-      pos = { left, top }
+      pos = placeAnchored(ax, ay, ay, w, h, { gap: 16 })
     })
   })
 </script>
@@ -51,6 +51,9 @@
     role="dialog"
     aria-label="Dictionary"
   >
+    <button class="close" aria-label="Close" onclick={() => (open = false)}>
+      <Icon name="x" size={16} />
+    </button>
     {#if loading}
       <div class="loading"><div class="spinner"></div></div>
     {:else if needsDownload}
@@ -116,6 +119,21 @@
     box-shadow: var(--shadow-2);
     padding: 14px 16px;
     animation: pop 0.14s var(--ease);
+  }
+  .close {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    color: var(--ink-faint);
+    z-index: 1;
+  }
+  .close:active {
+    background: var(--accent-soft);
   }
   @keyframes pop {
     from {

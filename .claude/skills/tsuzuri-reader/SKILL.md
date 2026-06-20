@@ -31,8 +31,15 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
 
 ## Rules
 - **Do not add page-swipe handling** — the paginator (`paginator.js`) owns touch swipe +
-  snap. Taps are handled by `#attachTaps` (movement < 10px, duration < 350ms, no active
-  selection); navigation uses `view.goLeft()/goRight()` which **honor `book.dir` (rtl)**.
+  snap. Taps are detected by `#attachTaps` (move tolerance 16px, max 400ms, primary pointer
+  only, no active selection; `pointercancel` aborts the tap, and every per-doc listener is
+  removed via one `AbortController` on destroy). The tap is routed by **zone**: a left/right
+  **edge rail** (`EDGE_RAIL_FRACTION` 0.14 of the page width, clamped 56px–22%) turns the
+  page via `view.goLeft()/goRight()`, which **honor `book.dir` (rtl)**; the wide centre
+  defines a word or toggles chrome. The `onTap` → `handleTap` order in `Reader.svelte` is:
+  (1) if a popup/highlight-edit toolbar is open, dismiss it and consume the tap; (2) edge
+  rail → page turn; (3) centre → `tryDefine` (only when the tap lands on an actual glyph —
+  see `pointOnGlyph` in `extract.ts`), else toggle chrome.
 - **Don't edit `src/vendor/foliate-js/**`** unless it's a deliberate, documented patch
   (the only existing one removed pdf.js + the PDF branch in `view.js`). Keep diffs minimal
   and note them in `docs/reader-engine.md`.
@@ -41,19 +48,27 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
   `addHighlight(cfi, hex)`. `#highlightColors` is the source of truth; `create-overlay`
   re-applies them when a section loads. Colours come from `HIGHLIGHT_HEX` in
   `src/services/types.ts` (NOT the `--hl-*` CSS vars).
-- If the reader shows dead space at the bottom of a vertical page, that's the known
-  **column-fill quirk** — see `#nudgeLayout()` and docs/reader-engine.md §11; verify on
-  real iOS before assuming a regression.
+- If the reader shows dead space at the bottom of a vertical page, that's the old
+  **column-fill quirk** — `applyLayout` now derives the vertical page-box caps from the
+  viewport so the box fills on first paint (verified desktop Chrome); see
+  `#nudgeLayout()` and docs/reader-engine.md §11. On desktop Chrome a dead band would now
+  be a regression; on real iOS the fill is still unverified, so check there before assuming.
 
 ## Common tasks
 - **Add a reader setting** → field in `ReaderSettings`/`DEFAULT_SETTINGS`
   (`src/services/types.ts`) → control in `src/lib/reader/ReaderSettings.svelte` (call
   `updateSettings` + `onchange('appearance'|'layout'|'writingmode')`) → consume in
   `appearanceCSS`/`applyLayout` (`reader.ts`). Persists automatically via the settings store.
-- **Change reading margins/measure** → `applyLayout` in `reader.ts` (note `max-inline-size`
-  is `#vertical ? 1100 : 640`; `max-column-count` gives a 2-page spread when `vw >= 820`).
-- **Add a gesture / change tap zones** → `#attachTaps` (controller) + `onTap` routing in
-  `Reader.svelte` (note the 60ms defer when highlights exist, so highlight hit-test wins).
+- **Change reading margins/measure** → `applyLayout` in `reader.ts`. Horizontal uses fixed
+  caps (`max-inline-size: 640px` line length, `max-block-size: 880px` page height). Vertical
+  derives both from the live viewport so the column fills: `max-inline-size` (the column
+  *height*) = `max(320, vh − 2·margin)` and `max-block-size` (the across-page *width*) =
+  `min(vw − 2·margin, 560·cols)`. `max-column-count` gives a 2-page spread when
+  `cols = vw > vh && vw >= 820 ? 2 : 1`.
+- **Add a gesture / change tap zones** → tap detection + zone classification in `#attachTaps`
+  (controller; `EDGE_RAIL_FRACTION` sets the rail width) + `onTap`/`handleTap` routing in
+  `Reader.svelte` (note the 60ms defer when highlights exist, so a highlight hit-test can
+  cancel the tap action via `onShowAnnotation`).
 
 ## Verify after changes
 Run `npm run check`, then use the **tsuzuri-verify** skill (chrome-devtools at

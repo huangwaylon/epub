@@ -21,6 +21,20 @@
     open = false
     onclose?.()
   }
+
+  // Honour aria-modal: move focus into the sheet on open so VoiceOver / keyboard
+  // users land inside it, and restore focus to the trigger on close.
+  let sheetEl = $state<HTMLElement>()
+  let restoreFocus: HTMLElement | null = null
+  $effect(() => {
+    if (open) {
+      restoreFocus = (document.activeElement as HTMLElement) ?? null
+      sheetEl?.focus()
+    } else if (restoreFocus) {
+      restoreFocus.focus?.()
+      restoreFocus = null
+    }
+  })
 </script>
 
 {#if open}
@@ -30,7 +44,15 @@
     onclick={close}
     transition:fade
   ></div>
-  <div class="sheet" style="--max:{maxHeight}" role="dialog" aria-modal="true" aria-label={title}>
+  <div
+    bind:this={sheetEl}
+    class="sheet"
+    style="--max:{maxHeight}"
+    role="dialog"
+    aria-modal="true"
+    aria-label={title}
+    tabindex="-1"
+  >
     <div class="grip-wrap" role="presentation" onclick={close}>
       <div class="grip"></div>
     </div>
@@ -129,8 +151,8 @@
     font-weight: 650;
   }
   .close {
-    width: 34px;
-    height: 34px;
+    width: 44px;
+    height: 44px;
     display: grid;
     place-items: center;
     border-radius: 50%;

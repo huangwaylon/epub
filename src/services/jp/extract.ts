@@ -16,6 +16,8 @@ const MAX_CHARS = 16
 
 function caretPosition(doc: Document, x: number, y: number): { node: Node; offset: number } | null {
   const anyDoc = doc as any
+  // WebKit implements caretRangeFromPoint; the standard caretPositionFromPoint is
+  // the fallback for engines that prefer it. Try the WebKit one first.
   if (anyDoc.caretRangeFromPoint) {
     const r: Range | null = anyDoc.caretRangeFromPoint(x, y)
     if (r) return { node: r.startContainer, offset: r.startOffset }
@@ -25,6 +27,47 @@ function caretPosition(doc: Document, x: number, y: number): { node: Node; offse
     if (p) return { node: p.offsetNode, offset: p.offset }
   }
   return null
+}
+
+/** Slack (px) around a glyph's box when deciding whether a tap actually hit text. */
+const GLYPH_HIT_SLACK = 6
+
+/**
+ * Whether (x, y) lands on the glyph at/next to the caret. `caretRangeFromPoint`
+ * snaps to the *nearest* text even in blank margins and inter-column gaps, so on a
+ * page that is wall-to-wall Japanese it reports a hit almost everywhere. We bound
+ * that by confirming the tap point is inside the glyph's own box, so taps on empty
+ * space fall through to page-turn / chrome / dismiss instead of always defining.
+ */
+function pointOnGlyph(doc: Document, node: Node, offset: number, x: number, y: number): boolean {
+  if (node.nodeType !== Node.TEXT_NODE) return false
+  const data = (node as Text).data
+  if (!data) return false
+  // Test the character at the caret offset, clamping at the end of the node.
+  let start = offset
+  let end = offset + 1
+  if (end > data.length) {
+    start = Math.max(0, data.length - 1)
+    end = data.length
+  }
+  if (start >= end) return false
+  const range = doc.createRange()
+  try {
+    range.setStart(node, start)
+    range.setEnd(node, end)
+  } catch {
+    return false
+  }
+  for (const r of range.getClientRects()) {
+    if (
+      x >= r.left - GLYPH_HIT_SLACK &&
+      x <= r.right + GLYPH_HIT_SLACK &&
+      y >= r.top - GLYPH_HIT_SLACK &&
+      y <= r.bottom + GLYPH_HIT_SLACK
+    )
+      return true
+  }
+  return false
 }
 
 function isInRuby(node: Node): boolean {
@@ -41,6 +84,9 @@ function isInRuby(node: Node): boolean {
 export function extractTextAt(doc: Document, x: number, y: number): Extracted | null {
   const pos = caretPosition(doc, x, y)
   if (!pos) return null
+  // Only treat this as a word lookup if the tap actually landed on a glyph;
+  // otherwise it's blank space and the caller should turn the page / toggle chrome.
+  if (!pointOnGlyph(doc, pos.node, pos.offset, x, y)) return null
 
   const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
     acceptNode: (n) => (isInRuby(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),

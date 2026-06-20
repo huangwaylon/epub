@@ -10,6 +10,16 @@ export interface RelocateDetail {
   fraction: number
   tocItem?: { label?: string; href?: string }
   range?: Range
+  /** Why the relocation happened: user turns are 'page'/'snap'/'scroll'; startup
+   *  and programmatic jumps are 'anchor'/'navigation'/'selection'. */
+  reason?: string
+}
+
+/** A table-of-contents entry as exposed by foliate's `book.toc`. */
+export interface TocItem {
+  label?: string
+  href?: string
+  subitems?: TocItem[]
 }
 
 /** A resolved single tap inside the rendered content (after filtering swipes/selection). */
@@ -40,6 +50,7 @@ interface FoliateView extends HTMLElement {
   addAnnotation(a: { value: string }, remove?: boolean): Promise<{ index: number; label: string }>
   deleteAnnotation(a: { value: string }): Promise<any>
   deselect(): void
+  close(): void
 }
 
 /** A finished text selection, with viewport-relative geometry for the toolbar. */
@@ -61,22 +72,25 @@ export interface ReaderCallbacks {
   onShowAnnotation?: (value: string, range: Range) => void
 }
 
-const TAP_MOVE_TOLERANCE = 10
-const TAP_MAX_MS = 350
-
-function cssVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-}
+const TAP_MOVE_TOLERANCE = 16
+const TAP_MAX_MS = 400
+/** Fraction of the page width on each edge that turns the page instead of defining. */
+const EDGE_RAIL_FRACTION = 0.14
+/** One phase (out / in) of the horizontal page-turn slide. */
+const TURN_PHASE_MS = 150
 
 /**
  * Builds the stylesheet foliate injects into each content document. Reads the
  * live theme tokens from the host so the page matches the app exactly.
  */
 function appearanceCSS(s: ReaderSettings): string {
-  const ink = cssVar('--ink')
-  const accent = cssVar('--accent')
-  const accentSoft = cssVar('--accent-soft')
-  const family = s.fontFamily === 'sans' ? cssVar('--font-jp-sans') : cssVar('--font-serif')
+  // One getComputedStyle read (it forces a style flush); pull every token off it.
+  const cs = getComputedStyle(document.documentElement)
+  const tok = (name: string) => cs.getPropertyValue(name).trim()
+  const ink = tok('--ink')
+  const accent = tok('--accent')
+  const accentSoft = tok('--accent-soft')
+  const family = s.fontFamily === 'sans' ? tok('--font-jp-sans') : tok('--font-serif')
 
   let wm = ''
   if (s.writingMode === 'vertical') wm = 'writing-mode: vertical-rl !important;'
@@ -131,6 +145,11 @@ export class ReaderController {
   #highlightColors = new Map<string, string>()
   /** Whether the current book renders vertically (縦書き); affects measure. */
   #vertical = false
+  /** Aborts every per-document listener we attach, in one shot, on destroy. */
+  #ac = new AbortController()
+  /** Guards the page-turn slide so re-entrant taps don't overlap animations. */
+  #turning = false
+  #pendingDir: 'left' | 'right' | null = null
 
   constructor(container: HTMLElement, settings: ReaderSettings, callbacks: ReaderCallbacks) {
     this.#settings = settings
@@ -152,6 +171,7 @@ export class ReaderController {
         fraction: d.fraction ?? 0,
         tocItem: d.tocItem,
         range: d.range,
+        reason: d.reason,
       })
     })
     this.view.addEventListener('load', (e: any) => {
@@ -191,20 +211,20 @@ export class ReaderController {
   }
 
   /**
-   * Foliate's first paint can under-measure the column height (leaving dead
-   * space at the bottom) before fonts/layout settle. Foliate's own re-layout is
-   * just `renderer.render()`, so we call it again at a few increasing delays so
-   * one lands after everything has settled. Cheap and idempotent.
+   * `applyLayout` derives the vertical page box from the viewport, so the column
+   * fills on the first paint (verified in desktop Chrome at iPad-landscape). The old
+   * foliate under-measure quirk (docs §11) is unverified on real iOS, so we keep one
+   * cheap re-render after fonts/layout settle as a hedge; the resize listener is the
+   * reliable backstop if a real device still under-measures.
    */
   #nudgeLayout(): void {
-    const render = () => {
+    setTimeout(() => {
       try {
         this.view.renderer?.render?.()
       } catch {
         /* ignore */
       }
-    }
-    for (const t of [120, 350, 700, 1200]) setTimeout(render, t)
+    }, 250)
   }
 
   /** Re-applies the injected stylesheet (theme, fonts, spacing). Safe to call live. */
@@ -214,11 +234,19 @@ export class ReaderController {
   }
 
   /**
-   * Applies page-geometry attributes, tuned for comfortable reading and scaled
-   * to the device. `max-inline-size` caps the line length (horizontal) / column
-   * height (vertical); `max-block-size` caps the page height (horizontal) /
-   * centres the text band (vertical) so wide iPad screens get framed margins
-   * instead of edge-to-edge text. A two-page spread is used on wide screens.
+   * Applies page-geometry attributes, tuned for comfortable reading and scaled to
+   * the device. The two axes swap meaning between writing modes (see the paginator
+   * notes in docs/reader-engine.md §6/§7), so we compute the caps per mode:
+   *
+   * - Horizontal: `max-inline-size` is the line length, `max-block-size` the page
+   *   height.
+   * - Vertical (縦書き): `max-inline-size` becomes the column *height*, and
+   *   `max-block-size` the across-page *width*.
+   *
+   * For vertical we derive both from the live viewport so the page box fits the
+   * screen exactly and the column fills it. A hard-coded `max-inline-size` (the old
+   * 1100) is what let the first vertical paint settle ~2× too tall, overflowing the
+   * viewport and leaving a dead band (docs §11).
    */
   applyLayout(s: ReaderSettings): void {
     this.#settings = s
@@ -228,15 +256,30 @@ export class ReaderController {
     const vh = window.innerHeight
     const minDim = Math.min(vw, vh)
     const margin = Math.round(Math.max(28, Math.min(80, minDim * 0.075)) * s.marginScale)
-    // Vertical text wants tall columns (large inline measure); horizontal wants a
-    // comfortable line length.
-    const maxInline = this.#vertical ? 1100 : 640
+    // A two-page spread only applies in landscape on wide screens — this mirrors
+    // foliate's orientation container-query, which collapses the spread in portrait.
+    const cols = vw > vh && vw >= 820 ? 2 : 1
+
     r.setAttribute('margin', `${margin}px`)
     r.setAttribute('gap', '6%')
-    r.setAttribute('max-inline-size', `${maxInline}px`)
-    r.setAttribute('max-block-size', '880px')
-    r.setAttribute('max-column-count', vw >= 820 ? '2' : '1')
-    r.setAttribute('animated', '')
+    r.setAttribute('max-column-count', `${cols}`)
+    if (this.#vertical) {
+      // Vertical 縦書き: `max-block-size` is the across-page *width*; `max-inline-size`
+      // is the column *height*. Fill the viewport — a wide band across, and the full
+      // height minus the margin band. Foliate clamps the height to what's available
+      // and, in landscape, its spread is 1, so we set the height directly (the old
+      // hard-coded 1100 happened to clamp the same, but a too-large value relative to
+      // the spread is what let the box settle mis-sized; deriving it is deterministic).
+      const colHeight = Math.max(320, vh - margin * 2)
+      const bandWidth = Math.min(vw - margin * 2, 560 * cols)
+      r.setAttribute('max-block-size', `${Math.round(bandWidth)}px`)
+      r.setAttribute('max-inline-size', `${Math.round(colHeight)}px`)
+    } else {
+      r.setAttribute('max-block-size', '880px')
+      // Set last: changing max-inline-size forces foliate to re-render, so the other
+      // attributes above are already in place when it does.
+      r.setAttribute('max-inline-size', '640px')
+    }
   }
 
   /** Re-tune geometry on rotation / window resize (e.g. iPad orientation change). */
@@ -259,12 +302,88 @@ export class ReaderController {
     this.#nudgeLayout()
   }
 
+  /**
+   * Page turns animate as a horizontal **slide** (like Books on iPad) rather than
+   * foliate's native motion. Foliate stacks 縦書き pages on the vertical axis, so its
+   * own animated turn slides up/down; we instead jump instantly (its `animated`
+   * attribute is left off) and slide the whole view left/right over the paper. The
+   * new page enters from the side the reader moved toward; the old page leaves the
+   * opposite edge, so it reads as one continuous horizontal push.
+   *
+   * (A literal page-curl isn't possible — the content is in a sandboxed, closed
+   * shadow-DOM iframe that can't be rasterised — and only one page is rendered at a
+   * time, so the vacated strip shows the paper background, which is the intent.)
+   */
   goLeft() {
-    return this.view.goLeft()
+    return this.#turn('left')
   }
   goRight() {
-    return this.view.goRight()
+    return this.#turn('right')
   }
+
+  async #turn(dir: 'left' | 'right'): Promise<void> {
+    if (this.#turning) {
+      this.#pendingDir = dir // coalesce rapid taps: remember only the latest
+      return
+    }
+    this.#turning = true
+    try {
+      await this.#slide(dir)
+    } finally {
+      this.#turning = false
+      const next = this.#pendingDir
+      this.#pendingDir = null
+      if (next) void this.#turn(next)
+    }
+  }
+
+  async #slide(dir: 'left' | 'right'): Promise<void> {
+    const el = this.view
+    const exit = dir === 'left' ? '100%' : '-100%' // old page slides off this edge
+    const enter = dir === 'left' ? '-100%' : '100%' // new page enters from this edge
+    el.style.boxShadow = '0 0 28px rgba(0, 0, 0, 0.18)' // depth cue while the page moves
+    // Phase 1: slide the current page out (transitionend-driven so the phases stay
+    // tight even under load — a drifting timer here would show a blank-paper gap).
+    await this.#transition(`transform ${TURN_PHASE_MS}ms cubic-bezier(.4, 0, 1, 1)`, `translateX(${exit})`)
+    // Jump to the target page while off-screen (instant — `animated` is off).
+    el.style.transition = 'none'
+    try {
+      await (dir === 'left' ? this.view.goLeft() : this.view.goRight())
+    } catch {
+      /* view may be tearing down */
+    }
+    el.style.transform = `translateX(${enter})`
+    void el.offsetWidth // flush the off-screen position before transitioning back
+    // Phase 2: slide the new page in.
+    await this.#transition(`transform ${TURN_PHASE_MS}ms cubic-bezier(0, 0, .2, 1)`, 'translateX(0)')
+    el.style.transition = ''
+    el.style.transform = ''
+    el.style.boxShadow = ''
+  }
+
+  /** Apply a transform transition and resolve when it ends (with a safety timeout). */
+  #transition(transition: string, transform: string): Promise<void> {
+    const el = this.view
+    return new Promise((resolve) => {
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        el.removeEventListener('transitionend', onEnd)
+        resolve()
+      }
+      const onEnd = (e: TransitionEvent) => {
+        if (e.propertyName === 'transform') finish()
+      }
+      el.addEventListener('transitionend', onEnd)
+      el.style.transition = transition
+      requestAnimationFrame(() => {
+        el.style.transform = transform
+      })
+      setTimeout(finish, TURN_PHASE_MS + 120) // fallback if transitionend doesn't fire
+    })
+  }
+
   goTo(target: string | number) {
     return this.view.goTo(target)
   }
@@ -314,7 +433,7 @@ export class ReaderController {
 
   clearSelection(): void {
     try {
-      ;(this.view as any).deselect?.()
+      this.view.deselect()
     } catch {
       /* ignore */
     }
@@ -323,8 +442,10 @@ export class ReaderController {
   destroy() {
     window.removeEventListener('resize', this.#onResize)
     if (this.#resizeTimer) clearTimeout(this.#resizeTimer)
+    this.#pendingDir = null
+    this.#ac.abort() // removes every per-document tap/selection listener at once
     try {
-      ;(this.view as any).close?.()
+      this.view.close()
     } catch {
       /* ignore */
     }
@@ -333,72 +454,95 @@ export class ReaderController {
 
   /** Attach our own tap detector to a freshly loaded content document. */
   #attachTaps(doc: Document) {
+    const signal = this.#ac.signal
     let downX = 0
     let downY = 0
     let downT = 0
     let moved = false
+    let active = false
 
     doc.addEventListener(
       'pointerdown',
       (e: PointerEvent) => {
+        if (!e.isPrimary) return
+        active = true
         downX = e.clientX
         downY = e.clientY
         downT = e.timeStamp
         moved = false
       },
-      { passive: true },
+      { passive: true, signal },
     )
     doc.addEventListener(
       'pointermove',
       (e: PointerEvent) => {
-        if (Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE_TOLERANCE) moved = true
+        if (active && Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE_TOLERANCE) moved = true
       },
-      { passive: true },
+      { passive: true, signal },
     )
-    doc.addEventListener('pointerup', (e: PointerEvent) => {
-      if (moved || e.timeStamp - downT > TAP_MAX_MS) return
-      // Ignore taps that are really the end of a text selection.
-      const sel = doc.getSelection()
-      if (sel && sel.type === 'Range' && sel.toString().length > 0) return
+    // A cancelled pointer (scroll handoff, palm rejection, gesture recognizer) is
+    // never a tap — make sure a stray follow-up pointerup can't fire one.
+    doc.addEventListener('pointercancel', () => {
+      active = false
+      moved = true
+    }, { passive: true, signal })
+    doc.addEventListener(
+      'pointerup',
+      (e: PointerEvent) => {
+        if (!active) return
+        active = false
+        if (!e.isPrimary || moved || e.timeStamp - downT > TAP_MAX_MS) return
+        // Ignore taps that are really the end of a text selection.
+        const sel = doc.getSelection()
+        if (sel && sel.type === 'Range' && sel.toString().length > 0) return
 
-      const frame = doc.defaultView?.frameElement as HTMLElement | null
-      const rect = frame?.getBoundingClientRect()
-      const px = (rect?.left ?? 0) + e.clientX
-      const py = (rect?.top ?? 0) + e.clientY
+        const frame = doc.defaultView?.frameElement as HTMLElement | null
+        const rect = frame?.getBoundingClientRect()
+        const px = (rect?.left ?? 0) + e.clientX
+        const py = (rect?.top ?? 0) + e.clientY
 
-      const w = doc.documentElement.clientWidth || window.innerWidth
-      const third = w / 3
-      const zone: TapInfo['zone'] = e.clientX < third ? 'left' : e.clientX > third * 2 ? 'right' : 'center'
+        // Edge "rails" turn the page; the wide centre defines / toggles chrome. The
+        // rails are measured against the page (iframe) width, not the screen, so they
+        // stay reachable when the text band is narrower than the viewport.
+        const w = doc.documentElement.clientWidth || window.innerWidth
+        const rail = Math.min(Math.max(w * EDGE_RAIL_FRACTION, 56), w * 0.22)
+        const zone: TapInfo['zone'] = e.clientX < rail ? 'left' : e.clientX > w - rail ? 'right' : 'center'
 
-      this.#cb.onTap?.({ doc, ix: e.clientX, iy: e.clientY, px, py, zone })
-    })
+        this.#cb.onTap?.({ doc, ix: e.clientX, iy: e.clientY, px, py, zone })
+      },
+      { passive: true, signal },
+    )
 
     // Surface finished text selections for the highlight / translate toolbar.
     let selTimer: number | undefined
-    doc.addEventListener('selectionchange', () => {
-      if (selTimer) clearTimeout(selTimer)
-      selTimer = window.setTimeout(() => {
-        const sel = doc.getSelection()
-        if (sel && sel.type === 'Range' && sel.toString().trim().length > 0) {
-          const range = sel.getRangeAt(0)
-          const r = range.getBoundingClientRect()
-          const frame = doc.defaultView?.frameElement as HTMLElement | null
-          const fr = frame?.getBoundingClientRect()
-          this.#cb.onSelection?.({
-            doc,
-            range,
-            text: sel.toString(),
-            rect: {
-              left: (fr?.left ?? 0) + r.left,
-              top: (fr?.top ?? 0) + r.top,
-              width: r.width,
-              height: r.height,
-            },
-          })
-        } else {
-          this.#cb.onSelectionCleared?.()
-        }
-      }, 250)
-    })
+    doc.addEventListener(
+      'selectionchange',
+      () => {
+        if (selTimer) clearTimeout(selTimer)
+        selTimer = window.setTimeout(() => {
+          const sel = doc.getSelection()
+          if (sel && sel.type === 'Range' && sel.toString().trim().length > 0) {
+            const range = sel.getRangeAt(0)
+            const r = range.getBoundingClientRect()
+            const frame = doc.defaultView?.frameElement as HTMLElement | null
+            const fr = frame?.getBoundingClientRect()
+            this.#cb.onSelection?.({
+              doc,
+              range,
+              text: sel.toString(),
+              rect: {
+                left: (fr?.left ?? 0) + r.left,
+                top: (fr?.top ?? 0) + r.top,
+                width: r.width,
+                height: r.height,
+              },
+            })
+          } else {
+            this.#cb.onSelectionCleared?.()
+          }
+        }, 250)
+      },
+      { signal },
+    )
   }
 }

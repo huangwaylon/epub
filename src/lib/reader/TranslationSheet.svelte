@@ -62,7 +62,7 @@
     <div class="foot">
       <span class="engine">{engine}</span>
       <button class="copy" onclick={copy} aria-label="Copy translation">
-        <Icon name="note" size={16} /> Copy
+        <Icon name="copy" size={16} /> Copy
       </button>
     </div>
   {/if}
