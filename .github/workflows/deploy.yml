@@ -25,11 +25,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Use `npm install` (not `npm ci`): it resolves platform-specific optional
-      # native deps (rollup, sharp) gracefully and avoids the `npm ci` "Exit handler
-      # never called!" bug that fires on sharp's many @img/* platform packages.
-      # `--include=dev` forces devDependencies (vite, svelte) even under NODE_ENV=production.
-      - run: npm install --include=dev --no-audit --no-fund
+      # `sharp` is a local-only dev tool (icon + test-EPUB scripts) and isn't used by
+      # the build. Installing it crashes npm in CI ("Exit handler never called!") on its
+      # ~27 @img/* native platform packages — under both `npm ci` and `npm install`. Drop
+      # it from THIS checkout's package.json (the repo keeps it for local dev) and resolve
+      # fresh so its optional deps are never processed. `--include=dev` forces the rest of
+      # the devDependencies (vite, svelte) even if the runner sets NODE_ENV=production.
+      - name: Install dependencies (excluding local-only sharp)
+        run: |
+          npm pkg delete devDependencies.sharp
+          rm -f package-lock.json
+          npm install --include=dev --no-audit --no-fund
         env:
           NODE_ENV: development
       # Fail loudly (and early) if the toolchain didn't install, instead of the
@@ -39,7 +45,7 @@ jobs:
           if [ -x node_modules/.bin/vite ]; then
             echo "vite $(node_modules/.bin/vite --version) installed"
           else
-            echo "::error::vite is not in node_modules/.bin after npm ci --include=dev"
+            echo "::error::vite is not in node_modules/.bin after install"
             ls node_modules/.bin | head -50
             exit 1
           fi
