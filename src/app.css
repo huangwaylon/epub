@@ -1,0 +1,149 @@
+/* ───────────────────────────────────────────────────────────────────────────
+   Tsuzuri — design tokens & base styles
+   A calm, paper-like reading environment. Three themes (light / sepia / dark)
+   are selected by [data-theme] on <html>. Chrome uses the system UI font;
+   long-form reading uses a serif stack with Japanese fallbacks.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Type */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-serif: 'Hiragino Mincho ProN', 'Noto Serif JP', 'Yu Mincho', 'YuMincho',
+    Georgia, 'Times New Roman', serif;
+  --font-jp-sans: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+
+  /* Spatial system */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --r-xl: 26px;
+  --tap: 44px; /* minimum comfortable touch target */
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.12), 0 12px 40px rgba(0, 0, 0, 0.16);
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur: 0.22s;
+
+  /* Safe-area insets, surfaced as variables for layout math */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+/* Light (default) — warm paper */
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+  --paper: #f6f3ec;
+  --paper-raised: #fffdf8;
+  --ink: #211d17;
+  --ink-soft: #5d564a;
+  --ink-faint: #938b7b;
+  --line: rgba(33, 29, 23, 0.1);
+  --line-strong: rgba(33, 29, 23, 0.16);
+  --accent: #b5552e; /* vermilion, like a hanko seal */
+  --accent-soft: rgba(181, 85, 46, 0.12);
+  --hl-yellow: #ffe79a;
+  --hl-green: #bfe6b6;
+  --hl-blue: #b9d8f2;
+  --hl-pink: #f6c1cf;
+  --scrim: rgba(33, 29, 23, 0.32);
+}
+
+:root[data-theme='sepia'] {
+  color-scheme: light;
+  --paper: #f4ecd8;
+  --paper-raised: #fbf5e6;
+  --ink: #4a3a29;
+  --ink-soft: #6f5c46;
+  --ink-faint: #9c876c;
+  --line: rgba(74, 58, 41, 0.12);
+  --line-strong: rgba(74, 58, 41, 0.2);
+  --accent: #a8521f;
+  --accent-soft: rgba(168, 82, 31, 0.14);
+  --hl-yellow: #f2d98a;
+  --hl-green: #c2dca0;
+  --hl-blue: #aecbe0;
+  --hl-pink: #e8b6bd;
+  --scrim: rgba(57, 43, 28, 0.34);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #16140f;
+  --paper-raised: #211e18;
+  --ink: #e7e1d3;
+  --ink-soft: #aaa394;
+  --ink-faint: #756f62;
+  --line: rgba(231, 225, 211, 0.1);
+  --line-strong: rgba(231, 225, 211, 0.18);
+  --accent: #e0855c;
+  --accent-soft: rgba(224, 133, 92, 0.16);
+  --hl-yellow: #6b5a1f;
+  --hl-green: #3f5a35;
+  --hl-blue: #2f4d68;
+  --hl-pink: #6a3a47;
+  --scrim: rgba(0, 0, 0, 0.5);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app {
+  height: 100%;
+  height: 100dvh;
+}
+
+/* Chrome (everything outside the book text) should not be selectable or show the
+   iOS long-press callout — it interferes with tap-to-define and page turns. */
+button,
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

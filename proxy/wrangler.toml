@@ -1,0 +1,11 @@
+name = "tsuzuri-translate"
+main = "worker.ts"
+compatibility_date = "2024-11-01"
+
+# Set the DeepL key as a secret (not committed):
+#   wrangler secret put DEEPL_API_KEY
+#
+# Optional vars:
+# [vars]
+# DEEPL_API_URL = "https://api.deepl.com/v2/translate"  # for a DeepL Pro key
+# ALLOW_ORIGIN = "https://your-pwa.example"             # lock CORS to your origin

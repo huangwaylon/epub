@@ -1,0 +1,179 @@
+import { getWords } from '@birchill/jpdict-idb'
+import { toNormalized } from '@birchill/normal-jp'
+import { deinflect, Reason, type CandidateWord } from './deinflect'
+
+/** One dictionary sense: its parts of speech and English glosses. */
+export interface Sense {
+  pos: string[]
+  glosses: string[]
+}
+
+export interface DictEntry {
+  /** Primary written form (kanji if present, else kana). */
+  headword: string
+  /** Kana reading. */
+  reading: string
+  /** Pitch-accent position (mora index), if known. */
+  pitch?: number
+  /** True when the headword is itself just kana (so reading is redundant). */
+  kanaOnly: boolean
+  senses: Sense[]
+}
+
+export interface LookupResult {
+  /** Number of characters from the start of the window that were matched. */
+  matchLength: number
+  /** Human-readable deinflection reasons, outermost first. */
+  reasons: string[]
+  entries: DictEntry[]
+}
+
+const MAX_WINDOW = 16
+const MAX_RESULTS = 8
+
+const REASON_LABELS: Partial<Record<Reason, string>> = {
+  [Reason.PolitePastNegative]: 'polite past negative',
+  [Reason.PoliteNegative]: 'polite negative',
+  [Reason.PoliteVolitional]: 'polite volitional',
+  [Reason.Chau]: '-chau',
+  [Reason.Sugiru]: '-sugiru',
+  [Reason.PolitePast]: 'polite past',
+  [Reason.Tara]: '-tara',
+  [Reason.Tari]: '-tari',
+  [Reason.Causative]: 'causative',
+  [Reason.PotentialOrPassive]: 'potential or passive',
+  [Reason.Toku]: '-toku',
+  [Reason.Sou]: '-sou',
+  [Reason.Tai]: '-tai',
+  [Reason.Polite]: 'polite',
+  [Reason.Respectful]: 'respectful',
+  [Reason.Humble]: 'humble',
+  [Reason.HumbleOrKansaiDialect]: 'humble or Kansai dialect',
+  [Reason.Past]: 'past',
+  [Reason.Negative]: 'negative',
+  [Reason.Passive]: 'passive',
+  [Reason.Ba]: '-ba',
+  [Reason.Volitional]: 'volitional',
+  [Reason.Potential]: 'potential',
+  [Reason.EruUru]: '-eru / -uru',
+  [Reason.CausativePassive]: 'causative passive',
+  [Reason.Te]: '-te',
+  [Reason.Zu]: '-zu',
+  [Reason.Imperative]: 'imperative',
+  [Reason.MasuStem]: 'masu stem',
+  [Reason.Adv]: 'adverb',
+  [Reason.Noun]: 'noun',
+  [Reason.ImperativeNegative]: 'imperative negative',
+  [Reason.Continuous]: 'continuous',
+  [Reason.Ki]: '-ki',
+  [Reason.SuruNoun]: 'suru noun',
+  [Reason.ZaruWoEnai]: '-zaru wo enai',
+  [Reason.NegativeTe]: 'negative -te',
+  [Reason.Irregular]: 'irregular',
+}
+
+const POS_LABELS: Record<string, string> = {
+  n: 'noun',
+  pn: 'pronoun',
+  adv: 'adverb',
+  'adj-i': 'い-adjective',
+  'adj-na': 'な-adjective',
+  'adj-no': 'の-adjective',
+  v1: 'ichidan verb',
+  vk: 'kuru verb',
+  vs: 'する verb',
+  'vs-i': 'する verb',
+  'vs-s': 'する verb',
+  vt: 'transitive',
+  vi: 'intransitive',
+  exp: 'expression',
+  int: 'interjection',
+  prt: 'particle',
+  conj: 'conjunction',
+  'aux-v': 'auxiliary verb',
+  suf: 'suffix',
+  pref: 'prefix',
+  ctr: 'counter',
+}
+
+function posLabel(code: string): string {
+  if (POS_LABELS[code]) return POS_LABELS[code]
+  if (code.startsWith('v5')) return 'godan verb'
+  if (code.startsWith('adj')) return 'adjective'
+  if (code.startsWith('v')) return 'verb'
+  return code
+}
+
+const INFLECTABLE = /^(v1|v5|vk|vs|vz|vn|vr|adj-i|aux-v)/
+
+/** A deinflected candidate is only valid if the dictionary entry is inflectable. */
+function candidateMatches(word: any, cand: CandidateWord): boolean {
+  if (!cand.reasonChains.length) return true // original surface form — always allowed
+  const allPos: string[] = (word.s ?? []).flatMap((s: any) => s.pos ?? [])
+  return allPos.some((p) => INFLECTABLE.test(p))
+}
+
+function reasonsToLabels(chains: Reason[][]): string[] {
+  const chain = chains[0]
+  if (!chain?.length) return []
+  return chain.map((r) => REASON_LABELS[r] ?? '').filter(Boolean)
+}
+
+function readingAccent(a: unknown): number | undefined {
+  if (typeof a === 'number') return a
+  if (Array.isArray(a) && a.length && typeof (a[0] as any).i === 'number') return (a[0] as any).i
+  return undefined
+}
+
+function toEntry(w: any): DictEntry {
+  const headword: string = w.k?.[0]?.ent ?? w.r?.[0]?.ent ?? ''
+  const reading: string = w.r?.[0]?.ent ?? ''
+  const kanaOnly = !w.k?.length
+  return {
+    headword,
+    reading,
+    kanaOnly,
+    pitch: readingAccent(w.r?.[0]?.a),
+    senses: (w.s ?? []).map((s: any) => ({
+      pos: (s.pos ?? []).map(posLabel),
+      glosses: (s.g ?? []).map((g: any) => g.str),
+    })),
+  }
+}
+
+/**
+ * Looks up the longest dictionary match starting at the beginning of `window`,
+ * trying deinflected forms (10ten-style). Returns null if nothing matches.
+ */
+export async function lookup(window: string): Promise<LookupResult | null> {
+  const cache = new Map<string, any[]>()
+  const queryWords = async (term: string): Promise<any[]> => {
+    let r = cache.get(term)
+    if (!r) {
+      r = await getWords(term, { matchType: 'exact', limit: MAX_RESULTS })
+      cache.set(term, r)
+    }
+    return r
+  }
+
+  const limit = Math.min(window.length, MAX_WINDOW)
+  for (let len = limit; len > 0; len--) {
+    const sub = window.slice(0, len)
+    const [normalized] = toNormalized(sub)
+    if (!normalized) continue
+
+    const candidates = deinflect(normalized)
+    for (const cand of candidates) {
+      const words = await queryWords(cand.word)
+      if (!words.length) continue
+      const matched = words.filter((w) => candidateMatches(w, cand))
+      if (!matched.length) continue
+      return {
+        matchLength: len,
+        reasons: reasonsToLabels(cand.reasonChains),
+        entries: matched.map(toEntry),
+      }
+    }
+  }
+  return null
+}
