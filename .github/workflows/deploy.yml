@@ -25,9 +25,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # `--include=dev` forces devDependencies (vite, svelte, etc.) even if the
-      # runner has NODE_ENV=production, which would otherwise omit them.
-      - run: npm ci --include=dev
+      # Use `npm install` (not `npm ci`): it resolves platform-specific optional
+      # native deps (rollup, sharp) gracefully and avoids the `npm ci` "Exit handler
+      # never called!" bug that fires on sharp's many @img/* platform packages.
+      # `--include=dev` forces devDependencies (vite, svelte) even under NODE_ENV=production.
+      - run: npm install --include=dev --no-audit --no-fund
         env:
           NODE_ENV: development
       # Fail loudly (and early) if the toolchain didn't install, instead of the
