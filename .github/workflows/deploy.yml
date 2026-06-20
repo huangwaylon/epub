@@ -30,6 +30,17 @@ jobs:
       - run: npm ci --include=dev
         env:
           NODE_ENV: development
+      # Fail loudly (and early) if the toolchain didn't install, instead of the
+      # opaque "vite: not found" from the build step.
+      - name: Verify vite is installed
+        run: |
+          if [ -x node_modules/.bin/vite ]; then
+            echo "vite $(node_modules/.bin/vite --version) installed"
+          else
+            echo "::error::vite is not in node_modules/.bin after npm ci --include=dev"
+            ls node_modules/.bin | head -50
+            exit 1
+          fi
       - run: npm run build
       # `enablement: true` flips the repo's Pages source to "GitHub Actions" if it
       # isn't already, so a fresh push deploys without changing repo settings by hand.
