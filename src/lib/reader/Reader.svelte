@@ -244,6 +244,13 @@
       hlEdit.open = false
       return
     }
+    // A tap in the top or bottom edge band toggles the chrome. This gives a reliable
+    // target for showing/hiding the nav bars that doesn't fight tap-to-define in the
+    // dense body text (where blank space is scarce).
+    if (inChromeToggleBand(info.py)) {
+      chromeVisible = !chromeVisible
+      return
+    }
     // Otherwise: define a tapped Japanese word, or toggle the reader chrome. The
     // glyph hit-test in extractTextAt means taps on blank space reliably fall
     // through to the chrome toggle instead of defining.
@@ -251,8 +258,19 @@
     chromeVisible = !chromeVisible
   }
 
+  /**
+   * Whether a tap (in top-window coords) landed in the top/bottom edge band that
+   * toggles the chrome — sized to roughly cover the nav bars / their reveal zone.
+   */
+  function inChromeToggleBand(py: number): boolean {
+    const vh = window.innerHeight
+    const band = Math.min(160, Math.max(80, vh * 0.12))
+    return py <= band || py >= vh - band
+  }
+
   /** Returns true if the tap landed on Japanese text and a lookup was started. */
   function tryDefine(info: TapInfo): boolean {
+    if (!info.doc) return false
     const ex = extractTextAt(info.doc, info.ix, info.iy)
     if (!ex) return false
     const key = `${ex.tapOffset}:${ex.text}`

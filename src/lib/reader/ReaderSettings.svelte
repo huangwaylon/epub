@@ -79,7 +79,7 @@
   <section class="toggle">
     <div>
       <div class="tname">Tap to look up</div>
-      <div class="thint">Tap a word for its dictionary entry; tap edges to turn the page.</div>
+      <div class="thint">Tap a word for its dictionary entry; swipe to turn the page.</div>
     </div>
     <button
       class="switch"

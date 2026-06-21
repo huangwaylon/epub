@@ -214,9 +214,9 @@ interface RelocateDetail {  // reader.ts:8 — note: no `reason` field (foliate'
 interface TocItem { label?: string; href?: string; subitems?: TocItem[] }  // a book.toc entry; exported for Reader.svelte's TOC sheet
 
 interface TapInfo {  // reader.ts:23 — no `zone` field; pagination is by swipe, not tap rails (§8)
-  doc: Document
+  doc: Document | null    // the content doc, or null for a tap in the margins (host gesture; nothing to define there)
   ix: number; iy: number  // coords *inside* the content iframe (for caretRangeFromPoint)
-  px: number; py: number  // coords in the *top* window (for positioning popups)
+  px: number; py: number  // coords in the *top* window (for positioning popups; py also feeds the chrome-toggle band test)
 }
 
 interface SelectionInfo {
@@ -258,22 +258,34 @@ const cs = getComputedStyle(document.documentElement)  // one read; forces a sty
 const tok = (name: string) => cs.getPropertyValue(name).trim()
 ```
 
-Tokens read: `--ink`, `--accent`, `--accent-soft`, and either `--font-jp-sans`
-(when `fontFamily === 'sans'`) or `--font-serif`. These are defined on the host
-`:root` by the theme system — see `docs/ui-and-design.md`.
+Tokens read: `--ink`, `--paper`, `--accent`, `--accent-soft`, and either
+`--font-jp-sans` (when `fontFamily === 'sans'`) or `--font-serif`. These are
+defined on the host `:root` by the theme system — see `docs/ui-and-design.md`.
 
 Exactly what the injected sheet sets:
 
 | Selector | Declarations |
 | --- | --- |
-| `html` | `color: --ink`; `background: transparent !important`; `font-size: {round(fontScale*100)}%`; `-webkit-text-size-adjust: none`; **writing-mode override** (see below) |
-| `body` | `color: --ink`; `background: transparent !important`; `font-family: {serif\|jp-sans}`; `-webkit-touch-callout: none` (suppress the native iOS callout so our own SelectionToolbar shows) |
+| `html` | `color: --ink`; **`background: --paper !important`**; **`color-scheme: light\|dark`** (from `s.theme`); `font-size: {round(fontScale*100)}%`; `-webkit-text-size-adjust: none`; **writing-mode override** (see below) |
+| `body` | `color: --ink`; `background: transparent !important` (the opaque `--paper` on `html` shows through); `font-family: {serif\|jp-sans}`; `-webkit-touch-callout: none` (suppress the native iOS callout so our own SelectionToolbar shows) |
 | `p, li, blockquote, dd` | `line-height: {lineHeight}`; `text-align: justify`; `-webkit-hyphens/hyphens: auto`; `hanging-punctuation: allow-end last` |
 | `[align=left/center/right]` | preserve explicit alignment attrs |
 | `a:any-link` | `color: --accent` |
 | `::selection` | `background: --accent-soft` |
 | `rt` | `-webkit-user-select/user-select: none` (ruby/furigana not selectable — keeps base-text selections clean) |
 | `pre` | `white-space: pre-wrap !important` |
+
+**Page background / dark mode (why `--paper`, not `transparent`).** The content
+iframe is its own document with no theme. A *transparent* root composites over the
+iframe's **default canvas**, which follows `color-scheme` and is **white** unless
+told otherwise — so a transparent page renders **light even in dark mode** (the
+`.reader` dark paper behind the iframe is *not* what shows; the iframe's own canvas
+is). The fix paints `html` with the resolved **`--paper`** colour (so the page
+matches the chrome and the margins exactly — no seam) and sets **`color-scheme`** so
+the canvas, form controls and scrollbars follow the theme too. `body` stays
+transparent so the `html` paper shows through. Foliate's `#background` div
+(`getBackground`, paginator.js:189) samples `body` then `html`, so with `body`
+transparent it picks up the `--paper` from `html` and paints the same colour.
 
 Writing-mode override (reader.ts:93-95): only when the user picks a non-`auto`
 preference — `writing-mode: vertical-rl !important` for `'vertical'`,
@@ -312,7 +324,7 @@ r.setAttribute('gap', '6%')
 r.setAttribute('max-column-count', `${cols}`)
 if (this.#vertical) {
   const colHeight = Math.max(320, vh - margin * 2)        // → max-inline-size (column HEIGHT)
-  const bandWidth = Math.min(vw - margin * 2, 560 * cols) // → max-block-size  (across-page WIDTH)
+  const bandWidth = vw - margin * 2                       // → max-block-size  (across-page WIDTH)
   r.setAttribute('max-block-size',  `${Math.round(bandWidth)}px`)
   r.setAttribute('max-inline-size', `${Math.round(colHeight)}px`)  // set LAST: its setter forces render()
 } else {
@@ -327,7 +339,7 @@ if (this.#vertical) {
 | `gap` | `6%` — column gap + outer padding | Same |
 | `max-column-count` | `cols` = `vw>vh && vw≥820 ? 2 : 1` → 2 = two-page spread on a landscape wide screen | Same |
 | `max-inline-size` | `640` px — max **line length** (column width) | `max(320, vh − 2·margin)` px — the column **HEIGHT** (derived from viewport) |
-| `max-block-size` | `880` px — max **page height** | `min(vw − 2·margin, 560·cols)` px — the across-page **WIDTH** (caps the text band so wide screens get framed margins) |
+| `max-block-size` | `880` px — max **page height** | `vw − 2·margin` px — the across-page **WIDTH** (fills the available width; only the margin frames it, so the reading surface uses the whole screen rather than floating in dead space) |
 
 The inline/block axes **swap** between modes (see paginator's `#beforeRender`,
 §7); that's why `max-inline-size` reads as "line length" horizontally but
@@ -436,12 +448,23 @@ paginator.js:424). What a developer must know:
 The gesture model is **"swipe turns the page; tap defines or toggles chrome"**.
 Pagination is by horizontal **swipe only** — there are no tap edge-rails (the old
 `EDGE_RAIL_FRACTION` constant and `TapInfo.zone` field are gone), and foliate's
-own touch turn is patched out (§1/§7), so our `#attachTaps` handler is the single
-source of both gestures. `#attachTaps(doc)` (reader.ts:460-563) runs per loaded
-content doc, on the `load` event. Every listener it installs (pointerdown/move/
-up/cancel + selectionchange) is registered with `{ signal }` from the
-controller's single `#ac` `AbortController` (reader.ts:146), so `destroy()`'s one
-`#ac.abort()` removes them all — no per-doc listener leak when sections re-load.
+own touch turn is patched out (§1/§7). The shared state machine is `#trackGestures`
+(reader.ts) — one swipe-vs-tap decision used by **two** attach points:
+
+- **`#attachTaps(doc)`** — runs per loaded content doc (on the `load` event). Handles
+  swipes/taps over the **text column** (the iframe), can ignore a selection tail, and
+  emits a `TapInfo` with the `doc` + iframe-local + top-window coords. Also installs
+  the `selectionchange` listener (§9).
+- **`#attachHostGestures()`** — runs once in `open()`, attached to the **host**
+  (`<foliate-view>`). The content iframe only covers the text column, so swipes/taps
+  in the surrounding **margins** never reach the per-doc listeners (those areas were
+  dead). The margins bubble out of foliate's shadow DOM to the host; events *inside*
+  the iframe don't cross the browsing-context boundary, so there's no double-handling.
+  A margin tap emits a `TapInfo` with **`doc: null`** (no word to define) and the
+  top-window coords, routing straight to the chrome toggle.
+
+Every listener both attach points install is registered with the controller's single
+`#ac` `AbortController` signal, so `destroy()`'s one `#ac.abort()` removes them all.
 
 ### Swipe → page turn
 
@@ -487,12 +510,19 @@ a tap carries no notion of edge rails anymore.
 1. **Dismiss-first.** If `dictState.open || hlEdit.open`, set both `false` and
    `return` — **any** tap dismisses an open dictionary popup / highlight-edit
    toolbar and is *consumed*.
-2. **Define a glyph.** If `settings.tapToDefine && tryDefine(info)` — the tap
-   landed on an actual Japanese **glyph** per `extractTextAt`'s glyph + word-char
-   gate (the `pointOnGlyph` hit-test in extract.ts:42 rejects taps in margins /
-   inter-column gaps; §10, `docs/japanese.md`), and `lookupAt` segments the run to
-   the word under the tap — the lookup runs and routing stops.
-3. **Toggle chrome.** Otherwise toggle `chromeVisible` (the top/bottom bars).
+2. **Top/bottom band → toggle chrome.** If the tap's top-window `py` lands in the
+   top or bottom edge band (`inChromeToggleBand`, sized `clamp(80, vh*0.12, 160)` ≈
+   the nav-bar height), toggle `chromeVisible` and `return`. This is a **reliable**
+   target for showing/hiding the bars that doesn't fight tap-to-define in the dense
+   body text (where blank space is scarce) — it fires even on a glyph, and it's how a
+   margin/host tap in the band reveals the chrome.
+3. **Define a glyph.** If `settings.tapToDefine && tryDefine(info)` — `tryDefine`
+   first bails when `info.doc` is null (a margin/host tap), then requires the tap to
+   land on an actual Japanese **glyph** per `extractTextAt`'s glyph + word-char gate
+   (the `pointOnGlyph` hit-test in extract.ts:42 rejects taps in margins /
+   inter-column gaps; §10, `docs/japanese.md`); the lookup runs and routing stops.
+4. **Toggle chrome.** Otherwise toggle `chromeVisible` (so a tap on blank space, or a
+   margin/host tap outside the band, toggles the bars).
 
 There is **no pagination on tap** — turning the page is exclusively the swipe
 path above.
@@ -651,10 +681,10 @@ came out wrong.
 
 **The fix.** Derive the caps from the live viewport (§6): vertical
 `max-inline-size = max(320, vh − 2·margin)` (the column **height**) and
-`max-block-size = min(vw − 2·margin, 560·cols)` (the across-page **width**).
-Because the landscape vertical spread is 1, deriving `max-inline-size` from `vh`
-makes `--_max-height` clamp deterministically to the available height, so the box
-fits the screen instead of guessing.
+`max-block-size = vw − 2·margin` (the across-page **width**, so the band fills the
+available width). Because the landscape vertical spread is 1, deriving
+`max-inline-size` from `vh` makes `--_max-height` clamp deterministically to the
+available height, so the box fits the screen instead of guessing.
 
 **Remaining hedges** (best-effort, idempotent):
 
@@ -711,8 +741,9 @@ progress persistence — see below.
 - `onTurn` (Reader.svelte:103-106) → sets `userInteracted = true` and
   `closeOverlays()`. This is the page-turn signal that `relocate` can't give us:
   a swipe (or any `goLeft`/`goRight`) fires it.
-- `onTap` → §8 routing (dismiss-first → define a glyph → toggle chrome), with the
-  60ms defer when `hasHighlights`. (No pagination on tap.)
+- `onTap` → §8 routing (dismiss-first → top/bottom band toggles chrome → define a
+  glyph → toggle chrome), with the 60ms defer when `hasHighlights`. (No pagination on
+  tap.)
 - `onSelection`/`onSelectionCleared` → drive the first `SelectionToolbar`.
 - `onShowAnnotation` → clears `pendingTap`, closes the dict popup, opens the
   highlight-edit toolbar.
@@ -765,10 +796,11 @@ If it changes geometry, extend `applyLayout` and route via `'layout'`. Anything
 that depends on re-detecting writing-mode must route via `'writingmode'` →
 `reopenForWritingMode`.
 
-**Add a new gesture.** Add it to `#attachTaps` (reader.ts:460). Reuse the
-existing pointer bookkeeping (`active`/`moved`/`downT`, the `e.isPrimary` guard,
-the `pointercancel` abort, and the swipe-vs-tap split in `pointerup`). **Register
-the listener with the shared `{ signal }` from `#ac`** so `destroy()`'s single
+**Add a new gesture.** Extend the shared `#trackGestures` state machine
+(reader.ts) — it backs both `#attachTaps` (content doc) and `#attachHostGestures`
+(host/margins). Reuse the existing pointer bookkeeping (`active`/`moved`/`downT`,
+the `e.isPrimary` guard, the `pointercancel` abort, and the swipe-vs-tap split in
+`pointerup`). **Register the listener with the shared `{ signal }` from `#ac`** so `destroy()`'s single
 abort cleans it up — don't add a bespoke `removeEventListener`. Note that the
 horizontal swipe is **ours** now (foliate's own touch turn is patched out, §1/§7);
 keep any new gesture from colliding with the `SWIPE_MIN_DISTANCE`/horizontal-
@@ -783,8 +815,8 @@ reuse `placeAnchored`).
 `max(28, min(80, minDim*0.075))`, `gap` `'6%'`, the `cols` breakpoint
 (`vw > vh && vw >= 820`), and the per-mode caps — **horizontal** `max-inline-size`
 `640` / `max-block-size` `880`; **vertical** `max-inline-size` = column height
-`max(320, vh − 2·margin)` / `max-block-size` = band width `min(vw − 2·margin,
-560·cols)`. Keep `margin` in `px` and `gap` in `%`, and keep `max-inline-size` set
+`max(320, vh − 2·margin)` / `max-block-size` = band width `vw − 2·margin` (fills the
+width). Keep `margin` in `px` and `gap` in `%`, and keep `max-inline-size` set
 **last** (its setter forces a foliate `render()`). Remember the inline/block axes
 swap for vertical (§6/§7) and the orientation container-query gates the 2-up
 spread to landscape.

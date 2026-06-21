@@ -21,7 +21,11 @@ export interface TocItem {
 
 /** A resolved single tap inside the rendered content (after filtering swipes/selection). */
 export interface TapInfo {
-  doc: Document
+  /**
+   * The content document the tap landed in, or `null` for a tap in the surrounding
+   * margins (which are outside the content iframe, so there's no word to define).
+   */
+  doc: Document | null
   /** Coordinates within the content iframe (for caretRangeFromPoint). */
   ix: number
   iy: number
@@ -85,9 +89,17 @@ function appearanceCSS(s: ReaderSettings): string {
   const cs = getComputedStyle(document.documentElement)
   const tok = (name: string) => cs.getPropertyValue(name).trim()
   const ink = tok('--ink')
+  const paper = tok('--paper')
   const accent = tok('--accent')
   const accentSoft = tok('--accent-soft')
   const family = s.fontFamily === 'sans' ? tok('--font-jp-sans') : tok('--font-serif')
+  // The content iframe is its own document with no theme of its own. A transparent
+  // root composites over the iframe's *default* canvas — which follows color-scheme
+  // and is white unless told otherwise — so a transparent page reads light even in
+  // dark mode. Paint the root with the resolved paper colour (so it matches the app
+  // chrome and the margins exactly) and set color-scheme so form controls/scrollbars
+  // follow the theme too.
+  const scheme = s.theme === 'dark' ? 'dark' : 'light'
 
   let wm = ''
   if (s.writingMode === 'vertical') wm = 'writing-mode: vertical-rl !important;'
@@ -97,7 +109,8 @@ function appearanceCSS(s: ReaderSettings): string {
     @namespace epub "http://www.idpf.org/2007/ops";
     html {
       color: ${ink};
-      background: transparent !important;
+      background: ${paper} !important;
+      color-scheme: ${scheme};
       font-size: ${Math.round(s.fontScale * 100)}%;
       -webkit-text-size-adjust: none;
       ${wm}
@@ -201,6 +214,7 @@ export class ReaderController {
 
     this.applyAppearance(this.#settings)
     this.applyLayout(this.#settings)
+    this.#attachHostGestures()
     window.addEventListener('resize', this.#onResize)
     await this.view.init({ lastLocation: lastCFI || undefined, showTextStart: true })
     this.#nudgeLayout()
@@ -261,13 +275,15 @@ export class ReaderController {
     r.setAttribute('max-column-count', `${cols}`)
     if (this.#vertical) {
       // Vertical 縦書き: `max-block-size` is the across-page *width*; `max-inline-size`
-      // is the column *height*. Fill the viewport — a wide band across, and the full
-      // height minus the margin band. Foliate clamps the height to what's available
-      // and, in landscape, its spread is 1, so we set the height directly (the old
-      // hard-coded 1100 happened to clamp the same, but a too-large value relative to
-      // the spread is what let the box settle mis-sized; deriving it is deterministic).
+      // is the column *height*. Fill the available width (only the margin frames it)
+      // and the full height minus the margin band, so the reading surface uses the
+      // whole screen rather than floating in dead space. Foliate clamps the height to
+      // what's available and, in landscape, its spread is 1, so we set the height
+      // directly (the old hard-coded 1100 happened to clamp the same, but a too-large
+      // value relative to the spread is what let the box settle mis-sized; deriving it
+      // is deterministic).
       const colHeight = Math.max(320, vh - margin * 2)
-      const bandWidth = Math.min(vw - margin * 2, 560 * cols)
+      const bandWidth = vw - margin * 2
       r.setAttribute('max-block-size', `${Math.round(bandWidth)}px`)
       r.setAttribute('max-inline-size', `${Math.round(colHeight)}px`)
     } else {
@@ -456,8 +472,17 @@ export class ReaderController {
     this.view.remove()
   }
 
-  /** Attach our own tap + swipe detector to a freshly loaded content document. */
-  #attachTaps(doc: Document) {
+  /**
+   * Shared pointer → gesture state machine, attached to either a content document
+   * (the text column) or the host element (the surrounding margins). A horizontal
+   * drag of `SWIPE_MIN_DISTANCE` turns the page; a clean, quick tap calls `onTap`.
+   * Every listener is registered with the controller's `#ac` signal so `destroy()`'s
+   * single abort removes them all.
+   */
+  #trackGestures(
+    target: Document | HTMLElement,
+    opts: { shouldIgnoreUp?: () => boolean; onTap: (e: PointerEvent) => void },
+  ) {
     const signal = this.#ac.signal
     let downX = 0
     let downY = 0
@@ -465,9 +490,10 @@ export class ReaderController {
     let moved = false
     let active = false
 
-    doc.addEventListener(
+    target.addEventListener(
       'pointerdown',
-      (e: PointerEvent) => {
+      (ev: Event) => {
+        const e = ev as PointerEvent
         if (!e.isPrimary) return
         active = true
         downX = e.clientX
@@ -477,30 +503,34 @@ export class ReaderController {
       },
       { passive: true, signal },
     )
-    doc.addEventListener(
+    target.addEventListener(
       'pointermove',
-      (e: PointerEvent) => {
+      (ev: Event) => {
+        const e = ev as PointerEvent
         if (active && Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE_TOLERANCE) moved = true
       },
       { passive: true, signal },
     )
     // A cancelled pointer (scroll handoff, palm rejection, gesture recognizer) is
     // never a tap — make sure a stray follow-up pointerup can't fire one.
-    doc.addEventListener('pointercancel', () => {
-      active = false
-      moved = true
-    }, { passive: true, signal })
-    doc.addEventListener(
+    target.addEventListener(
+      'pointercancel',
+      () => {
+        active = false
+        moved = true
+      },
+      { passive: true, signal },
+    )
+    target.addEventListener(
       'pointerup',
-      (e: PointerEvent) => {
+      (ev: Event) => {
+        const e = ev as PointerEvent
         if (!active) return
         active = false
         if (!e.isPrimary) return
-
         // The end of a text selection is neither a tap nor a swipe — leave it for
         // the selection toolbar.
-        const sel = doc.getSelection()
-        if (sel && sel.type === 'Range' && sel.toString().length > 0) return
+        if (opts.shouldIgnoreUp?.()) return
 
         const dx = e.clientX - downX
         const dy = e.clientY - downY
@@ -516,20 +546,47 @@ export class ReaderController {
           return
         }
 
-        // Otherwise, only a clean, quick tap (negligible movement) defines a word /
-        // toggles chrome. Swipes are the sole pagination input.
+        // Otherwise, only a clean, quick tap (negligible movement) counts. Swipes are
+        // the sole pagination input.
         if (moved || e.timeStamp - downT > TAP_MAX_MS) return
+        opts.onTap(e)
+      },
+      { passive: true, signal },
+    )
+  }
 
+  /**
+   * The content iframe only covers the text column, so swipes and taps in the
+   * surrounding margins never reach the per-document listeners — those areas would be
+   * dead. Attach the same gesture detection to the host element (the margins bubble
+   * out of foliate's shadow DOM to it; events inside the iframe don't, so there's no
+   * double-handling) so the whole reading surface responds. Taps here carry no content
+   * document, so they route straight to the chrome toggle.
+   */
+  #attachHostGestures() {
+    this.#trackGestures(this.view, {
+      onTap: (e) => this.#cb.onTap?.({ doc: null, ix: 0, iy: 0, px: e.clientX, py: e.clientY }),
+    })
+  }
+
+  /** Attach our own tap + swipe detector to a freshly loaded content document. */
+  #attachTaps(doc: Document) {
+    this.#trackGestures(doc, {
+      shouldIgnoreUp: () => {
+        const sel = doc.getSelection()
+        return !!(sel && sel.type === 'Range' && sel.toString().length > 0)
+      },
+      onTap: (e) => {
         const frame = doc.defaultView?.frameElement as HTMLElement | null
         const rect = frame?.getBoundingClientRect()
         const px = (rect?.left ?? 0) + e.clientX
         const py = (rect?.top ?? 0) + e.clientY
         this.#cb.onTap?.({ doc, ix: e.clientX, iy: e.clientY, px, py })
       },
-      { passive: true, signal },
-    )
+    })
 
     // Surface finished text selections for the highlight / translate toolbar.
+    const signal = this.#ac.signal
     let selTimer: number | undefined
     doc.addEventListener(
       'selectionchange',
