@@ -1,6 +1,7 @@
 import { getWords } from '@birchill/jpdict-idb'
 import { toNormalized } from '@birchill/normal-jp'
 import { deinflect, Reason, type CandidateWord } from './deinflect'
+import { ensureSegmenter, tokenStartAt } from './segment'
 
 /** One dictionary sense: its parts of speech and English glosses. */
 export interface Sense {
@@ -141,13 +142,10 @@ function toEntry(w: any): DictEntry {
   }
 }
 
-/**
- * Looks up the longest dictionary match starting at the beginning of `window`,
- * trying deinflected forms (10ten-style). Returns null if nothing matches.
- */
-export async function lookup(window: string): Promise<LookupResult | null> {
+/** A memoised `getWords` so the many length/start probes for one tap share queries. */
+function makeQueryCache(): (term: string) => Promise<any[]> {
   const cache = new Map<string, any[]>()
-  const queryWords = async (term: string): Promise<any[]> => {
+  return async (term: string): Promise<any[]> => {
     let r = cache.get(term)
     if (!r) {
       r = await getWords(term, { matchType: 'exact', limit: MAX_RESULTS })
@@ -155,7 +153,14 @@ export async function lookup(window: string): Promise<LookupResult | null> {
     }
     return r
   }
+}
 
+/**
+ * Longest dictionary match starting at the *beginning* of `window`, trying
+ * deinflected forms (10ten-style). Returns null if nothing matches. `matchLength`
+ * is the number of surface characters consumed (the token's span).
+ */
+async function matchAt(window: string, queryWords: (t: string) => Promise<any[]>): Promise<LookupResult | null> {
   const limit = Math.min(window.length, MAX_WINDOW)
   for (let len = limit; len > 0; len--) {
     const sub = window.slice(0, len)
@@ -174,6 +179,50 @@ export async function lookup(window: string): Promise<LookupResult | null> {
         entries: matched.map(toEntry),
       }
     }
+  }
+  return null
+}
+
+/**
+ * Looks up the longest dictionary match starting at the beginning of `window`.
+ * Forward-only from the cursor; prefer `lookupAt` for tap-to-define so a tap in
+ * the middle of a word still resolves the whole word.
+ */
+export async function lookup(window: string): Promise<LookupResult | null> {
+  return matchAt(window, makeQueryCache())
+}
+
+/**
+ * Returns the dictionary entry for the word that contains the character at
+ * `tapOffset` in `text` — so tapping *any* character of a word resolves the whole
+ * word, not just the run from the tapped character forward.
+ *
+ * Word boundaries come from **kuromoji** (MeCab-style IPADIC morphological analysis,
+ * `segment.ts`): we take the token containing the tap and run `matchAt` from its
+ * start (so deinflection + JMdict glosses still apply, and a JMdict compound longer
+ * than the IPADIC token is still found). kuromoji loads lazily (~19 MB, once); until
+ * it is ready — or if it split a word JMdict lemmatises differently — we fall back to
+ * **greedy leftmost-covering**: scan starts left-to-right and take the first longest
+ * match that spans the tap (the leftmost, most complete word — tapping 決 or 心 in
+ * 決心 both resolve 決心).
+ */
+export async function lookupAt(text: string, tapOffset: number): Promise<LookupResult | null> {
+  if (tapOffset < 0 || tapOffset >= text.length) return null
+  const queryWords = makeQueryCache()
+
+  // Kick off the kuromoji load on first use (non-blocking); use it once ready.
+  void ensureSegmenter().catch(() => {})
+  const tokenStart = tokenStartAt(text, tapOffset)
+  if (tokenStart !== null) {
+    const res = await matchAt(text.slice(tokenStart), queryWords)
+    if (res && res.matchLength > tapOffset - tokenStart) return res
+  }
+
+  // Greedy fallback (also used while kuromoji is still loading).
+  for (let start = 0; start <= tapOffset; start++) {
+    const res = await matchAt(text.slice(start), queryWords)
+    // The token spans [start, start + matchLength); keep it only if it covers the tap.
+    if (res && res.matchLength > tapOffset - start) return res
   }
   return null
 }

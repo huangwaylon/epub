@@ -14,23 +14,27 @@ directly from source and the installed type declarations.
 
 ## 1. Overview
 
-The approach is borrowed wholesale from the **10ten Japanese Reader** browser extension:
+Two engines combine so tapping *any* character of a word resolves the whole word: **kuromoji**
+(MeCab-style IPADIC morphological analysis) finds word boundaries, and the **10ten** matcher
+(normalize → deinflect → JMdict lookup) supplies the glosses (IPADIC has no English):
 
-1. **Extract** a short run of text (≤16 chars) starting at the tap point, skipping furigana
-   (`src/services/jp/extract.ts`).
-2. For each candidate length `len` (longest first), take `window.slice(0, len)`, normalize
-   it, and **deinflect** it into a set of plain/base-form candidates
-   (`src/services/jp/deinflect.ts`).
-3. Look each candidate up in the JMdict IndexedDB via `getWords(..., { matchType: 'exact' })`
-   (`@birchill/jpdict-idb`).
-4. **Longest match wins**: the first `len` that yields a valid dictionary entry is returned;
-   shorter lengths are never tried. This mirrors how Japanese (which has no inter-word
-   spaces) must be greedily segmented from the cursor.
+1. **Extract** the contiguous Japanese run *around* the tap — context on **both** sides,
+   skipping furigana — plus the tap's offset within it (`src/services/jp/extract.ts`).
+2. **Segment** with kuromoji (`src/services/jp/segment.ts`): tokenize the run and find the
+   morphological token containing the tap; its start index is the word boundary. kuromoji
+   loads lazily (~19 MB IPADIC, once) — until it's ready (or if it splits a word JMdict
+   lemmatises differently) `lookupAt` falls back to **greedy leftmost-covering** (scan starts
+   left-to-right, take the first longest match spanning the tap).
+3. **Match** from the token start (`lookupAt` → `matchAt` in `src/services/jp/lookup.ts`): for
+   length `len` longest-first, `slice(0, len)` → normalize → **deinflect**
+   (`src/services/jp/deinflect.ts`) → `getWords(..., { matchType: 'exact' })` in the JMdict
+   IndexedDB (`@birchill/jpdict-idb`). Starting at kuromoji's boundary means tapping 決 or 心 in
+   決心 both resolve 決心, and a JMdict compound longer than the IPADIC token is still found.
 
-The orchestration is in `src/services/jp/lookup.ts`; readiness/download lifecycle is in
-`src/services/jp/dictdb.ts`; reactive UI state is the `dict` store
-(`src/stores/dict.svelte.ts`); the popup is `src/lib/reader/DictionaryPopup.svelte`; and the
-tap→lookup wiring lives in `src/lib/reader/Reader.svelte`.
+The orchestration is in `src/services/jp/lookup.ts`; segmentation in `src/services/jp/segment.ts`;
+readiness/download lifecycle in `src/services/jp/dictdb.ts`; reactive UI state is the `dict`
+store (`src/stores/dict.svelte.ts`); the popup is `src/lib/reader/DictionaryPopup.svelte`; and
+the tap→lookup wiring lives in `src/lib/reader/Reader.svelte`.
 
 ---
 
@@ -40,8 +44,10 @@ tap→lookup wiring lives in `src/lib/reader/Reader.svelte`.
 | --- | --- | --- |
 | `@birchill/jpdict-idb` | The dictionary database: downloads JMdict into IndexedDB and queries it. | `JpdictIdb`, `getWords`, `updateWithRetry`, `cancelUpdateWithRetry`, types `WordResult`, `DataSeriesState`, `UpdateState` |
 | `@birchill/normal-jp` | Japanese text normalization. | `toNormalized`, `kanaToHiragana` |
+| `@sglkc/kuromoji` | MeCab-style (IPADIC) morphological analyser — word segmentation (`segment.ts`). Apache-2.0; ships the ~19 MB IPADIC dict. | `builder`, `Tokenizer`, `IpadicFeatures` |
 
-Both are by Birchill (the 10ten author), published under permissive licenses.
+The Birchill packages are by the 10ten author; all three are under permissive licenses (the
+GPL comes only from the vendored `deinflect.ts` below).
 
 ### The vendored deinflection engine is GPL — so the whole app is GPL
 
@@ -153,7 +159,9 @@ updateWithRetry({
 `updateWithRetry` (note: returns `void`, not a promise — the callbacks are the only signal)
 fetches version metadata and data files from the **`data.10ten.life` CDN**, parses them, and
 writes records into jpdict-idb's own IndexedDB store. On retriable failures it retries with
-backoff. `cancelDownload` calls `cancelUpdateWithRetry({ db, series: 'words' })`.
+backoff. `cancelDownload` (`dictdb.ts:81`) calls `cancelUpdateWithRetry({ db, series: 'words' })`
+**only when `db` is non-null** (guarded by `if (db)` — so it is a no-op before `getDb()` has
+ever run), then unconditionally sets `dict.updating = false`.
 
 After a successful download the data lives entirely in IndexedDB; all subsequent lookups are
 offline and never touch the network.
@@ -199,7 +207,10 @@ export interface LookupResult {
 }
 ```
 
-### `lookup(window: string): Promise<LookupResult | null>`
+### `matchAt(window)` — longest match at one position
+
+The core matcher takes the longest dictionary form starting at the **beginning** of `window`
+(this was the whole of the old `lookup`; it is now a building block):
 
 ```ts
 const MAX_WINDOW = 16
@@ -213,12 +224,12 @@ for (let len = limit; len > 0; len--) {
 
   const candidates = deinflect(normalized)
   for (const cand of candidates) {
-    const words = await queryWords(cand.word)   // getWords, memoized within this call
+    const words = await queryWords(cand.word)   // getWords, memoized across the whole tap
     if (!words.length) continue
     const matched = words.filter((w) => candidateMatches(w, cand))
     if (!matched.length) continue
     return {
-      matchLength: len,
+      matchLength: len,                          // surface chars consumed (the token's span)
       reasons: reasonsToLabels(cand.reasonChains),
       entries: matched.map(toEntry),
     }
@@ -230,20 +241,75 @@ return null
 Step by step:
 
 1. **Window cap.** `len` iterates from `min(window.length, 16)` down to `1`. Longest-first
-   gives greedy longest-match segmentation (e.g. for `食べていました…` the full inflected verb
-   is matched before any shorter prefix).
+   gives greedy longest-match (e.g. `食べていました…` matches the full inflected verb before any
+   shorter prefix).
 2. **Normalize.** `toNormalized(sub)` returns a **tuple** `[normalized, inputLengths]`; only
    the string is used (`const [normalized] = ...`). It folds width/case, katakana→hiragana,
    long-vowel marks, etc., into a canonical lookup key.
 3. **Deinflect.** `deinflect(normalized)` returns `CandidateWord[]`, always including the
    surface form itself plus every plausible reverse-conjugation.
 4. **Query (memoized).** `queryWords(term)` wraps `getWords(term, { matchType: 'exact', limit: 8 })`
-   in a per-call `Map` cache, so identical candidate strings across different `len`/candidate
-   combinations are queried once.
+   in a `Map` cache built by `makeQueryCache()` and shared across the whole tap, so identical
+   candidate strings (across lengths *and* starts) are queried once.
 5. **Filter.** `candidateMatches(word, cand)` discards deinflections that don't make sense for
    the matched dictionary entry's part of speech (below).
-6. **Return first hit.** The first `len` with ≥1 surviving entry wins; the function returns
-   immediately. Returns `null` if nothing matched at any length.
+6. **Return the longest.** The first `len` with ≥1 surviving entry wins; `matchLength` is the
+   number of surface characters it consumed (the token's span). Returns `null` if nothing
+   matched at any length.
+
+### `lookupAt(text, tapOffset)` — segment to the word under the tap
+
+This is what tap-to-define calls. It uses kuromoji's segmentation for the word boundary, then
+`matchAt` for the entry, with a greedy fallback while the analyser loads:
+
+```ts
+export async function lookupAt(text: string, tapOffset: number): Promise<LookupResult | null> {
+  const queryWords = makeQueryCache()
+
+  void ensureSegmenter().catch(() => {})        // kick off the kuromoji load (non-blocking)
+  const tokenStart = tokenStartAt(text, tapOffset)   // null until the tokenizer is ready
+  if (tokenStart !== null) {
+    const res = await matchAt(text.slice(tokenStart), queryWords)
+    if (res && res.matchLength > tapOffset - tokenStart) return res
+  }
+
+  // Greedy leftmost-covering fallback (also used while kuromoji loads).
+  for (let start = 0; start <= tapOffset; start++) {
+    const res = await matchAt(text.slice(start), queryWords)
+    if (res && res.matchLength > tapOffset - start) return res
+  }
+  return null
+}
+```
+
+- **kuromoji path.** `tokenStartAt` (`segment.ts`) tokenizes the run and returns the start index
+  of the token containing the tap; `matchAt` runs from there. So the boundary is MeCab-grade,
+  and `matchAt`'s longest-match can still extend past the IPADIC token if JMdict has a longer
+  compound. If JMdict has no entry spanning the tap from that start, it falls through.
+- **Greedy fallback.** Scans starts left-to-right and returns the first longest match covering
+  the tap — the leftmost (most complete) word. Used while kuromoji is still loading, and as a
+  safety net. The run from `extract.ts` (§6) starts at a clause boundary and is bounded by
+  `MAX_BEFORE`, so the scan is short; the shared `queryWords` cache keeps the extra starts cheap.
+- `lookup(window)` still exists as a thin forward-only wrapper (`matchAt(window, …)`), but
+  prefer `lookupAt` for taps so a mid-word tap resolves the whole word rather than a sub-word.
+
+### Segmentation — `segment.ts` (kuromoji)
+
+`segment.ts` owns a lazy kuromoji tokenizer singleton (mirrors `dictdb`'s pattern):
+
+- `ensureSegmenter()` — builds the tokenizer once (idempotent). kuromoji fetches the IPADIC
+  dict (~19 MB of `*.dat.gz`) from `${BASE_URL}kuromoji/dict/`; the service worker runtime-caches
+  it for offline use (see `docs/deployment.md`). Rejects-and-clears on failure so a later tap retries.
+- `segmenterReady()` — synchronous "is it built yet" check.
+- `tokenStartAt(text, tapOffset)` — `tokenizer.tokenize(text)` then the token whose
+  `[word_position-1, +surface_form.length)` span contains `tapOffset`; returns its start, or
+  `null` if not ready.
+
+> **Loader shim.** kuromoji's stock browser loader assumes the server returns the raw gzip
+> stream and hangs silently if the server auto-decompresses it (Vite's dev server sets
+> `Content-Encoding: gzip`). `src/services/jp/kuromojiLoader.cjs` replaces it with a defensive
+> loader (gunzip only if the bytes are actually gzip), wired in via a Vite alias — see
+> `vite.config.ts` and `docs/development.md`.
 
 ### `candidateMatches` — the POS heuristic
 
@@ -293,10 +359,12 @@ function candidateMatches(word: any, cand: CandidateWord): boolean {
 
 ### Why longest-match + performance cap
 
-Japanese has no spaces, so the segmenter must greedily consume the longest valid dictionary
-form from the cursor. The `MAX_WINDOW = 16` cap bounds both the extraction window (§6) and the
-lookup loop, and `getWords` results are memoized within a single `lookup` call, keeping a tap
-to a small, bounded number of IndexedDB reads.
+Japanese has no inter-word spaces, so `matchAt` greedily consumes the longest valid dictionary
+form at a position, and `lookupAt` picks the leftmost such match covering the tap. `MAX_WINDOW
+= 16` caps each `matchAt`; the run length is capped in `extract.ts` (`MAX_BEFORE` / `MAX_AFTER`),
+so `lookupAt` runs `matchAt` from at most ~`MAX_BEFORE + 1` starts. `getWords` results are
+memoized across the whole tap (one shared `makeQueryCache`), keeping a tap to a small, bounded
+number of IndexedDB reads.
 
 ---
 
@@ -351,8 +419,9 @@ The unit tests (§8) are the authoritative spec for the engine's observable beha
 ## 6. Word extraction (`extract.ts`)
 
 ```ts
-export interface Extracted { text: string; startNode: Text; startOffset: number }
-const MAX_CHARS = 16
+export interface Extracted { text: string; tapOffset: number }
+const MAX_BEFORE = 12   // word-chars gathered before the tap
+const MAX_AFTER = 16    // word-chars gathered from the tap forward
 
 export function extractTextAt(doc: Document, x: number, y: number): Extracted | null
 export function looksJapanese(s: string): boolean
@@ -364,7 +433,18 @@ export function looksJapanese(s: string): boolean
    Chrome, returns a `Range`) first, then falls back to `doc.caretPositionFromPoint(x, y)`
    (Firefox, returns `{ offsetNode, offset }`). Returns `{ node, offset }` or `null`. Both are
    accessed via `doc as any` because TS lib types don't reliably declare them.
-2. **TreeWalker over text nodes**, rejecting furigana:
+2. **Glyph hit-test** (`pointOnGlyph`, `extract.ts:42`) — the most important gate. Once the
+   caret resolves, `extractTextAt` calls `pointOnGlyph(doc, pos.node, pos.offset, x, y)` and
+   **returns `null` if `(x, y)` is not inside the caret glyph's box** (the gate at
+   `extract.ts:89`). `caretRangeFromPoint` snaps to the *nearest* text even in blank margins
+   and inter-column gaps, so on a wall-to-wall Japanese page it reports a hit almost everywhere;
+   without this gate **every tap would define**. `pointOnGlyph` builds a `Range` over the single
+   character at the caret offset (clamped to the node end), and checks whether the point lies in
+   any of its client rects, expanded by `GLYPH_HIT_SLACK = 6` px (`extract.ts:33`). A
+   blank-space tap therefore fails the test, `extractTextAt` returns `null`, and the tap falls
+   through to the reader-chrome toggle in `handleTap` (§7). (Pagination is by **swipe**, handled
+   in the controller, not by tap — see `docs/reader-engine.md`.)
+3. **TreeWalker over text nodes**, rejecting furigana:
 
    ```ts
    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
@@ -372,85 +452,114 @@ export function looksJapanese(s: string): boolean
    })
    ```
 
-3. **`isInRuby(node)`** — walks ancestors; returns `true` if any is `<rt>` or `<rp>` (the
+4. **`isInRuby(node)`** — walks ancestors; returns `true` if any is `<rt>` or `<rp>` (the
    furigana / fallback-parenthesis ruby elements). **Crucially it compares
    `el.tagName.toUpperCase()`** — EPUB content is XHTML, where `tagName` is lowercase
    (`"rt"`), unlike HTML (`"RT"`). See the gotcha in §10.
-4. **Collect forward.** Positions the walker at the tapped text node (or the next text node if
-   the tap landed on a non-text node / inside ruby), then appends `node.data` from successive
-   accepted text nodes until `MAX_CHARS` (16) is reached, slicing to exactly 16. Returns
-   `null` if the result is whitespace-only.
-5. Returns `{ text, startNode, startOffset }` — `startNode`/`startOffset` are kept for
-   highlighting the matched range (the popup itself does not currently consume them).
+5. **Tapped-char gate.** The tapped glyph is the character at `pos.offset`; if it is **not a
+   word char** (`WORD_CHAR = /[぀-ヿ㐀-鿿豈-﫿ー々]/` — kana, CJK ideographs, the long-vowel mark
+   `ー`, the iteration mark `々`), return `null` so a latin/punctuation tap falls through to the
+   chrome toggle. This subsumes the old `looksJapanese` pre-filter `Reader.svelte` used to apply.
+6. **Collect the run on both sides.** Using the ruby-skipping walker, gather the contiguous
+   word-char run **forward** from the tap (`node.data.slice(pos.offset)` then successive text
+   nodes, capped at `MAX_AFTER`, stopping at the first non-word char) and **backward** from the
+   tap (`node.data.slice(0, pos.offset)` then previous text nodes, the trailing word-char run,
+   capped at `MAX_BEFORE`). Punctuation / spaces / latin bound the run on each side, so it stays
+   within one clause.
+7. Returns `{ text, tapOffset }` where `text = before + after` and `tapOffset = before.length`
+   (so `text[tapOffset]` is the tapped char). `lookupAt` (§4) then segments `text` and returns
+   the word covering `tapOffset` — this is what makes tapping *any* character of a word resolve
+   the **whole** word (decided previously only what followed the tap).
 
 ### `looksJapanese(s)`
 
-A cheap pre-filter testing only the **first character** against
-`/[぀-ヿ㐀-鿿豈-﫿ー々]/` — hiragana/katakana block, CJK Unified Ideographs, CJK
-Compatibility Ideographs, the long-vowel mark `ー`, and the iteration mark `々`. Used to bail
-out before doing any dictionary work on non-Japanese taps.
+A cheap test of the **first character** against the same `WORD_CHAR` class
+(`/[぀-ヿ㐀-鿿豈-﫿ー々]/` — hiragana/katakana, CJK Unified + Compatibility Ideographs, `ー`, `々`).
+Still exported, but the lookup gate now lives inside `extractTextAt` (step 5); keep it for any
+caller wanting a quick "is this Japanese?" check.
 
 ---
 
 ## 7. Reader integration (`Reader.svelte`)
 
 Tap handling flows: `ReaderController` raises a `TapInfo`
-(`{ doc, ix, iy, px, py, zone }` — `ix/iy` are iframe-local coordinates for the caret APIs,
-`px/py` are top-window coordinates for positioning the popup) → `onTap` → `handleTap`. The
-dictionary takes priority when enabled:
+(`{ doc, ix, iy, px, py }` — `ix/iy` are iframe-local coordinates for the caret APIs,
+`px/py` are top-window coordinates for positioning the popup) → `onTap` → `handleTap`. A tap
+never turns the page (pagination is by horizontal **swipe**, handled in the controller — see
+`docs/reader-engine.md`); it only dismisses an open overlay, defines a word, or toggles the
+reader chrome:
 
 ```ts
 function handleTap(info: TapInfo) {
+  // An open dict popup / highlight-edit toolbar swallows the tap (dismiss + consume).
+  if (dictState.open || hlEdit.open) {
+    dictState.open = false
+    hlEdit.open = false
+    return
+  }
+  // Otherwise: define a tapped Japanese word, or toggle the reader chrome.
   if (settings.tapToDefine && tryDefine(info)) return   // dictionary wins
-  // …otherwise paging / chrome toggle by info.zone
+  chromeVisible = !chromeVisible
 }
 ```
+
+The glyph hit-test inside `extractTextAt` (§6) is what lets a blank-space tap fall through
+`tryDefine` to the chrome toggle instead of always defining.
 
 ### `tryDefine(info): boolean`
 
 ```ts
 function tryDefine(info: TapInfo): boolean {
   const ex = extractTextAt(info.doc, info.ix, info.iy)
-  if (!ex || !looksJapanese(ex.text)) return false
+  if (!ex) return false                 // null ⇒ blank / non-word tap (gate is in extract.ts)
+  const key = `${ex.tapOffset}:${ex.text}`
   dictState.open = true
   dictState.x = info.px; dictState.y = info.py
   dictState.loading = true
   dictState.needsDownload = false
   dictState.result = null
-  dictState.lastText = ex.text          // ← used to discard stale taps
-  void runLookup(ex.text)
+  dictState.text = ex.text              // pending query, kept so a post-download retry can re-run it
+  dictState.tapOffset = ex.tapOffset
+  dictState.lastKey = key               // ← stable per-tap key, used to discard stale taps
+  void runLookup(ex.text, ex.tapOffset, key)
   return true
 }
 ```
 
-Returns `true` (consuming the tap) only when Japanese text was found. It opens the popup in
-the loading state immediately, then kicks off the async lookup.
+Returns `true` (consuming the tap) only when the tap landed on a Japanese glyph
+(`extractTextAt` returned non-null — the word-char gate lives in `extract.ts` now). It opens
+the popup in the loading state immediately, then kicks off the async lookup.
 
-### `runLookup(text)`
+### `runLookup(text, tapOffset, key)`
 
 ```ts
-async function runLookup(text: string) {
+async function runLookup(text: string, tapOffset: number, key: string) {
   if (!(await isDictReady())) {            // not downloaded yet → show download prompt
+    if (!dictState.open || dictState.lastKey !== key) return
     dictState.loading = false
     dictState.needsDownload = true
     return
   }
-  const res = await lookup(text)
-  if (dictState.lastText !== text) return  // a newer tap superseded this lookup — drop it
+  const res = await lookupAt(text, tapOffset)   // ← segment to the word under the tap
+  // Ignore if the popup was dismissed or a newer tap superseded this lookup.
+  if (!dictState.open || dictState.lastKey !== key) return
   dictState.loading = false
   dictState.result = res
 }
 ```
 
-The **`lastText` guard** prevents a slow lookup from overwriting the popup with stale results
-after the user has tapped a different word.
+The guard `!dictState.open || dictState.lastKey !== key` (the key is `${tapOffset}:${text}`)
+drops a late lookup two ways: if the user has since **dismissed** the popup (`!dictState.open`),
+or if a **newer tap** changed `lastKey` — so a slow lookup never overwrites the popup with stale
+results.
 
 ### `downloadDict()`
 
 Triggered by the popup's download button (`ondownload`): calls `downloadDictionary('en')`,
-clears `needsDownload`, and re-runs `runLookup(dictState.lastText)` so the originally-tapped
-word resolves once data is present. Errors are swallowed here and surfaced via `dict.error`
-in the store.
+clears `needsDownload`, sets `dictState.loading = true` (so the popup shows the spinner again
+rather than the stale download prompt), and re-runs `runLookup(dictState.text,
+dictState.tapOffset, dictState.lastKey)` so the originally-tapped word resolves once data is
+present. Errors are swallowed here and surfaced via `dict.error` in the store.
 
 ### `DictionaryPopup.svelte`
 
@@ -469,10 +578,12 @@ one of four states:
 
 The dictionary download is **also** reachable from **Shelf Settings**
 (`src/lib/library/ShelfSettings.svelte`), which has a "Japanese dictionary" section showing
-`dict.state`/`dict.progress` and a **Download** button calling `downloadDictionary('en')`. It
-calls `getDb()` on mount purely to initialize the status readout. (A separate "Translation
-language" segmented control there is for sentence translation, not word lookup — word lookups
-are always English glosses.)
+`dict.state`/`dict.progress` and a **Download** button. The button calls a local `getDict()`
+wrapper that `try`/`catch`es `downloadDictionary('en')` and surfaces any failure via
+`dict.error`. `ShelfSettings` calls `getDb()` on mount purely to initialize the status
+readout. The dictionary is the only language feature, and word lookups are always English
+glosses, so `downloadDictionary` is invoked with a hardcoded `'en'` at every call site
+(here and in `Reader.svelte`'s `downloadDict`).
 
 ---
 
@@ -543,6 +654,15 @@ Run with `npm test`.
   `downloadDictionary` manually bridges this into a promise.
 - **`dict.state === 'ok'` is the only "ready" state.** `'init'`/`'empty'` mean not-yet-usable;
   `'unavailable'` means the DB couldn't be opened.
+- **Dictionary popup keys must be unique (fixed).** `DictionaryPopup.svelte`'s `{#each
+  result.entries (…)}` key includes the array index (`entry.headword + entry.reading + ':' + i`).
+  JMdict has homographs with identical headword+reading (e.g. several 度/ど entries), so keying
+  on `headword + reading` alone throws Svelte's `each_key_duplicate` and the popup hangs on the
+  spinner. Keep the index in the key.
+- **kuromoji loads lazily and segments on the main thread.** The first tap-to-define triggers a
+  one-time ~19 MB IPADIC fetch + trie build (then SW-cached). Until it's ready, segmentation
+  falls back to greedy. The gzip-decompression loader shim (`kuromojiLoader.cjs`) is required —
+  see the note in §4 and `docs/development.md`.
 
 ---
 

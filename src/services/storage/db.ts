@@ -3,18 +3,9 @@ import type { Annotation, BookMeta, ReaderSettings, ReadingProgress } from '../t
 
 /**
  * IndexedDB holds all structured data: book metadata, reading progress,
- * annotations, settings, and a translation cache. The (potentially large) EPUB
- * bytes are stored separately — see blobs.ts (OPFS with an IDB fallback).
+ * annotations, and settings. The (potentially large) EPUB bytes are stored
+ * separately — see blobs.ts (OPFS with an IDB fallback).
  */
-
-export interface CachedTranslation {
-  key: string // `${target}:${hash(text)}` — see services/translate.ts (small djb2 hash)
-  text: string
-  target: string
-  result: string
-  engine: string
-  createdAt: number
-}
 
 /** Fallback object store for EPUB bytes when OPFS is unavailable. */
 interface StoredBlob {
@@ -31,7 +22,6 @@ interface TsuzuriDB extends DBSchema {
     indexes: { byBook: string }
   }
   settings: { key: string; value: ReaderSettings }
-  translations: { key: string; value: CachedTranslation }
   bookBlobs: { key: string; value: StoredBlob }
 }
 
@@ -49,7 +39,6 @@ export function db(): Promise<IDBPDatabase<TsuzuriDB>> {
         const ann = database.createObjectStore('annotations', { keyPath: 'id' })
         ann.createIndex('byBook', 'bookId')
         database.createObjectStore('settings')
-        database.createObjectStore('translations', { keyPath: 'key' })
         database.createObjectStore('bookBlobs', { keyPath: 'id' })
       },
     })
@@ -122,16 +111,6 @@ export async function loadSettings(): Promise<ReaderSettings | undefined> {
 
 export async function saveSettings(s: ReaderSettings): Promise<void> {
   await (await db()).put('settings', s, 'reader')
-}
-
-/* ── Translation cache ─────────────────────────────────────────────────── */
-
-export async function getCachedTranslation(key: string): Promise<CachedTranslation | undefined> {
-  return (await db()).get('translations', key)
-}
-
-export async function putCachedTranslation(t: CachedTranslation): Promise<void> {
-  await (await db()).put('translations', t)
 }
 
 /* ── Blob fallback (used by blobs.ts when OPFS is unavailable) ──────────── */

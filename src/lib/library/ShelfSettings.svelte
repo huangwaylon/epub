@@ -26,12 +26,6 @@
     { value: 'sepia', label: 'Sepia' },
     { value: 'dark', label: 'Dark' },
   ]
-  const langOpts = [
-    { value: 'en', label: 'English' },
-    { value: 'zh', label: '中文' },
-    { value: 'ko', label: '한국어' },
-    { value: 'es', label: 'Español' },
-  ]
 </script>
 
 <div class="settings">
@@ -65,16 +59,6 @@
     {/if}
     {#if dict.error}<p class="hint err">{dict.error}</p>{/if}
     <p class="hint">JMdict data from the 10ten project. Stored on-device for offline lookups.</p>
-  </section>
-
-  <section>
-    <h3>Translation language</h3>
-    <Segmented
-      value={settings.translationTargetLang}
-      options={langOpts}
-      onchange={(v) => updateSettings({ translationTargetLang: v })}
-    />
-    <p class="hint">Target language for sentence translation. Word lookups stay in English.</p>
   </section>
 
   {#if status}

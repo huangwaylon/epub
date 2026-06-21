@@ -37,13 +37,28 @@ depend on a package.
 
 ### Local modifications vs upstream
 
+There are **two** documented patches to the vendored tree:
+
 - **PDF.js + `vendor/pdfjs` removed.** The app is EPUB-focused, so the heavy
   PDF.js dependency and the PDF branch in `view.js`'s `makeBook()` were deleted.
   Verify: `src/vendor/foliate-js/vendor/` contains only `fflate.js` and
   `zip.js`; there is no `pdf.js`. In `makeBook` (view.js:79-119) the format
   dispatch is **zip → CBZ / FBZ / EPUB**, else **MOBI/KF8 → FB2**; there is no
-  `isPDF` branch. (The `isPDF` helper at view.js:13-18 survives as dead code —
+  `isPDF` branch. (The `isPDF` helper at view.js:13 survives as dead code —
   it is defined but never called. Safe to ignore or remove.)
+- **foliate's own touch page-turn disabled** (`paginator.js`, search for
+  `TSUZURI PATCH`). `#onTouchMove` (paginator.js:831) **keeps** its
+  `e.preventDefault()` — that still blocks native scroll and Safari's edge
+  back-swipe — but **drops the `this.scrollBy(dx, dy)`** that made the page
+  follow the finger. `#onTouchEnd` (paginator.js:857) **drops the velocity
+  `snap()`** that animated to the nearest page. The net effect: foliate no
+  longer turns pages on touch at all. Page turns are instead driven by our own
+  horizontal **swipe** detector in `reader.ts` (§8), so the turn always animates
+  as the horizontal **slide** (§8a) — correct for 縦書き, where foliate's own
+  motion is on the vertical axis. **This consciously reverses the old advice
+  "don't add page-swipe handling, foliate owns swipe"**: we now do our own swipe
+  and patch foliate's out, so there is exactly one turn path.
+
 - MOBI/KF8, FB2, FBZ, and CBZ branches are **kept** (they are cheap, lazy
   dynamic `import()`s and cost nothing until such a file is opened).
 - `README.md` still lists PDF.js under "Vendored libraries" — that line is stale
@@ -64,7 +79,7 @@ depend on a package.
 `<foliate-view>` is the high-level custom element (class `View`, view.js:209,
 `customElements.define('foliate-view', View)` at view.js:593). `ReaderController`
 declares the minimal surface it touches as the `FoliateView` interface
-(reader.ts:29-43). Everything we call:
+(reader.ts:34-49). Everything we call:
 
 | Member | Signature (as used) | Notes (verified in view.js) |
 | --- | --- | --- |
@@ -84,7 +99,7 @@ declares the minimal surface it touches as the `FoliateView` interface
 
 | Member | Notes |
 | --- | --- |
-| `renderer.setStyles(css)` | Injects/replaces a `<style>` in the **content iframe** doc (paginator.js:1100). Used by `applyAppearance`. Accepts a string, or `[before, after]` pair. |
+| `renderer.setStyles(css)` | Injects/replaces a `<style>` in the **content iframe** doc (paginator.js:1098). Used by `applyAppearance`. Accepts a string, or `[before, after]` pair. |
 | `renderer.setAttribute(name, value)` | The paginator has **no JS property API** — layout is configured purely via attributes (`margin`, `gap`, `max-inline-size`, `max-block-size`, `max-column-count`, `animated`). Used by `applyLayout`. |
 | `renderer.render()` | Re-runs `#beforeRender` + relayout for the current section (paginator.js:754). Used by `#nudgeLayout`. |
 
@@ -98,11 +113,11 @@ declares the minimal surface it touches as the `FoliateView` interface
 ## 3. Events
 
 `ReaderController.open()` subscribes to these `<foliate-view>` CustomEvents
-(reader.ts:161-199). All `e.detail` shapes verified in view.js / paginator.js.
+(reader.ts:163-200). All `e.detail` shapes verified in view.js / paginator.js.
 
 | Event | `detail` | Emitted from | We do |
 | --- | --- | --- | --- |
-| `relocate` | `{ cfi, fraction, tocItem:{label,href}, range, reason, size, ... }` | view.js:333 (`#onRelocate`, forwarding paginator's `relocate`) | Store `lastCFI`; call `onRelocate({cfi,fraction,tocItem,range,reason})`. `reason` is foliate's own relocation reason — `'page'`/`'snap'`/`'scroll'` for a user-driven turn, `'anchor'`/`'navigation'`/`'selection'` for startup/programmatic jumps; §12 uses it to gate progress persistence and close overlays. |
+| `relocate` | `{ cfi, fraction, tocItem:{label,href}, range, size, ... }` | view.js:333 (`#onRelocate`, forwarding paginator's `relocate`) | Store `lastCFI`; call `onRelocate({cfi,fraction,tocItem,range})`. **Note: the emitted detail carries no `reason`.** `#onRelocate` (view.js:325-333) *destructures* a `reason` off the paginator's event and uses it only for its internal `history.replaceState`, but `lastLocation` — the object it `#emit`s — does **not** include `reason`. So you cannot tell a user turn from a startup jump off this event; intent is tracked from the gesture side instead (§4 `onTurn`, §12 `userInteracted`). |
 | `load` | `{ doc: Document, index: number }` | view.js:344 (`#onLoad`) — fires once per section load | Record `doc→index` in `#docIndex`; detect writing-mode; attach taps/selection; call `onLoad`. |
 | `create-overlay` | `{ index }` | view.js:414 (`#createOverlayer`, when a section's SVG overlay is created) | `reapplyHighlights()` so stored highlights redraw on this freshly-loaded section. |
 | `draw-annotation` | `{ draw, annotation:{value}, doc, range }` | view.js:389 (inside `addAnnotation`, when the section is loaded) | `draw(Overlayer.highlight, { color })` where color comes from `#highlightColors`. **This is where a highlight is actually painted.** |
@@ -117,7 +132,7 @@ happens in our `draw-annotation` handler. And `show-annotation` is a real
 
 ## 4. ReaderController API & lifecycle
 
-`ReaderController` (reader.ts:134) owns exactly one `<foliate-view>` for one open
+`ReaderController` (reader.ts:133) owns exactly one `<foliate-view>` for one open
 book. It is created by `Reader.svelte` in `onMount` and torn down in
 `onDestroy`.
 
@@ -128,7 +143,7 @@ new ReaderController(container: HTMLElement, settings: ReaderSettings, callbacks
 ```
 
 Creates a `<foliate-view>` styled `display:block;width:100%;height:100%` and
-appends it to `container` (reader.ts:149-155). Nothing is rendered until
+appends it to `container` (reader.ts:151-156). Nothing is rendered until
 `open()`.
 
 ### Public fields
@@ -141,8 +156,9 @@ appends it to `container` (reader.ts:149-155). Nothing is rendered until
 
 Private state: `#cb`, `#settings`, `#docIndex` (`WeakMap<Document, index>` for
 CFI creation), `#highlightColors` (`Map<cfi, hex>` — the **source of truth** for
-highlight colours), `#vertical` (boolean, current writing mode), `#resizeTimer`,
-and `#ac` (a single `AbortController` (reader.ts:147) whose `signal` is passed to
+highlight colours), `#vertical` (boolean, current writing mode), `#turning` +
+`#pendingDir` (the page-turn-slide coalescing flags, §8a), `#resizeTimer`,
+and `#ac` (a single `AbortController` (reader.ts:146) whose `signal` is passed to
 **every** per-document listener — taps and `selectionchange`; `destroy()` aborts
 it to remove them all at once, so re-loaded sections don't leak listeners).
 
@@ -154,7 +170,7 @@ it to remove them all at once, so re-loaded sections don't leak listeners).
 | `applyAppearance` | `(s: ReaderSettings) => void` | Re-injects the content stylesheet via `renderer.setStyles(appearanceCSS(s))`. Live-safe (§5). |
 | `applyLayout` | `(s: ReaderSettings) => void` | Sets paginator geometry attributes, device-scaled (§6). Live-safe. |
 | `reopenForWritingMode` | `(file: File) => Promise<void>` | Re-`open()`s the book at `lastCFI` because writing-mode must be re-detected from the content doc. Used only when the user flips horizontal/vertical (§14). |
-| `goLeft` / `goRight` | `() => Promise<void>` | Dir-aware page turn, animated as a horizontal **slide** (§8a) — not a direct foliate call. |
+| `goLeft` / `goRight` | `() => Promise<void>` | Dir-aware page turn, animated as a horizontal **slide** (§8a) — not a direct foliate call. Each fires the `onTurn` callback (reader.ts:320/324) before sliding. |
 | `goTo` | `(target: string\|number) => Promise<any>` | TOC / annotation nav. |
 | `cfiForSelection` | `(doc, range) => string \| null` | Looks up `doc`'s index in `#docIndex`, then `view.getCFI(index, range)`. Returns `null` if doc unknown or CFI throws. |
 | `addHighlight` | `(cfi, hex) => Promise<void>` | Records colour, then `view.addAnnotation({value:cfi})` (paints if loaded). |
@@ -165,37 +181,42 @@ it to remove them all at once, so re-loaded sections don't leak listeners).
 | `clearSelection` | `() => void` | Best-effort `view.deselect()`. |
 | `destroy` | `() => void` | Removes the resize listener, clears the timer, **`#ac.abort()`** (removes every per-document tap/selection listener in one shot), best-effort `view.close()`, removes the element. |
 
-### `ReaderCallbacks` (reader.ts:65-73)
+### `ReaderCallbacks` (reader.ts:60-70)
 
 ```ts
 interface ReaderCallbacks {
   onRelocate?:        (d: RelocateDetail) => void
   onLoad?:            (doc: Document, index: number) => void
   onTap?:             (info: TapInfo) => void
+  onTurn?:            () => void                              // a user page-turn (swipe) began
   onSelection?:       (info: SelectionInfo) => void
   onSelectionCleared?:() => void
   onShowAnnotation?:  (value: string, range: Range) => void  // tap landed on a highlight
 }
 ```
 
+`onTurn` (reader.ts:65) is fired by `goLeft`/`goRight` at the start of every turn
+(reader.ts:320/324). `Reader.svelte`'s `onTurn` handler sets the `userInteracted`
+flag and calls `closeOverlays()` (§8, §12) — this is what makes a swipe persist
+progress and dismiss any popup/toolbar anchored to the page being left, now that
+`relocate` no longer carries a `reason`.
+
 ### Data types
 
 ```ts
-interface RelocateDetail {
+interface RelocateDetail {  // reader.ts:8 — note: no `reason` field (foliate's relocate doesn't carry one; §3)
   cfi: string
   fraction: number
   tocItem?: { label?: string; href?: string }
   range?: Range
-  reason?: string  // foliate's relocation reason: 'page'|'snap'|'scroll' = user turn; 'anchor'|'navigation'|'selection' = startup/programmatic
 }
 
 interface TocItem { label?: string; href?: string; subitems?: TocItem[] }  // a book.toc entry; exported for Reader.svelte's TOC sheet
 
-interface TapInfo {
+interface TapInfo {  // reader.ts:23 — no `zone` field; pagination is by swipe, not tap rails (§8)
   doc: Document
   ix: number; iy: number  // coords *inside* the content iframe (for caretRangeFromPoint)
   px: number; py: number  // coords in the *top* window (for positioning popups)
-  zone: 'left' | 'center' | 'right'  // edge rails ('left'/'right') vs the wide centre (§8)
 }
 
 interface SelectionInfo {
@@ -206,11 +227,12 @@ interface SelectionInfo {
 }
 ```
 
-### `open()` sequence (reader.ts:157-206)
+### `open()` sequence (reader.ts:159-207)
 
 1. `await view.open(file)` — parse + pick renderer (no paint yet).
 2. `bookDir = view.book?.dir === 'rtl' ? 'rtl' : 'ltr'`.
-3. Register the five event listeners (§3) — `relocate` forwards `detail.reason`.
+3. Register the five event listeners (§3) — the `relocate` handler forwards
+   `{cfi,fraction,tocItem,range}` (no `reason`; §3).
 4. `applyAppearance(settings)` — inject the stylesheet.
 5. `applyLayout(settings)` — set paginator geometry attributes.
 6. `window.addEventListener('resize', #onResize)` — re-tune on rotation.
@@ -226,7 +248,7 @@ paint already has the right styles and geometry.
 
 ## 5. Appearance injection — `appearanceCSS(settings)`
 
-`appearanceCSS(s: ReaderSettings)` (reader.ts:84-128) builds the stylesheet that
+`appearanceCSS(s: ReaderSettings)` (reader.ts:83-127) builds the stylesheet that
 foliate injects into **each content iframe document** via
 `renderer.setStyles(...)`. It reads the live theme tokens from the **host**
 document so the page exactly matches the app chrome:
@@ -267,7 +289,7 @@ repeatedly is cheap and reflows in place — no reload.
 
 ## 6. Layout & measure tuning — `applyLayout`
 
-`applyLayout(s)` (reader.ts:246-279) maps device size + settings onto the
+`applyLayout(s)` (reader.ts:247-279) maps device size + settings onto the
 paginator's attributes. It runs once during `open()` and again on every resize /
 writing-mode flip. It **branches on `this.#vertical`**, because the two axes swap
 meaning between writing modes (§7) and vertical 縦書き needs the page box derived
@@ -321,7 +343,7 @@ foliate `render()` (paginator.js:628), so `margin`/`gap`/`max-column-count`/
 > `#container` 560×1068, columns ~1000px. See §11 for why deriving these from the
 > viewport is what makes the vertical column fill on first paint.
 
-### `#vertical` detection (reader.ts:177-186)
+### `#vertical` detection (reader.ts:178-184)
 
 In the `load` handler we read the rendered document's computed writing mode:
 
@@ -337,7 +359,7 @@ existed). Note this reads `documentElement` here, whereas the paginator's own
 `getDirection` reads `body` (paginator.js:178-187) — in practice the EPUB sets
 writing-mode on `html`, and our injected override (§5) also targets `html`.
 
-### `#onResize` (reader.ts:282-285)
+### `#onResize` (reader.ts:282-286)
 
 A 150ms-debounced `resize` listener re-runs `applyLayout` (e.g. iPad rotation:
 `max-column-count` may switch between 1 and 2). Also part of the §11 mitigation.
@@ -370,12 +392,19 @@ paginator.js:424). What a developer must know:
   `body.dir`/`computed direction`/`html.dir`. This is how the paginator decides
   axis mapping per section.
 
-- **Touch swipe is the paginator's own job.** It binds `touchstart`/`touchmove`/
-  `touchend` on both itself and each loaded content doc (paginator.js:567-575),
-  tracks velocity, and on `touchend` calls `snap(vx, vy)` to animate to the
-  nearest page (and cross section boundaries). **We must NOT implement swipe** —
-  doing so double-handles the gesture (§14). It also auto-turns when a selection
-  is dragged past the visible range (`checkPointerSelection`, paginator.js:586).
+- **Touch page-turn is patched OUT.** Upstream, the paginator binds
+  `touchstart`/`touchmove`/`touchend` on both itself and each loaded content doc
+  (paginator.js:568-574), tracks velocity, and on `touchend` snaps to the nearest
+  page. **We disable that** (the `TSUZURI PATCH` in `#onTouchMove`/`#onTouchEnd`,
+  §1): `#onTouchMove` keeps `e.preventDefault()` (so native scroll and Safari's
+  edge back-swipe stay blocked) but drops the finger-follow `scrollBy`, and
+  `#onTouchEnd` drops the velocity `snap()`. So foliate no longer turns pages on
+  touch — **our** swipe detector in `reader.ts` (§8) is the only turn input, and
+  it animates the horizontal slide (§8a). The bindings still exist (the touch
+  listeners are attached) but their page-turn effect is removed.
+  Independently, the paginator still auto-turns when a *selection* is dragged
+  past the visible range (`checkPointerSelection`, paginator.js:586) — that path
+  is untouched.
 
 - **Grid layout + custom properties** (paginator.js:454-543). `#top` is a CSS
   grid `container-type: size`. Tunable props (defaults shown):
@@ -404,78 +433,80 @@ paginator.js:424). What a developer must know:
 
 ## 8. Taps & gestures
 
-The gesture model is **"tap defines; edge + swipe turn"**. We implement a **tap**
-detector (not swipe — the paginator owns swipe). `#attachTaps(doc)`
-(reader.ts:374-466) runs per loaded content doc, on the `load` event. Every
-listener it installs (pointerdown/move/up/cancel + selectionchange) is registered
-with `{ signal }` from the controller's single `#ac` `AbortController`
-(reader.ts:147), so `destroy()`'s one `#ac.abort()` removes them all — no per-doc
-listener leak when sections re-load.
+The gesture model is **"swipe turns the page; tap defines or toggles chrome"**.
+Pagination is by horizontal **swipe only** — there are no tap edge-rails (the old
+`EDGE_RAIL_FRACTION` constant and `TapInfo.zone` field are gone), and foliate's
+own touch turn is patched out (§1/§7), so our `#attachTaps` handler is the single
+source of both gestures. `#attachTaps(doc)` (reader.ts:460-563) runs per loaded
+content doc, on the `load` event. Every listener it installs (pointerdown/move/
+up/cancel + selectionchange) is registered with `{ signal }` from the
+controller's single `#ac` `AbortController` (reader.ts:146), so `destroy()`'s one
+`#ac.abort()` removes them all — no per-doc listener leak when sections re-load.
 
-A pointer interaction counts as a **tap** iff all hold:
+### Swipe → page turn
 
-- the pointer is **primary** (`e.isPrimary` on both down and up — ignores
-  secondary touches of a multi-touch gesture),
-- it was **not cancelled** — a `pointercancel` (scroll handoff, palm rejection,
-  gesture recognizer) sets `moved = true` and clears the `active` flag so a stray
-  follow-up `pointerup` can't fire a tap,
-- movement `< TAP_MOVE_TOLERANCE` (**16px**), measured by `Math.hypot` from
-  `pointerdown` to `pointerup`,
-- duration `< TAP_MAX_MS` (**400ms**),
-- and there is **no non-empty Range selection** (`sel.type === 'Range' &&
-  sel.toString().length > 0` → ignore; it's the tail of a selection).
-
-On a tap it computes the **zone** as edge **rails**, not thirds. The rail width is
-`EDGE_RAIL_FRACTION` (**0.14**) of the page (iframe) width, clamped to
-`[56px, 22%]`:
+The `pointerup` handler (reader.ts:493-530) decides swipe-vs-tap. First it bails
+if the pointer is non-primary, was cancelled, or a non-empty Range selection is
+active (`sel.type === 'Range' && sel.toString().length > 0` — that's the tail of
+a selection, left for the toolbar). Then, from the down→up delta `dx`/`dy`:
 
 ```ts
-const w = doc.documentElement.clientWidth || window.innerWidth
-const rail = Math.min(Math.max(w * EDGE_RAIL_FRACTION, 56), w * 0.22)
-const zone = e.clientX < rail ? 'left' : e.clientX > w - rail ? 'right' : 'center'
+if (Math.abs(dx) >= SWIPE_MIN_DISTANCE && Math.abs(dx) > Math.abs(dy)) {
+  if (dx < 0) void this.goRight()   // dragged left  → reveal the page on the right
+  else        void this.goLeft()    // dragged right → reveal the page on the left
+  return
+}
 ```
 
-So `left`/`right` are narrow edge rails and `center` is the **wide everything
-in-between**. Coords are iframe-local (`e.clientX/Y`). It also translates them to
-top-window coords via the iframe's frame element for popups:
+So a drag of at least `SWIPE_MIN_DISTANCE` (**45px**) that is **more horizontal
+than vertical** turns the page, and **"the page follows the finger"**: dragging
+left reveals the page on the right (`goRight`), dragging right reveals the page on
+the left (`goLeft`). Which of those is *next* vs *previous* is foliate's call —
+`goLeft`/`goRight` are **direction-aware** and honour the book's page-progression —
+so the swipe turns the correct way in LTR, RTL, and vertical (縦書き) books (e.g. in
+an RTL 縦書き book, dragging **right** advances), and the turn **always** animates as
+the horizontal slide (§8a). A swipe never reaches the tap branch (it `return`s).
 
-```ts
-const frame = doc.defaultView?.frameElement
-const rect  = frame?.getBoundingClientRect()
-const px = (rect?.left ?? 0) + e.clientX   // top-window X for popups
-const py = (rect?.top  ?? 0) + e.clientY
-```
+### Tap → define or chrome
 
-Then emits `onTap({ doc, ix:e.clientX, iy:e.clientY, px, py, zone })`. `ix/iy`
-(iframe-local) feed `caretRangeFromPoint`/`extractTextAt`; `px/py` (top-window)
-position the popup.
+If the gesture wasn't a swipe, it only counts as a **tap** when movement was
+`< TAP_MOVE_TOLERANCE` (**16px**, tracked on `pointermove`) and duration was
+`< TAP_MAX_MS` (**400ms**). A `pointercancel` (scroll handoff, palm rejection,
+gesture recognizer) marks the interaction moved/inactive so a stray follow-up
+`pointerup` can't fire a tap. On a real tap it emits
+`onTap({ doc, ix:e.clientX, iy:e.clientY, px, py })` — `ix/iy` (iframe-local) feed
+`caretRangeFromPoint`/`extractTextAt`; `px/py` (top-window, via the iframe's
+`frameElement.getBoundingClientRect()`) position the popup. There is no `zone` —
+a tap carries no notion of edge rails anymore.
 
 ### Tap routing in Reader.svelte
 
-`onTap` (Reader.svelte:231) and `handleTap` (Reader.svelte:243) do the routing.
-
+`onTap` (Reader.svelte:223) and `handleTap` (Reader.svelte:235) do the routing.
 `handleTap` runs in a fixed order:
 
 1. **Dismiss-first.** If `dictState.open || hlEdit.open`, set both `false` and
    `return` — **any** tap dismisses an open dictionary popup / highlight-edit
-   toolbar and is *consumed* (the fix for the reported "popup won't dismiss /
-   inconsistent" behaviour).
-2. **Edge rail → turn.** If `zone` is `'left'`/`'right'`: set `userInteracted =
-   true`, hide chrome, and call `controller.goLeft()` / `goRight()`. These are
-   foliate's **direction-aware** turns, so a left-rail tap advances correctly in
-   both LTR and vertical RTL books. `return`.
-3. **Centre → define or chrome.** If `settings.tapToDefine && tryDefine(info)`
-   (the tap landed on a Japanese **glyph** per `extractTextAt` + `looksJapanese`;
-   §10 / `docs/japanese.md`), the lookup runs and routing stops. Otherwise toggle
-   `chromeVisible` (the top/bottom bars).
+   toolbar and is *consumed*.
+2. **Define a glyph.** If `settings.tapToDefine && tryDefine(info)` — the tap
+   landed on an actual Japanese **glyph** per `extractTextAt`'s glyph + word-char
+   gate (the `pointOnGlyph` hit-test in extract.ts:42 rejects taps in margins /
+   inter-column gaps; §10, `docs/japanese.md`), and `lookupAt` segments the run to
+   the word under the tap — the lookup runs and routing stops.
+3. **Toggle chrome.** Otherwise toggle `chromeVisible` (the top/bottom bars).
+
+There is **no pagination on tap** — turning the page is exclusively the swipe
+path above.
 
 ### 8a. Page-turn animation — horizontal slide (`#turn` / `#slide`)
 
-`controller.goLeft()` / `goRight()` no longer call foliate directly; they animate a
-**horizontal slide** (like Books on iPad) via `#turn(dir)` → `#slide(dir)`
-(reader.ts). Why: foliate stacks 縦書き pages on the **vertical** axis (§7), so its
-own `animated` turn slides up/down — which read as wrong for a Japanese book. So we
-leave foliate's `animated` attribute **off** (§6) and drive the visual ourselves:
+`controller.goLeft()` / `goRight()` (reader.ts:319/323) each fire the `onTurn`
+callback, then animate a **horizontal slide** (like Books on iPad) via
+`#turn(dir)` (reader.ts:328) → `#slide(dir)` (reader.ts:344). Only the **trigger**
+changed (a swipe, not a tap rail); the slide mechanism is unchanged. Why a custom
+slide: foliate stacks 縦書き pages on the **vertical** axis (§7), so its own
+`animated` turn slides up/down — which reads as wrong for a Japanese book. So we
+leave foliate's `animated` attribute **off** (§6), patch its own touch turn out
+(§1/§7), and drive the visual ourselves:
 
 1. Slide the whole `<foliate-view>` out to one edge (`transform: translateX(±100%)`,
    `TURN_PHASE_MS` = 150ms) with a soft `box-shadow` as a depth cue.
@@ -485,40 +516,55 @@ leave foliate's `animated` attribute **off** (§6) and drive the visual ourselve
 
 The new page enters from the side the reader moved toward; the old page leaves the
 opposite edge, so it reads as one continuous horizontal push. Both phases are
-**`transitionend`-driven** (`#transition`, with a `TURN_PHASE_MS + 120` fallback) so
-timer drift can't leave a blank-paper gap between them. A `#turning` flag plus a
-single `#pendingDir` **coalesce rapid taps** (the latest queued turn runs when the
-current finishes); `destroy()` clears `#pendingDir`.
+**`transitionend`-driven** (`#transition`, reader.ts:369, with a `TURN_PHASE_MS +
+120`ms fallback) so timer drift can't leave a blank-paper gap between them. A
+`#turning` flag plus a single `#pendingDir` **coalesce rapid swipes** (the latest
+queued turn runs when the current finishes); `destroy()` clears `#pendingDir`.
+
+| Constant (reader.ts) | Value | Role |
+| --- | --- | --- |
+| `TAP_MOVE_TOLERANCE` (:72) | 16px | max down→up travel for a gesture to still be a tap |
+| `TAP_MAX_MS` (:73) | 400ms | max duration for a tap |
+| `SWIPE_MIN_DISTANCE` (:75) | 45px | min horizontal travel for a drag to count as a page-turn swipe |
+| `TURN_PHASE_MS` (:77) | 150ms | one phase (out / in) of the horizontal slide |
 
 Constraints worth knowing: a literal page-**curl** isn't possible — the content is a
 sandboxed, closed-shadow-DOM iframe that can't be rasterised — and only one page is
 rendered at a time, so the vacated strip shows the **paper background** during the
 slide (the intended look). `goTo()` (TOC / annotation nav) is **not** animated; only
-`goLeft`/`goRight` slide. Foliate still owns **swipe** (§7); with `animated` off a
-swipe **snaps instantly** (its drag-follow remains on foliate's vertical axis).
+`goLeft`/`goRight` slide.
+
+> **Verified in desktop Chrome only** (iPad-landscape emulation). The swipe model
+> (the 45px / horizontal-dominant threshold and "page follows the finger") and the
+> horizontal slide are **not yet confirmed on real iOS** — open questions are swipe
+> velocity/feel under a real finger and `caretRangeFromPoint` in vertical-rl
+> iframes. Re-test on a physical device if you touch these. (The production build
+> serves under the `/epub/` base on GitHub Pages — see `docs/deployment.md`.)
 
 ### Highlight de-conflict (the 60ms defer)
 
 A real `click` fires on the same gesture as our tap, and may hit-test a highlight
 → `show-annotation`. So `onTap` defers `handleTap` by **~60ms via `pendingTap =
-setTimeout(...)` *only when `hasHighlights` is true*** (Reader.svelte:232-237). If
-`onShowAnnotation` fires first it clears `pendingTap` (Reader.svelte:167-170) and
-opens the edit toolbar instead of turning/defining. With no highlights, the tap
-runs immediately. `pendingTap` is also cleared in `onDestroy`.
+setTimeout(...)` *only when `hasHighlights` is true*** (Reader.svelte:223-233). If
+`onShowAnnotation` fires first it clears `pendingTap` (Reader.svelte:159-162) and
+opens the edit toolbar instead of defining. With no highlights, the tap runs
+immediately. `pendingTap` is also cleared in `onDestroy`.
 
-### Overlays auto-close on a real turn
+### Overlays auto-close on a turn
 
-`onRelocate` calls `closeOverlays()` (closes `dictState`, `hlEdit`, and `sel`)
-when `detail.reason` is `'page'`/`'snap'`/`'scroll'` — i.e. a real user-driven
-page turn invalidates any popup/toolbar anchored to the previous page
-(Reader.svelte:102-105).
+Because `relocate` no longer carries a `reason` (§3), overlay-close on a page turn
+is driven from the **gesture** side: `goLeft`/`goRight` fire `onTurn`, and
+`Reader.svelte`'s `onTurn` (Reader.svelte:103-106) sets `userInteracted = true` and
+calls `closeOverlays()` (closes `dictState`, `hlEdit`, and `sel`) — a turn
+invalidates any popup/toolbar anchored to the page being left. TOC/annotation
+navigation sets `userInteracted` the same way (Reader.svelte:215/291).
 
 ---
 
 ## 9. Selection
 
 `#attachTaps` also installs a **250ms-debounced** `selectionchange` listener on
-the content doc (reader.ts:437-465; registered with the same `#ac` signal as the
+the content doc (reader.ts:534-562; registered with the same `#ac` signal as the
 tap listeners). When the debounce fires and there is a non-empty Range:
 
 ```ts
@@ -532,26 +578,25 @@ onSelection({ doc, range, text: sel.toString(),
 Otherwise it calls `onSelectionCleared()`. The top-window `rect` is what
 positions the `SelectionToolbar` (which now places itself via
 `placeAnchored(centerX, rect.top, rect.top+rect.height, …)` — §12). In
-`Reader.svelte`, `onSelection` opens the toolbar with three actions:
+`Reader.svelte`, `onSelection` opens the toolbar with two actions:
 
 - **Highlight** (`createHighlight(color)`): `cfiForSelection` → persist an
   `Annotation` via `saveAnnotation` → `controller.addHighlight(cfi, hex)` →
   `clearSelection()`.
 - **Copy** (`copySelection`): `navigator.clipboard.writeText(sel.text)`.
-- **Translate** (`translateSelection`): stash text, open `TranslationSheet`.
 
-A real page-turn relocate (`reason` `'page'`/`'snap'`/`'scroll'`) closes the
-selection toolbar along with the other overlays via `closeOverlays()` (§8, §12).
+A user page turn closes the selection toolbar along with the other overlays via
+`closeOverlays()`, driven by `onTurn` (not a relocation reason — §8, §12).
 
 (The paginator independently watches `selectionchange` to auto-turn pages while
-dragging a selection past the page edge — paginator.js:602-616 — but that is its
+dragging a selection past the page edge — paginator.js:586-616 — but that is its
 own concern and doesn't interfere with ours.)
 
 ---
 
 ## 10. Highlights & CFI
 
-The colour map `#highlightColors: Map<cfi, hex>` (reader.ts:143) is the **single
+The colour map `#highlightColors: Map<cfi, hex>` (reader.ts:142) is the **single
 source of truth** for how a highlight is drawn. Persistence is separate — the
 `annotations` store (`docs/storage-pwa-ios.md`, `docs/japanese.md`) holds the
 durable records; `#highlightColors` is the in-memory render state.
@@ -563,7 +608,7 @@ Draw/paint flow:
    `Annotation`s) clears + reseeds the whole map.
 2. `view.addAnnotation({value:cfi})` resolves the CFI to a section + range.
    - If that section is **loaded**, view emits `draw-annotation`; our handler
-     (reader.ts:195-199) calls `draw(Overlayer.highlight, { color })` — color =
+     (reader.ts:196-200) calls `draw(Overlayer.highlight, { color })` — color =
      `#highlightColors.get(value) ?? '#ffd54a'`. `Overlayer.highlight`
      (overlayer.js:126) draws filled `<rect>`s at the range's client rects, at
      `opacity: var(--overlayer-highlight-opacity, .3)`.
@@ -574,7 +619,7 @@ Draw/paint flow:
 3. `recolorHighlight` = delete + add (forces a redraw at the new colour).
    `removeHighlight` drops the colour and `deleteAnnotation`s.
 
-CFI creation: `cfiForSelection(doc, range)` (reader.ts:312) looks up the doc's
+CFI creation: `cfiForSelection(doc, range)` (reader.ts:396) looks up the doc's
 spine index in the `#docIndex` `WeakMap` (populated on every `load`), then
 `view.getCFI(index, range)`. Returns `null` if the doc is unknown or CFI
 throwing. CFIs are stable across reflow/font changes, which is exactly why
@@ -583,7 +628,7 @@ annotations and reading progress are anchored by CFI rather than offsets (see
 
 Editing a highlight: tapping it → `show-annotation` → `onShowAnnotation(value,
 range)` opens the second `SelectionToolbar` instance (recolor / delete only,
-`showCopy={false} showTranslate={false} showDelete={true}`).
+`showCopy={false} showDelete={true}`).
 
 ---
 
@@ -613,10 +658,10 @@ fits the screen instead of guessing.
 
 **Remaining hedges** (best-effort, idempotent):
 
-- `#nudgeLayout()` (reader.ts:215-223) schedules **a single** `renderer.render()`
+- `#nudgeLayout()` (reader.ts:216-224) schedules **a single** `renderer.render()`
   at **250ms** after `init`, as a lightweight hedge in case a real device still
-  under-measures after fonts/layout settle. (Down from the old 4-render cascade at
-  120/350/700/1200ms — the viewport-derived layout no longer needs it in Chrome.)
+  under-measures after fonts/layout settle. (Earlier iterations leaned on a heavier
+  multi-stage re-render; the viewport-derived layout above made that unnecessary in Chrome.)
 - The `#onResize` listener (§6) re-applies layout on any real viewport change and
   is the reliable backstop.
 
@@ -632,7 +677,7 @@ fits the screen instead of guessing.
 
 `Reader.svelte` is the screen; it owns no rendering itself, only orchestration.
 
-**Mount** (`onMount`, Reader.svelte:319): `Promise.all([getBookMeta, getBookFile,
+**Mount** (`onMount`, Reader.svelte:302): `Promise.all([getBookMeta, getBookFile,
 getProgress])` → throw if no file → **seed displayed progress from the saved
 `progress`** (`fraction`/`currentCFI`/`sectionLabel`) so the bar is correct before
 the first relocate → `new ReaderController(host, settings, callbacks)` →
@@ -644,27 +689,30 @@ back-to-library CTA.
 **Reactive UI state** (`$state`/`$derived`): `chromeVisible`, `fraction`,
 `sectionLabel`, `currentCFI`, `isBookmarked` (derived: a bookmark annotation at
 `currentCFI`), `hasHighlights` (derived; gates the 60ms tap-defer in §8). A
-plain (non-reactive) module-scope `userInteracted` flag (Reader.svelte:84) gates
+plain (non-reactive) module-scope `userInteracted` flag (Reader.svelte:79) gates
 progress persistence — see below.
 
 **Callbacks → UI:**
 
-- `onRelocate` (Reader.svelte:96-107) → updates `fraction`/`currentCFI`/
-  `sectionLabel`. On a **real** turn (`detail.reason` `'page'`/`'snap'`/`'scroll'`)
-  it sets `userInteracted = true` and calls `closeOverlays()` (dict popup +
-  both toolbars). It runs the **600ms-debounced `putProgress`** *only after*
-  `userInteracted` is true — so the noisy startup relocations (which can report a
-  bogus fraction, the cause of "a fresh book reopens mid-way") don't persist a
-  misleading position. `userInteracted` is also set by edge-rail taps and by
-  TOC/annotation navigation.
+- `onRelocate` (Reader.svelte:91-99) → updates `fraction`/`currentCFI`/
+  `sectionLabel`, then runs the **600ms-debounced `putProgress`** *only when*
+  `userInteracted` is already true — so the noisy startup relocations (which can
+  report a bogus fraction, the cause of "a fresh book reopens mid-way") don't
+  persist a misleading position. Because the `relocate` event carries **no
+  `reason`** (§3), it cannot itself tell a user turn from a startup jump;
+  `userInteracted` is set entirely from the **gesture/navigation** side —
+  `onTurn` (a swipe), `navigate` (TOC), and `navAnnotation`.
   > **Honest caveat on the fraction.** foliate's `relocate.fraction` is an
   > *overall-book* fraction (view.js's `SectionProgress.getProgress`, progress.js)
   > that includes the page's trailing-edge term. On the tiny 2-page test EPUB,
   > page 1 reports ~39%; on a real multi-hundred-page book page 1 ≈ 0–1%. That is
   > foliate's progress model, not a bug — the persistence gating is what prevents a
   > bogus *restore*.
-- `onTap` → §8 routing (dismiss-first → edge-rail turn → centre define/chrome),
-  with the 60ms defer when `hasHighlights`.
+- `onTurn` (Reader.svelte:103-106) → sets `userInteracted = true` and
+  `closeOverlays()`. This is the page-turn signal that `relocate` can't give us:
+  a swipe (or any `goLeft`/`goRight`) fires it.
+- `onTap` → §8 routing (dismiss-first → define a glyph → toggle chrome), with the
+  60ms defer when `hasHighlights`. (No pagination on tap.)
 - `onSelection`/`onSelectionCleared` → drive the first `SelectionToolbar`.
 - `onShowAnnotation` → clears `pendingTap`, closes the dict popup, opens the
   highlight-edit toolbar.
@@ -673,14 +721,14 @@ progress persistence — see below.
 `controller.goTo(href)`), `ReaderSettings` (its `onchange(kind)` →
 `controller.applyAppearance` / `applyLayout` / `reopenForWritingMode` per
 `'appearance'|'layout'|'writingmode'`), `AnnotationsPanel` (`onnavigate` →
-`goTo(cfi)`), `TranslationSheet`, `DictionaryPopup`.
+`goTo(cfi)`), `DictionaryPopup`.
 
-**Two `SelectionToolbar` instances**: one for fresh selections
-(color/copy/translate), one for editing an existing highlight
-(recolor/delete). Both position themselves through the shared
-`placeAnchored(...)` helper (`src/lib/util/anchoredPosition.ts`, §12-anchoring).
-Component props verified: `open, rect, activeColor, showCopy, showTranslate,
-showDelete, onColor, onCopy, onTranslate, onDelete`.
+**Two `SelectionToolbar` instances**: one for fresh selections (color/copy), one
+for editing an existing highlight (recolor/delete). Both position themselves
+through the shared `placeAnchored(...)` helper
+(`src/lib/util/anchoredPosition.ts`, §12-anchoring). Component props verified
+(SelectionToolbar.svelte:6-24): `open, rect, activeColor, showCopy, showDelete,
+onColor, onCopy, onDelete` — there is **no translate prop**.
 
 The `DictionaryPopup` likewise positions via `placeAnchored` from its tap
 anchor (`x/y`); its effect re-runs on `x`/`y` *or content* change so a re-tap on
@@ -691,7 +739,7 @@ at the first spot, and it carries a focusable close (×) button.
 bookmark toggle). `toggleBookmark` adds/removes a `bookmark` annotation at
 `currentCFI || controller.lastCFI`.
 
-**Destroy** (`onDestroy`, Reader.svelte:361-365): clears `pendingTap`, then
+**Destroy** (`onDestroy`, Reader.svelte:345-349): clears `pendingTap`, then
 `controller.destroy()` + `clearAnnotations()`.
 
 ### Anchored positioning (§12-anchoring)
@@ -712,35 +760,37 @@ top-window. The popup passes a larger `gap: 16`; toolbars use the default.
 `DEFAULT_SETTINGS` in `src/services/types.ts`; add a control to
 `ReaderSettings.svelte` that calls `updateSettings({...})` and then
 `onchange('appearance'|'layout'|'writingmode')`. If it changes the injected
-stylesheet, extend `appearanceCSS` (reader.ts:84) and route via `'appearance'`.
+stylesheet, extend `appearanceCSS` (reader.ts:83) and route via `'appearance'`.
 If it changes geometry, extend `applyLayout` and route via `'layout'`. Anything
 that depends on re-detecting writing-mode must route via `'writingmode'` →
 `reopenForWritingMode`.
 
-**Add a new gesture.** Add it to `#attachTaps` (reader.ts:374). Reuse the
+**Add a new gesture.** Add it to `#attachTaps` (reader.ts:460). Reuse the
 existing pointer bookkeeping (`active`/`moved`/`downT`, the `e.isPrimary` guard,
-and the `pointercancel` abort). **Register the listener with the shared
-`{ signal }` from `#ac`** so `destroy()`'s single abort cleans it up — don't add
-a bespoke `removeEventListener`. **Do not add swipe** — the paginator owns it
-(§14). For e.g. long-press, gate on `e.timeStamp - downT > TAP_MAX_MS` plus the
-no-movement check, add a callback to `ReaderCallbacks`, emit it, and handle it in
-`Reader.svelte`. Remember to translate coords to top-window space via
-`frameElement.getBoundingClientRect()` if you need to position UI (or reuse
-`placeAnchored`).
+the `pointercancel` abort, and the swipe-vs-tap split in `pointerup`). **Register
+the listener with the shared `{ signal }` from `#ac`** so `destroy()`'s single
+abort cleans it up — don't add a bespoke `removeEventListener`. Note that the
+horizontal swipe is **ours** now (foliate's own touch turn is patched out, §1/§7);
+keep any new gesture from colliding with the `SWIPE_MIN_DISTANCE`/horizontal-
+dominant swipe rule. For e.g. long-press, gate on `e.timeStamp - downT >
+TAP_MAX_MS` plus the no-movement check, add a callback to `ReaderCallbacks`, emit
+it, and handle it in `Reader.svelte`. Remember to translate coords to top-window
+space via `frameElement.getBoundingClientRect()` if you need to position UI (or
+reuse `placeAnchored`).
 
-**Change the reading measure.** Tune `applyLayout` (reader.ts:246) — note it
+**Change the reading measure.** Tune `applyLayout` (reader.ts:247) — note it
 **branches on `#vertical`**. Common knobs: the margin clamp
 `max(28, min(80, minDim*0.075))`, `gap` `'6%'`, the `cols` breakpoint
 (`vw > vh && vw >= 820`), and the per-mode caps — **horizontal** `max-inline-size`
 `640` / `max-block-size` `880`; **vertical** `max-inline-size` = column height
 `max(320, vh − 2·margin)` / `max-block-size` = band width `min(vw − 2·margin,
-560·cols)` (and `EDGE_RAIL_FRACTION` `0.14` for the tap rails, §8). Keep `margin`
-in `px` and `gap` in `%`, and keep `max-inline-size` set **last** (its setter
-forces a foliate `render()`). Remember the inline/block axes swap for vertical
-(§6/§7) and the orientation container-query gates the 2-up spread to landscape.
+560·cols)`. Keep `margin` in `px` and `gap` in `%`, and keep `max-inline-size` set
+**last** (its setter forces a foliate `render()`). Remember the inline/block axes
+swap for vertical (§6/§7) and the orientation container-query gates the 2-up
+spread to landscape.
 
 **Add a new annotation type.** Today only `Overlayer.highlight` is used. To add
-e.g. underline: in the `draw-annotation` handler (reader.ts:195) branch on the
+e.g. underline: in the `draw-annotation` handler (reader.ts:196) branch on the
 annotation's kind/colour and call `draw(Overlayer.underline, {...})` /
 `Overlayer.squiggly` / `Overlayer.strikethrough` (all in overlayer.js). Extend
 the `Annotation` model + the `annotations` store accordingly, and seed via
@@ -755,14 +805,18 @@ beware: it has no JS property API (attributes only) and a closed shadow DOM.
 
 ## 14. Gotchas
 
-- **Swipe is foliate's; the page-turn *animation* is ours.** The paginator binds
-  `touch*` on itself *and* every content doc and runs its own velocity-based `snap`
-  (§7) — don't implement swipe in the app (it would double-handle the gesture). But
-  we **leave foliate's `animated` attribute off** (§6) and animate `goLeft`/`goRight`
-  ourselves as a horizontal slide (§8a), because foliate's own turn animation slides
-  on the vertical axis for 縦書き. Don't re-add `animated` (you'd get a vertical
-  slide fighting the horizontal one). A swipe therefore *snaps instantly*. Only
-  **taps**, **selection**, and the **turn animation** are ours.
+- **Swipe AND the page-turn animation are both ours.** Foliate's own touch
+  page-turn is **patched out** (the `TSUZURI PATCH` in `#onTouchMove`/`#onTouchEnd`,
+  §1/§7): `#onTouchMove` keeps `e.preventDefault()` but drops the finger-follow
+  `scrollBy`, and `#onTouchEnd` drops the velocity `snap`. Our `pointerup` swipe
+  detector (§8) is the **only** thing that turns pages, and we **leave foliate's
+  `animated` attribute off** (§6) and animate `goLeft`/`goRight` ourselves as a
+  horizontal slide (§8a) — foliate's own turn animation slides on the *vertical*
+  axis for 縦書き. Don't re-add `animated` (you'd get a vertical slide fighting the
+  horizontal one), and don't un-patch foliate's touch turn (you'd double-handle the
+  swipe). **This is the reverse of the old "don't add page-swipe handling" advice**
+  — we now own swipe, tap, selection, and the turn animation; foliate is left to
+  jump instantly.
 - **The iframe is `sandbox="allow-same-origin allow-scripts"`** (paginator.js:244).
   Having both is required for events to fire (WebKit bug 218086) and produces a
   benign browser console warning ("an iframe which has both allow-scripts and
@@ -787,14 +841,14 @@ beware: it has no JS property API (attributes only) and a closed shadow DOM.
   if the target section isn't loaded; rely on `create-overlay` →
   `reapplyHighlights` to backfill. Don't assume a highlight painted just because
   `addHighlight` resolved.
-- **Define and page-turn no longer collide.** With the rail model (§8), define
-  fires *only* from the wide centre zone *and only when the tap lands on an actual
-  glyph* — `extractTextAt` returns `null` in margins / inter-column gaps because
-  `pointOnGlyph` (extract.ts:42) bounds `caretRangeFromPoint`'s snapping (§10,
-  `docs/japanese.md`). The edge rails always navigate, and any tap while a popup /
-  edit toolbar is open just dismisses it. So a tap can't both define and turn the
-  page; if you widen the rails or change `EDGE_RAIL_FRACTION`/`GLYPH_HIT_SLACK`,
-  preserve that separation.
+- **Define and page-turn don't collide.** Pagination is by **swipe** and define
+  is by **tap**, so they're already distinct gestures (a swipe `return`s before the
+  tap branch — §8). On top of that, define fires *only when the tap lands on an
+  actual glyph* — `extractTextAt` returns `null` in margins / inter-column gaps
+  because `pointOnGlyph` (extract.ts:42) bounds `caretRangeFromPoint`'s snapping
+  (§10, `docs/japanese.md`), so a tap on blank space falls through to the chrome
+  toggle. And any tap while a popup / edit toolbar is open just dismisses it. If you
+  change `SWIPE_MIN_DISTANCE` / `GLYPH_HIT_SLACK`, preserve that separation.
 
 ---
 
@@ -808,3 +862,5 @@ beware: it has no JS property API (attributes only) and a closed shadow DOM.
   components, chrome styling.
 - `docs/storage-pwa-ios.md` — OPFS book bytes, IndexedDB (`getBookMeta`,
   `getProgress`/`putProgress`, annotations persistence), PWA + iOS specifics.
+- `docs/deployment.md` — GitHub Pages deploy, the `/epub/` production base path
+  (which the reader's assets and the PWA scope derive from), and CI.

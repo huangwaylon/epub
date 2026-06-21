@@ -39,14 +39,16 @@ multi-page chapter — ideal for exercising pagination and the dictionary.
    - Tap a **Japanese word** (it must land on an actual glyph) → the dictionary popup
      defines it. Test a conjugated word, e.g. tap the start of 美しかった → expect
      **美しい / past / い-adjective**.
-   - Tap **blank space in the centre** → toggles the top/bottom chrome bars.
-   - Tap the **left or right edge** (outer ~14% rail) **or swipe** → turns the page
-     (vertical RTL: correct direction via foliate goLeft/goRight).
+   - Tap **blank space** → toggles the top/bottom chrome bars (a tap never turns the page).
+   - **Swipe** horizontally (≥45px, more horizontal than vertical) → turns the page;
+     direction-aware via foliate `goLeft`/`goRight` (vertical RTL: dragging **right**
+     advances, dragging **left** goes back), always animated as a horizontal slide.
    - With the popup open, **any tap dismisses it** (and is consumed); a real page turn also
      auto-closes it.
 6. **Selection features:** `drag` from one character to another to select text → the
-   toolbar appears → tap a colour (highlight draws + persists) or **Translate**
-   (opens the translation sheet; dev proxy returns `google (dev)`).
+   toolbar appears → tap a colour (highlight draws + persists) or **Copy**. (Driving a swipe
+   in the closed-shadow iframe: dispatch synthetic `PointerEvent`s on the content `doc` via
+   `evaluate_script` with a glyph uid → `el.ownerDocument`; see the closed-shadow-tap memory.)
 7. **Bookmark:** toggle the bottom-bar bookmark; check it lists under the Notes panel.
 8. **Console:** `list_console_messages` should be clean except the benign foliate iframe
    **"allow-scripts and allow-same-origin" sandbox** warning.
@@ -56,13 +58,13 @@ multi-page chapter — ideal for exercising pagination and the dictionary.
 
 ## What "good" looks like at iPad landscape
 - Vertical text in **balanced** left/right margins (not jammed to one edge), RTL page
-  turns (for a vertical RTL book, tapping the **left** edge rail advances / next;
-  tapping the **right** goes back / prev — or swipe), furigana above kanji.
+  turns (for a vertical RTL book, **swiping right** advances / next; **swiping left** goes
+  back / prev), furigana above kanji.
 - Page turns animate as a **horizontal slide** (left/right, like Books on iPad), not a
   vertical up/down slide. The moving page casts a soft shadow over the paper. foliate's
   `animated` attribute is intentionally **off**; `ReaderController` does the slide
   (reader-engine.md §8a).
-- Sheets (Display/TOC/Notes/Translation) render as **centered modal cards**, not
+- Sheets (Display/TOC/Notes) render as **centered modal cards**, not
   full-width bottom sheets.
 - Shelf content is centered (max ~1120px) with larger covers.
 - The vertical column should **fill the page box on first paint** — `applyLayout` derives the
@@ -86,6 +88,6 @@ Service workers + install need **HTTPS**: front the dev/preview server with a tu
 (`cloudflared tunnel`/`ngrok`) or `npm run build && npm run preview` behind HTTPS, open in
 iOS Safari, **Share → Add to Home Screen**, launch the icon. Re-check the items flagged
 "unverified on iOS" in docs/reader-engine.md and docs/storage-pwa-ios.md
-(vertical column fill, the tap-gesture model — word-define vs. edge-rail turn vs.
-chrome-toggle, `caretRangeFromPoint` in vertical iframes, OPFS write, storage
-durability across relaunch).
+(vertical column fill, the gesture model — swipe page-turn vs. tap word-define vs.
+tap chrome-toggle, swipe responsiveness/velocity, `caretRangeFromPoint` in vertical
+iframes, OPFS write, storage durability across relaunch).

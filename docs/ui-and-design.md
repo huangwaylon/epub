@@ -51,7 +51,7 @@ The other stores follow the identical pattern (all in `src/stores/`):
 
 | Store | Shape (abridged) | Mutators |
 | --- | --- | --- |
-| `settings.svelte.ts` | `ReaderSettings` (theme, fontScale, lineHeight, marginScale, fontFamily, writingMode, tapToDefine, translationTargetLang) | `initSettings`, `updateSettings`, `applyTheme` |
+| `settings.svelte.ts` | `ReaderSettings` (theme, fontScale, lineHeight, marginScale, fontFamily, writingMode, tapToDefine) | `initSettings`, `updateSettings`, `applyTheme` |
 | `library.svelte.ts` | `{ books, progress, loading, importing }` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` |
 | `annotations.svelte.ts` | `{ items: Annotation[] }` | `loadAnnotations`, `clearAnnotations`, `saveAnnotation`, `removeAnnotation`, `newId` |
 | `dict.svelte.ts` | `{ state, updating, progress, error? }` (offline JMdict download status) | mutated directly by `services/jp/dictdb.ts` |
@@ -69,13 +69,12 @@ The other stores follow the identical pattern (all in `src/stores/`):
 | `$state(...)` | every store; component locals (e.g. `menuFor`, `settingsOpen` in `Shelf.svelte`) | reactive, deep-proxied state |
 | `$derived(...)` | `BookCover` (`hue`), `TocSheet` (`items`), `AnnotationsPanel` (`highlights`/`bookmarks`/`list`) | computed values |
 | `$props()` | every component | destructure incoming props (replaces `export let`) |
-| `$bindable(default)` | `Sheet.open`, `Segmented.value`, `DictionaryPopup.open`, `TranslationSheet.open` | two-way-bindable props |
-| `$effect(...)` | `BookCover` (objectURL lifecycle), `Sheet` (move/restore focus on open/close), `DictionaryPopup`/`SelectionToolbar` (re-position via `placeAnchored` on open + anchor/content change), `TranslationSheet` (re-translate on new selection) | side effects with optional cleanup return |
+| `$bindable(default)` | `Sheet.open`, `Segmented.value`, `DictionaryPopup.open` | two-way-bindable props |
+| `$effect(...)` | `BookCover` (objectURL lifecycle), `Sheet` (move/restore focus on open/close), `DictionaryPopup`/`SelectionToolbar` (re-position via `placeAnchored` on open + anchor/content change) | side effects with optional cleanup return |
 
 **Generics on components:** `Segmented.svelte` declares
 `<script lang="ts" generics="T extends string | number">`, so `value`/`options`/`onchange` are
-typed against the caller's literal-union `T` (e.g. `ThemeName`, `WritingModePref`, or a target-lang
-string).
+typed against the caller's literal-union `T` (e.g. `ThemeName`, `WritingModePref`, or `'serif' | 'sans'`).
 
 **Snippets & events:** `Sheet` takes a `children: Snippet` and renders it with `{@render children()}`.
 Event handlers are passed as plain function props (`onclose`, `onchange`, `onnavigate`, …) — there
@@ -136,12 +135,12 @@ semantic color tokens below. The brand identity is a **vermilion `--accent`** ("
    the iOS status bar / address bar matches the page.
 
 **Crucially**, the reader engine reads these *same* CSS vars to style content *inside* the EPUB
-iframe. `src/services/reader.ts` has a `cssVar(name)` helper
-(`getComputedStyle(document.documentElement).getPropertyValue(name).trim()`) and its
-`appearanceCSS()` builds a stylesheet from `--ink`, `--accent`, `--accent-soft`, and
-`--font-serif`/`--font-jp-sans`, which foliate-js injects into each content document. This is why
-the rendered book always matches the app chrome exactly. See **docs/reader-engine.md** for that
-injection pipeline — do not duplicate it here.
+iframe. `appearanceCSS()` in `src/services/reader.ts` does a single
+`getComputedStyle(document.documentElement)` read and pulls `--ink`, `--accent`, `--accent-soft`,
+and `--font-serif`/`--font-jp-sans` off it (via a local `tok(name)` closure), building a stylesheet
+that foliate-js injects into each content document. This is why the rendered book always matches the
+app chrome exactly. See **docs/reader-engine.md** for that injection pipeline — do not duplicate it
+here.
 
 ---
 
@@ -173,17 +172,16 @@ Reusable primitives live in `src/lib/components/`; feature components in `src/li
 | --- | --- | --- |
 | `lib/components/Sheet.svelte` | `open?` ★, `title?`, `onclose?`, `children: Snippet`, `maxHeight='85dvh'` | Modal container. **Bottom sheet on phones; centered modal card ≥768px** (see §6). Scrim + drag-grip + optional header with a 44px close button. Closes on scrim/grip tap, close button, or **Escape**. `role="dialog" aria-modal`; on open it moves focus into the sheet (which carries `tabindex="-1"`) and restores focus to the trigger on close. |
 | `lib/components/Segmented.svelte` | `value` ★, `options: {value,label?,icon?}[]`, `onchange?` | Generic segmented control (`generics="T extends string\|number"`). Pill track in `--accent-soft`; active segment raised on `--paper-raised`. `aria-pressed` per option. Used for theme/font/writing-mode pickers. |
-| `lib/components/Icon.svelte` | `name`, `size=24`, `stroke=2`, `fill=false` | Inline 24×24 stroke icons from a module-level `PATHS: Record<string,string>` map (only the icons actually used: `plus`, `gear`, `bookmark`, `translate`, `list`, `arrow-left`, `x`, `trash`, `search`, `book`, `note`, `copy`, `aa`). Renders one `<path>` with `currentColor`; `fill` toggles solid vs. outline on the **same** path (e.g. the active bookmark passes `fill` to the single `bookmark` path — there is no `-fill` entry). `aria-hidden`. |
+| `lib/components/Icon.svelte` | `name`, `size=24`, `stroke=2`, `fill=false` | Inline 24×24 stroke icons from a module-level `PATHS: Record<string,string>` map (only the icons actually used: `plus`, `gear`, `bookmark`, `list`, `arrow-left`, `x`, `trash`, `search`, `book`, `note`, `copy`, `aa`). Renders one `<path>` with `currentColor`; `fill` toggles solid vs. outline on the **same** path (e.g. the active bookmark passes `fill` to the single `bookmark` path — there is no `-fill` entry). `aria-hidden`. |
 | `lib/components/UpdateToast.svelte` | (none — reads `pwa` store) | Floating pill toast when `pwa.needRefresh`. "Refresh" → `pwa.update()`; dismiss sets `needRefresh=false`. `z-index:60`, above sheets. |
 | `lib/library/BookCover.svelte` | `book: BookMeta` | Renders the cover `Blob` via an `objectURL` (created/revoked in a `$effect`). If no cover, draws a **generated placeholder** whose gradient + spine hue derives from the book id (`$derived hue = Σ charCodes(id[0..5]) % 360`). 2:3 aspect. |
 | `lib/library/Shelf.svelte` | (none — top-level shelf screen) | Library grid: header (`蔵書 / Library`), import (`<input type=file>`), settings gear, progress ring per book. Long-press / right-click opens a per-book action `Sheet` (Read / Remove). Empty + loading states. |
-| `lib/library/ShelfSettings.svelte` | (none — rendered inside the settings `Sheet`) | App-wide settings: theme `Segmented`, JMdict download + progress, translation target-language `Segmented`, storage quota bar, About. |
+| `lib/library/ShelfSettings.svelte` | (none — rendered inside the settings `Sheet`) | App-wide settings: theme `Segmented`, JMdict download + progress, storage quota bar, About. |
 | `lib/reader/ReaderSettings.svelte` | `onchange: (kind:'appearance'\|'layout'\|'writingmode')=>void` | Display sheet body: theme, font family (明朝/ゴシック), text-size/line-spacing/margin steppers, writing-direction `Segmented` (Auto/横書き/縦書き), and a custom switch toggle for tap-to-define. Reports which aspect changed so the reader re-applies efficiently. |
 | `lib/reader/TocSheet.svelte` | `toc: TocItem[]`, `currentLabel?`, `onnavigate: (href)=>void` | Flattens nested TOC (`$derived`), indents by depth, marks `currentLabel`, disables items with no `href`. |
 | `lib/reader/AnnotationsPanel.svelte` | `onnavigate: (cfi)=>void` | Tabbed Highlights / Bookmarks list from the `annotations` store (`$derived` filtered + sorted). Color bar (`HIGHLIGHT_HEX`) or bookmark icon; row → navigate; trash → `removeAnnotation`. |
 | `lib/reader/DictionaryPopup.svelte` | `open?` ★, `x`, `y`, `loading?`, `needsDownload?`, `result?: LookupResult\|null`, `ondownload?` | **Floating** (`position:fixed`) word-lookup card near the tap, positioned via the shared `placeAnchored` util (prefers above, flips below, clamped to viewport + safe area). Re-runs positioning on `x`/`y` **and content** changes, so a re-tap or a loaded result repositions. States: spinner / download-prompt / entries / no-match. Has a focusable close (×) button. Not a sheet. |
-| `lib/reader/SelectionToolbar.svelte` | `open?`, `rect`, `activeColor?`, `showCopy/Translate/Delete?`, `onColor/onCopy/onTranslate/onDelete?` | **Floating** pill toolbar above a text selection (positioned via the same `placeAnchored` util). 4 highlight swatches + copy/translate/delete actions; all are 44px hit areas (the visible colour dot is 26px inside a 44px button). Replaces the native iOS callout. |
-| `lib/reader/TranslationSheet.svelte` | `open?` ★, `text=''` | Sheet body: shows source JP text → translation via `services/translate`, with engine label + copy. `$effect` re-runs on `(open, targetLang, text)` change. |
+| `lib/reader/SelectionToolbar.svelte` | `open?`, `rect`, `activeColor?`, `showCopy?` (default true) / `showDelete?` (default false), `onColor/onCopy/onDelete?` | **Floating** pill toolbar above a text selection (positioned via the same `placeAnchored` util). 4 highlight swatches + copy/delete actions; all are 44px hit areas (the visible colour dot is 26px inside a 44px button). Replaces the native iOS callout. |
 
 ---
 
@@ -230,7 +228,7 @@ tablet form. There is no JS device detection — it is pure CSS.
 
 | Surface | < 768px (phone) | ≥ 768px (iPad/wide) |
 | --- | --- | --- |
-| **Sheets** (`Sheet.svelte`) | Full-width bottom sheet, rises from bottom, drag-grip, `border-radius` top only | **Centered modal card**: `top/left:50%`, `translate(-50%,-50%)`, `width: min(480px, 100vw-96px)`, `max-height: min(82dvh,760px)`, all-corner radius, grip hidden, `pop-center` animation. This is the key iPad pattern and applies to **every** sheet — Display/TOC/Notes/Translation/Settings — because they all wrap `Sheet`. |
+| **Sheets** (`Sheet.svelte`) | Full-width bottom sheet, rises from bottom, drag-grip, `border-radius` top only | **Centered modal card**: `top/left:50%`, `translate(-50%,-50%)`, `width: min(480px, 100vw-96px)`, `max-height: min(82dvh,760px)`, all-corner radius, grip hidden, `pop-center` animation. This is the key iPad pattern and applies to **every** sheet — Display/TOC/Notes/Settings — because they all wrap `Sheet`. |
 | **Shelf** (`Shelf.svelte`) | Grid `minmax(118px,1fr)`, gap `22px 16px`, `h1` 30px, edge padding 18px | Content centered at **`max-width: 1120px`** (`.bar/.grid/.importing/.state`), larger covers `minmax(168px,1fr)` gap `38px 28px`, `h1` 36px, edge padding 40px, taller header |
 | **Reader chrome** (`Reader.svelte`) | Top/bottom bars span full width; progress bar `flex:1` | Bars padded `max(--safe-*, 26px)`; **progress block capped & centered: `flex: 0 1 580px; margin-inline:auto`**; title 16px |
 
@@ -280,7 +278,7 @@ foliate view and all reader state reset cleanly. `UpdateToast` is always mounted
   overrides inside a component use `:global([data-theme='dark']) .x { … }` (e.g. `BookCover`
   placeholder, `Shelf` danger row).
 - **`lang="ja"` on Japanese text:** every span/div holding book-derived Japanese
-  (titles, authors, TOC labels, dictionary headwords, highlight/translation text) carries
+  (titles, authors, TOC labels, dictionary headwords, highlight text) carries
   `lang="ja"` so the browser picks correct fonts and line-breaking rules. Apply this to any new
   element that renders user/book Japanese content.
 - **Accessibility:** icon-only buttons always have `aria-label` (e.g. "Settings", "Import book",
@@ -334,8 +332,9 @@ the reader re-applies the right aspect — see **docs/development.md** and **doc
   (`position:fixed`), positioned in a `$effect` via `requestAnimationFrame` using the shared
   `placeAnchored` util (prefer above the target, flip below if cramped, clamp to viewport + safe
   area). They have no scrim and don't close on Escape; the **reader** owns their `open` state. The
-  dictionary popup closes on any in-content tap, on a real page turn, or via its own × button (and
-  no longer gets stuck — that was a tap-routing bug fixed in the reader).
+  dictionary popup is dismissed by the next in-content tap (the reader consumes that tap rather than
+  re-defining) or by a page turn (the reader's `onTurn` closes the overlays), and by its own ×
+  button.
 - **Theme before first paint:** `main.ts` `await`s `initSettings()` (top-level await) before
   `mount(App, …)`, so `applyTheme()` has set `<html data-theme>` before the first frame — avoids a
   light→dark flash. `index.html` also ships static `theme-color` media metas as a pre-hydration
@@ -353,7 +352,9 @@ the reader re-applies the right aspect — see **docs/development.md** and **doc
 ## 11. Cross-references
 
 - **docs/reader-engine.md** — foliate-js integration, CSS-var → iframe injection (`appearanceCSS`),
-  CFI/progress, reading-area margins, tap/selection handling, writing modes.
+  CFI/progress, reading-area margins, swipe/tap/selection handling, writing modes.
 - **docs/architecture.md** — module layout, store ↔ service boundaries, data flow.
 - **docs/storage-pwa-ios.md** — OPFS/IndexedDB, persistence, service worker, iOS standalone behavior.
 - **docs/development.md** — build/dev tooling, adding settings end-to-end, conventions.
+- **docs/deployment.md** — GitHub Pages deploy, CI, and the production `/epub/` base path (which
+  prefixes built asset URLs, the PWA `start_url`/`scope`, and the SW navigate fallback).

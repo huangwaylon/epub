@@ -10,7 +10,11 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dev-dist
 *.local
+
+# Staged kuromoji IPADIC dictionary (regenerated from node_modules by predev/prebuild)
+public/kuromoji/
 
 # Editor directories and files
 .vscode/*

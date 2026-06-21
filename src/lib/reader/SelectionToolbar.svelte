@@ -8,22 +8,18 @@
     rect = { left: 0, top: 0, width: 0, height: 0 },
     activeColor,
     showCopy = true,
-    showTranslate = true,
     showDelete = false,
     onColor,
     onCopy,
-    onTranslate,
     onDelete,
   }: {
     open?: boolean
     rect?: { left: number; top: number; width: number; height: number }
     activeColor?: HighlightColor
     showCopy?: boolean
-    showTranslate?: boolean
     showDelete?: boolean
     onColor?: (c: HighlightColor) => void
     onCopy?: () => void
-    onTranslate?: () => void
     onDelete?: () => void
   } = $props()
 
@@ -54,12 +50,9 @@
         <span class="dot" style="--c:{HIGHLIGHT_HEX[c]}"></span>
       </button>
     {/each}
-    {#if showCopy || showTranslate || showDelete}<span class="sep"></span>{/if}
+    {#if showCopy || showDelete}<span class="sep"></span>{/if}
     {#if showCopy}
       <button class="act" aria-label="Copy" onclick={onCopy}><Icon name="copy" size={19} /></button>
-    {/if}
-    {#if showTranslate}
-      <button class="act" aria-label="Translate" onclick={onTranslate}><Icon name="translate" size={19} /></button>
     {/if}
     {#if showDelete}
       <button class="act danger" aria-label="Delete highlight" onclick={onDelete}><Icon name="trash" size={19} /></button>

@@ -66,9 +66,8 @@ export interface ReaderSettings {
   marginScale: number // multiplies the base page margin
   fontFamily: 'serif' | 'sans'
   writingMode: WritingModePref
-  /** Tap behaviour: a single tap on a word looks it up vs. turns the page. */
+  /** Tap behaviour: a tap on a Japanese word looks it up (vs. only toggling chrome). */
   tapToDefine: boolean
-  translationTargetLang: string // e.g. "en"
 }
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
@@ -79,5 +78,4 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   fontFamily: 'serif',
   writingMode: 'auto',
   tapToDefine: true,
-  translationTargetLang: 'en',
 }

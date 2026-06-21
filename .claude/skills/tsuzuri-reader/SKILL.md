@@ -4,10 +4,10 @@ description: >-
   Use when working on the Tsuzuri EPUB reader / foliate-js integration — anything
   touching src/services/reader.ts, src/lib/reader/*, or src/vendor/foliate-js.
   Triggers: changing pagination or the reading-area margins/measure, vertical
-  (縦書き) / RTL layout, tap zones or gestures, text selection, highlights or
+  (縦書き) / RTL layout, taps, swipes, or page-turn gestures, text selection, highlights or
   bookmarks (CFI), the dictionary popup positioning, or reader appearance/theme
   injection. Also for "the page doesn't fill", "text is cut off", "highlight won't
-  draw", or "tap turns the page when it shouldn't".
+  draw", or "the page won't turn on swipe".
 ---
 
 # Working on the Tsuzuri reader engine
@@ -19,7 +19,7 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
 ## Mental model
 - A single **`ReaderController`** (`src/services/reader.ts`) owns the `<foliate-view>`
   custom element. **`src/lib/reader/Reader.svelte`** wires it to the UI (chrome, sheets,
-  popups, toolbars) via callbacks (`onRelocate`, `onLoad`, `onTap`, `onSelection`,
+  popups, toolbars) via callbacks (`onRelocate`, `onLoad`, `onTap`, `onTurn`, `onSelection`,
   `onSelectionCleared`, `onShowAnnotation`).
 - foliate-js is **vendored** in `src/vendor/foliate-js` (MIT). Content renders inside a
   **closed-shadow-DOM iframe**; you can only reach it via the `load` event's `doc`.
@@ -30,19 +30,24 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
   from the host document so the iframe matches the active theme).
 
 ## Rules
-- **Do not add page-swipe handling** — the paginator (`paginator.js`) owns touch swipe +
-  snap. Taps are detected by `#attachTaps` (move tolerance 16px, max 400ms, primary pointer
-  only, no active selection; `pointercancel` aborts the tap, and every per-doc listener is
-  removed via one `AbortController` on destroy). The tap is routed by **zone**: a left/right
-  **edge rail** (`EDGE_RAIL_FRACTION` 0.14 of the page width, clamped 56px–22%) turns the
-  page via `view.goLeft()/goRight()`, which **honor `book.dir` (rtl)**; the wide centre
-  defines a word or toggles chrome. The `onTap` → `handleTap` order in `Reader.svelte` is:
-  (1) if a popup/highlight-edit toolbar is open, dismiss it and consume the tap; (2) edge
-  rail → page turn; (3) centre → `tryDefine` (only when the tap lands on an actual glyph —
-  see `pointOnGlyph` in `extract.ts`), else toggle chrome.
-- **Don't edit `src/vendor/foliate-js/**`** unless it's a deliberate, documented patch
-  (the only existing one removed pdf.js + the PDF branch in `view.js`). Keep diffs minimal
-  and note them in `docs/reader-engine.md`.
+- **Pagination is by horizontal swipe; a tap never turns the page.** foliate's own touch
+  page-turn is **patched out** (`paginator.js`, search `TSUZURI PATCH`), so `#attachTaps`
+  (`reader.ts`) is the single source of both gestures. On `pointerup` (primary pointer only;
+  `pointercancel` aborts; no action if a non-empty selection is active; every per-doc listener
+  is removed via one `AbortController` on destroy): a horizontal drag of ≥ `SWIPE_MIN_DISTANCE`
+  (45px) with `|dx| > |dy|` turns the page — `dx < 0` (drag left) → `view.goRight()`, `dx > 0`
+  (drag right) → `view.goLeft()`; these **honor `book.dir` (rtl)**, so the swipe turns the
+  correct way in LTR / RTL / 縦書き and always animates as a horizontal slide (fired via the
+  `onTurn` callback). Otherwise a clean tap (move < 16px `TAP_MOVE_TOLERANCE`, < 400ms
+  `TAP_MAX_MS`) routes through `onTap` → `handleTap` in `Reader.svelte`, in order: (1) if a
+  popup / highlight-edit toolbar is open, dismiss it and consume the tap; (2) else if the tap
+  lands on an actual glyph (`pointOnGlyph` in `extract.ts`) and `tapToDefine`, define the word;
+  (3) else toggle chrome. There are **no edge rails** and no `TapInfo.zone`.
+- **Don't edit `src/vendor/foliate-js/**`** unless it's a deliberate, documented patch. There
+  are **two**: (1) `view.js` removed pdf.js + the PDF branch (`isPDF` remains as dead code);
+  (2) `paginator.js` disables foliate's own touch page-turn (`TSUZURI PATCH`: `#onTouchMove`
+  keeps `preventDefault` but drops `scrollBy`; `#onTouchEnd` drops the velocity `snap`) so our
+  swipe detector owns pagination. Keep diffs minimal and note them in `docs/reader-engine.md`.
 - Highlights are CFI-anchored: `cfiForSelection(doc, range)` (uses the `#docIndex`
   WeakMap + `view.getCFI`) → persist via the `annotations` store → draw via
   `addHighlight(cfi, hex)`. `#highlightColors` is the source of truth; `create-overlay`
@@ -65,10 +70,11 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
   *height*) = `max(320, vh − 2·margin)` and `max-block-size` (the across-page *width*) =
   `min(vw − 2·margin, 560·cols)`. `max-column-count` gives a 2-page spread when
   `cols = vw > vh && vw >= 820 ? 2 : 1`.
-- **Add a gesture / change tap zones** → tap detection + zone classification in `#attachTaps`
-  (controller; `EDGE_RAIL_FRACTION` sets the rail width) + `onTap`/`handleTap` routing in
+- **Tune swipe / tap behavior** → swipe + tap detection in `#attachTaps` (controller;
+  `SWIPE_MIN_DISTANCE`, `TAP_MOVE_TOLERANCE`, `TAP_MAX_MS`) + `onTap`/`handleTap` routing in
   `Reader.svelte` (note the 60ms defer when highlights exist, so a highlight hit-test can
-  cancel the tap action via `onShowAnnotation`).
+  cancel the tap action via `onShowAnnotation`). foliate's native touch turn is patched out in
+  `paginator.js` (`TSUZURI PATCH`) — re-enabling it would double-turn against our swipe.
 
 ## Verify after changes
 Run `npm run check`, then use the **tsuzuri-verify** skill (chrome-devtools at

@@ -848,19 +848,17 @@ export class Paginator extends HTMLElement {
         state.vx = dx / dt
         state.vy = dy / dt
         this.#touchScrolled = true
-        this.scrollBy(dx, dy)
+        // TSUZURI PATCH: page turns are driven by our own horizontal swipe detector
+        // (src/services/reader.ts) so the turn animates as a horizontal slide and
+        // stays horizontal for 縦書き (vertical) books. We keep the e.preventDefault()
+        // above (it blocks native scroll and Safari's edge back-swipe) but drop
+        // foliate's own finger-follow page drag here. (was: this.scrollBy(dx, dy))
     }
     #onTouchEnd() {
         this.#touchScrolled = false
-        if (this.scrolled) return
-
-        // XXX: Firefox seems to report scale as 1... sometimes...?
-        // at this point I'm basically throwing `requestAnimationFrame` at
-        // anything that doesn't work
-        requestAnimationFrame(() => {
-            if (globalThis.visualViewport.scale === 1)
-                this.snap(this.#touchState.vx, this.#touchState.vy)
-        })
+        // TSUZURI PATCH: foliate's velocity-snap page turn is disabled — see the note
+        // in #onTouchMove. Our swipe detector (src/services/reader.ts) turns pages via
+        // goLeft/goRight, which animate the horizontal slide.
     }
     // allows one to process rects as if they were LTR and horizontal
     #getRectMapper() {

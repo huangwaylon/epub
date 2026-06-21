@@ -10,9 +10,6 @@ export interface RelocateDetail {
   fraction: number
   tocItem?: { label?: string; href?: string }
   range?: Range
-  /** Why the relocation happened: user turns are 'page'/'snap'/'scroll'; startup
-   *  and programmatic jumps are 'anchor'/'navigation'/'selection'. */
-  reason?: string
 }
 
 /** A table-of-contents entry as exposed by foliate's `book.toc`. */
@@ -31,8 +28,6 @@ export interface TapInfo {
   /** Coordinates in the top window (for positioning popups). */
   px: number
   py: number
-  /** Horizontal zone of the tap across the page. */
-  zone: 'left' | 'center' | 'right'
 }
 
 /** Minimal surface of foliate's <foliate-view> element that we use. */
@@ -66,6 +61,8 @@ export interface ReaderCallbacks {
   onRelocate?: (d: RelocateDetail) => void
   onLoad?: (doc: Document, index: number) => void
   onTap?: (info: TapInfo) => void
+  /** A user-initiated page turn (swipe). Fires when a turn begins. */
+  onTurn?: () => void
   onSelection?: (info: SelectionInfo) => void
   onSelectionCleared?: () => void
   /** A tap landed on an existing highlight (foliate's overlay hit-test). */
@@ -74,8 +71,8 @@ export interface ReaderCallbacks {
 
 const TAP_MOVE_TOLERANCE = 16
 const TAP_MAX_MS = 400
-/** Fraction of the page width on each edge that turns the page instead of defining. */
-const EDGE_RAIL_FRACTION = 0.14
+/** Minimum horizontal travel (px) for a drag to count as a page-turn swipe. */
+const SWIPE_MIN_DISTANCE = 45
 /** One phase (out / in) of the horizontal page-turn slide. */
 const TURN_PHASE_MS = 150
 
@@ -171,7 +168,6 @@ export class ReaderController {
         fraction: d.fraction ?? 0,
         tocItem: d.tocItem,
         range: d.range,
-        reason: d.reason,
       })
     })
     this.view.addEventListener('load', (e: any) => {
@@ -303,21 +299,29 @@ export class ReaderController {
   }
 
   /**
-   * Page turns animate as a horizontal **slide** (like Books on iPad) rather than
-   * foliate's native motion. Foliate stacks 縦書き pages on the vertical axis, so its
-   * own animated turn slides up/down; we instead jump instantly (its `animated`
-   * attribute is left off) and slide the whole view left/right over the paper. The
-   * new page enters from the side the reader moved toward; the old page leaves the
-   * opposite edge, so it reads as one continuous horizontal push.
+   * Page turns are driven by horizontal **swipe** gestures (see `#attachTaps`) and
+   * animate as a horizontal **slide** (like Books on iPad) rather than foliate's
+   * native motion. Foliate stacks 縦書き pages on the vertical axis, so its own
+   * animated turn slides up/down; we instead jump instantly (its `animated`
+   * attribute is left off, and its own touch turn is patched out — see the paginator
+   * notes in docs/reader-engine.md) and slide the whole view left/right over the
+   * paper. The new page enters from the side the reader moved toward; the old page
+   * leaves the opposite edge, so it reads as one continuous horizontal push.
+   *
+   * `goLeft`/`goRight` are foliate's direction-aware navigation (they honour the
+   * book's page-progression direction), so a swipe turns the correct way in LTR,
+   * RTL, and vertical (縦書き) books while always animating horizontally.
    *
    * (A literal page-curl isn't possible — the content is in a sandboxed, closed
    * shadow-DOM iframe that can't be rasterised — and only one page is rendered at a
    * time, so the vacated strip shows the paper background, which is the intent.)
    */
   goLeft() {
+    this.#cb.onTurn?.()
     return this.#turn('left')
   }
   goRight() {
+    this.#cb.onTurn?.()
     return this.#turn('right')
   }
 
@@ -452,7 +456,7 @@ export class ReaderController {
     this.view.remove()
   }
 
-  /** Attach our own tap detector to a freshly loaded content document. */
+  /** Attach our own tap + swipe detector to a freshly loaded content document. */
   #attachTaps(doc: Document) {
     const signal = this.#ac.signal
     let downX = 0
@@ -491,24 +495,36 @@ export class ReaderController {
       (e: PointerEvent) => {
         if (!active) return
         active = false
-        if (!e.isPrimary || moved || e.timeStamp - downT > TAP_MAX_MS) return
-        // Ignore taps that are really the end of a text selection.
+        if (!e.isPrimary) return
+
+        // The end of a text selection is neither a tap nor a swipe — leave it for
+        // the selection toolbar.
         const sel = doc.getSelection()
         if (sel && sel.type === 'Range' && sel.toString().length > 0) return
+
+        const dx = e.clientX - downX
+        const dy = e.clientY - downY
+
+        // Horizontal swipe → turn the page. goLeft/goRight are direction-aware, so
+        // the swipe reads correctly in LTR, RTL, and vertical (縦書き) books, and the
+        // turn always animates as a horizontal slide. "Page follows the finger":
+        // dragging left reveals the page on the right (goRight); dragging right
+        // reveals the page on the left (goLeft).
+        if (Math.abs(dx) >= SWIPE_MIN_DISTANCE && Math.abs(dx) > Math.abs(dy)) {
+          if (dx < 0) void this.goRight()
+          else void this.goLeft()
+          return
+        }
+
+        // Otherwise, only a clean, quick tap (negligible movement) defines a word /
+        // toggles chrome. Swipes are the sole pagination input.
+        if (moved || e.timeStamp - downT > TAP_MAX_MS) return
 
         const frame = doc.defaultView?.frameElement as HTMLElement | null
         const rect = frame?.getBoundingClientRect()
         const px = (rect?.left ?? 0) + e.clientX
         const py = (rect?.top ?? 0) + e.clientY
-
-        // Edge "rails" turn the page; the wide centre defines / toggles chrome. The
-        // rails are measured against the page (iframe) width, not the screen, so they
-        // stay reachable when the text band is narrower than the viewport.
-        const w = doc.documentElement.clientWidth || window.innerWidth
-        const rail = Math.min(Math.max(w * EDGE_RAIL_FRACTION, 56), w * 0.22)
-        const zone: TapInfo['zone'] = e.clientX < rail ? 'left' : e.clientX > w - rail ? 'right' : 'center'
-
-        this.#cb.onTap?.({ doc, ix: e.clientX, iy: e.clientY, px, py, zone })
+        this.#cb.onTap?.({ doc, ix: e.clientX, iy: e.clientY, px, py })
       },
       { passive: true, signal },
     )

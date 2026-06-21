@@ -1,18 +1,27 @@
 /**
- * Extracts a forward run of text starting at a tap point inside the rendered
- * content, for dictionary lookup. Furigana (<rt>/<rp>) is skipped so the reading
- * text doesn't pollute the lookup window.
+ * Extracts the text needed to look up the word at a tap point. To make tapping
+ * *any* character of a word resolve the whole word (not just the run from the
+ * tapped character onward), we gather the contiguous Japanese run on **both**
+ * sides of the tap and report the tap's offset within it; `lookup.ts` then
+ * segments that run and returns the word covering the tap. Furigana (<rt>/<rp>)
+ * is skipped so reading text doesn't pollute the window.
  */
 
 export interface Extracted {
-  /** Up to MAX_CHARS of text from the tap point onward (rt/rp excluded). */
+  /** Contiguous Japanese run around the tap (rt/rp excluded, clause-bounded). */
   text: string
-  /** The text node and offset where the run begins (for highlighting the match). */
-  startNode: Text
-  startOffset: number
+  /** Index within `text` of the tapped character. */
+  tapOffset: number
 }
 
-const MAX_CHARS = 16
+/** How many word-chars to gather before / after the tap (also stops at boundaries). */
+const MAX_BEFORE = 12
+const MAX_AFTER = 16
+
+/** Characters that can be part of a Japanese word: kana, CJK ideographs, the
+ *  long-vowel mark (ー) and the iteration mark (々). Anything else — punctuation,
+ *  spaces, latin, digits — is a word boundary that bounds the lookup run. */
+const WORD_CHAR = /[぀-ヿ㐀-鿿豈-﫿ー々]/
 
 function caretPosition(doc: Document, x: number, y: number): { node: Node; offset: number } | null {
   const anyDoc = doc as any
@@ -81,46 +90,68 @@ function isInRuby(node: Node): boolean {
   return false
 }
 
+/** Trailing run of word-chars in `s` (its suffix), capped at `max` characters. */
+function trailingRun(s: string, max: number): string {
+  let i = s.length
+  let n = 0
+  while (i > 0 && n < max && WORD_CHAR.test(s.charAt(i - 1))) {
+    i--
+    n++
+  }
+  return s.slice(i)
+}
+
+/** Leading run of word-chars in `s` (its prefix), capped at `max` characters. */
+function leadingRun(s: string, max: number): string {
+  let i = 0
+  const cap = Math.min(s.length, max)
+  while (i < cap && WORD_CHAR.test(s.charAt(i))) i++
+  return s.slice(0, i)
+}
+
 export function extractTextAt(doc: Document, x: number, y: number): Extracted | null {
   const pos = caretPosition(doc, x, y)
   if (!pos) return null
   // Only treat this as a word lookup if the tap actually landed on a glyph;
   // otherwise it's blank space and the caller should turn the page / toggle chrome.
   if (!pointOnGlyph(doc, pos.node, pos.offset, x, y)) return null
+  if (pos.node.nodeType !== Node.TEXT_NODE) return null
+  const tapNode = pos.node as Text
+  if (pos.offset >= tapNode.data.length) return null
+  // The tapped glyph is the character at pos.offset. Bail if it isn't a word char
+  // (latin, punctuation, …) so the tap falls through to the chrome toggle.
+  if (!WORD_CHAR.test(tapNode.data.charAt(pos.offset))) return null
 
   const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
     acceptNode: (n) => (isInRuby(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   })
 
-  // Position the walker at (or just after) the tapped node.
-  let startNode: Text
-  let startOffset: number
-  walker.currentNode = pos.node
-  if (pos.node.nodeType === Node.TEXT_NODE && !isInRuby(pos.node)) {
-    startNode = pos.node as Text
-    startOffset = pos.offset
-  } else {
-    const next = walker.nextNode() as Text | null
-    if (!next) return null
-    startNode = next
-    startOffset = 0
+  // Forward run, starting at (and including) the tapped char.
+  let after = tapNode.data.slice(pos.offset)
+  walker.currentNode = tapNode
+  while (after.length < MAX_AFTER) {
+    const n = walker.nextNode() as Text | null
+    if (!n) break
+    after += n.data
   }
+  after = leadingRun(after, MAX_AFTER)
 
-  let text = startNode.data.slice(startOffset)
-  let node: Text | null = startNode
-  while (text.length < MAX_CHARS) {
-    node = walker.nextNode() as Text | null
-    if (!node) break
-    text += node.data
+  // Backward run, the word-chars immediately before the tap.
+  let before = tapNode.data.slice(0, pos.offset)
+  walker.currentNode = tapNode
+  while (before.length < MAX_BEFORE) {
+    const n = walker.previousNode() as Text | null
+    if (!n) break
+    before = n.data + before
   }
-  text = text.slice(0, MAX_CHARS)
+  before = trailingRun(before, MAX_BEFORE)
 
-  if (!text.trim()) return null
-  return { text, startNode, startOffset }
+  const text = before + after
+  if (!text) return null
+  return { text, tapOffset: before.length }
 }
 
 /** Quick test for whether a string starts with a character worth looking up. */
 export function looksJapanese(s: string): boolean {
-  // Hiragana, katakana, CJK ideographs, or the long-vowel/iteration marks.
-  return /[぀-ヿ㐀-鿿豈-﫿ー々]/.test(s.charAt(0))
+  return WORD_CHAR.test(s.charAt(0))
 }

@@ -75,7 +75,7 @@
             {#each result.reasons as r}<span class="chip">{r}</span>{/each}
           </div>
         {/if}
-        {#each result.entries as entry (entry.headword + entry.reading)}
+        {#each result.entries as entry, i (entry.headword + entry.reading + ':' + i)}
           <div class="entry">
             <div class="head">
               <span class="word" lang="ja">{entry.headword}</span>

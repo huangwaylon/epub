@@ -6,8 +6,8 @@
   import { getBookFile } from '../../services/library'
   import { getBookMeta, getProgress, putProgress } from '../../services/storage/db'
   import { ReaderController, type RelocateDetail, type TapInfo, type SelectionInfo, type TocItem } from '../../services/reader'
-  import { extractTextAt, looksJapanese } from '../../services/jp/extract'
-  import { lookup, type LookupResult } from '../../services/jp/lookup'
+  import { extractTextAt } from '../../services/jp/extract'
+  import { lookupAt, type LookupResult } from '../../services/jp/lookup'
   import { isDictReady, downloadDictionary } from '../../services/jp/dictdb'
   import {
     annotations,
@@ -26,7 +26,6 @@
   import DictionaryPopup from './DictionaryPopup.svelte'
   import SelectionToolbar from './SelectionToolbar.svelte'
   import AnnotationsPanel from './AnnotationsPanel.svelte'
-  import TranslationSheet from './TranslationSheet.svelte'
 
   let { bookId }: { bookId: string } = $props()
 
@@ -56,10 +55,6 @@
     { open: false, rect: { left: 0, top: 0, width: 0, height: 0 }, cfi: '' },
   )
 
-  // Translation sheet (wired fully in the translation milestone).
-  let translateText = $state('')
-  let translateOpen = $state(false)
-
   let currentCFI = $state('')
   const isBookmarked = $derived(
     annotations.items.some((a) => a.kind === 'bookmark' && a.cfi === currentCFI),
@@ -74,8 +69,12 @@
     loading: boolean
     needsDownload: boolean
     result: LookupResult | null
-    lastText: string
-  }>({ open: false, x: 0, y: 0, loading: false, needsDownload: false, result: null, lastText: '' })
+    /** Pending query (kept so a post-download retry can re-run the same lookup). */
+    text: string
+    tapOffset: number
+    /** Stable per-tap key; guards against a stale lookup landing in a newer popup. */
+    lastKey: string
+  }>({ open: false, x: 0, y: 0, loading: false, needsDownload: false, result: null, text: '', tapOffset: 0, lastKey: '' })
 
   // Only persist reading progress once the user has actually moved (a turn, swipe,
   // or TOC/annotation jump). This keeps the noisy relocations emitted while the
@@ -97,13 +96,17 @@
     fraction = d.fraction
     currentCFI = d.cfi
     if (d.tocItem?.label) sectionLabel = d.tocItem.label
-    // A real page turn (vs. a startup/programmatic relocation) invalidates any open
-    // popup or toolbar anchored to the previous page — close them.
-    if (d.reason === 'page' || d.reason === 'snap' || d.reason === 'scroll') {
-      userInteracted = true
-      closeOverlays()
-    }
+    // Only persist once the reader has actually moved. The foliate-view `relocate`
+    // event does not carry a `reason`, so we mark intent from the gesture/navigation
+    // side (onTurn, navigate, navAnnotation) rather than sniffing the relocation.
     if (userInteracted) saveProgress(d)
+  }
+
+  // A user page-turn (swipe). The new page invalidates any popup/toolbar anchored to
+  // the previous page, and means the current position is now worth persisting.
+  function onTurn() {
+    userInteracted = true
+    closeOverlays()
   }
 
   /** Close every transient overlay (dict popup, selection + highlight toolbars). */
@@ -113,7 +116,7 @@
     sel.open = false
   }
 
-  // ── Selection → highlight / copy / translate ──────────────────────────────
+  // ── Selection → highlight / copy ──────────────────────────────────────────
   function onSelection(info: SelectionInfo) {
     hlEdit.open = false
     sel = { open: true, rect: info.rect, text: info.text, doc: info.doc, range: info.range }
@@ -150,13 +153,6 @@
         /* clipboard may be unavailable */
       }
     }
-    controller?.clearSelection()
-    sel.open = false
-  }
-
-  function translateSelection() {
-    translateText = sel.text
-    translateOpen = true
     controller?.clearSelection()
     sel.open = false
   }
@@ -241,25 +237,16 @@
   }
 
   function handleTap(info: TapInfo) {
-    // While a popup or edit toolbar is open, the next tap simply dismisses it and
-    // is consumed — predictable, and the user's reported "inconsistent dismiss" fix.
+    // While a popup or edit toolbar is open, a tap simply dismisses it and is
+    // consumed (predictable dismissal). Pagination is by swipe — never by tap.
     if (dictState.open || hlEdit.open) {
       dictState.open = false
       hlEdit.open = false
       return
     }
-
-    // Edge rails always turn the page (foliate's goLeft/goRight are direction-aware,
-    // so this is correct for both LTR and vertical RTL books).
-    if (info.zone === 'left' || info.zone === 'right') {
-      userInteracted = true
-      chromeVisible = false
-      if (info.zone === 'left') controller?.goLeft()
-      else controller?.goRight()
-      return
-    }
-
-    // Centre zone: look up a tapped Japanese word, otherwise toggle the chrome.
+    // Otherwise: define a tapped Japanese word, or toggle the reader chrome. The
+    // glyph hit-test in extractTextAt means taps on blank space reliably fall
+    // through to the chrome toggle instead of defining.
     if (settings.tapToDefine && tryDefine(info)) return
     chromeVisible = !chromeVisible
   }
@@ -267,27 +254,31 @@
   /** Returns true if the tap landed on Japanese text and a lookup was started. */
   function tryDefine(info: TapInfo): boolean {
     const ex = extractTextAt(info.doc, info.ix, info.iy)
-    if (!ex || !looksJapanese(ex.text)) return false
+    if (!ex) return false
+    const key = `${ex.tapOffset}:${ex.text}`
     dictState.open = true
     dictState.x = info.px
     dictState.y = info.py
     dictState.loading = true
     dictState.needsDownload = false
     dictState.result = null
-    dictState.lastText = ex.text
-    void runLookup(ex.text)
+    dictState.text = ex.text
+    dictState.tapOffset = ex.tapOffset
+    dictState.lastKey = key
+    void runLookup(ex.text, ex.tapOffset, key)
     return true
   }
 
-  async function runLookup(text: string) {
+  async function runLookup(text: string, tapOffset: number, key: string) {
     if (!(await isDictReady())) {
+      if (!dictState.open || dictState.lastKey !== key) return
       dictState.loading = false
       dictState.needsDownload = true
       return
     }
-    const res = await lookup(text)
+    const res = await lookupAt(text, tapOffset)
     // Ignore if the popup was dismissed or a newer tap superseded this lookup.
-    if (!dictState.open || dictState.lastText !== text) return
+    if (!dictState.open || dictState.lastKey !== key) return
     dictState.loading = false
     dictState.result = res
   }
@@ -297,7 +288,7 @@
       await downloadDictionary('en')
       dictState.needsDownload = false
       dictState.loading = true
-      await runLookup(dictState.lastText)
+      await runLookup(dictState.text, dictState.tapOffset, dictState.lastKey)
     } catch {
       /* error surfaced via the dict store */
     }
@@ -336,6 +327,7 @@
       controller = new ReaderController(host, settings, {
         onRelocate,
         onTap,
+        onTurn,
         onSelection,
         onSelectionCleared,
         onShowAnnotation,
@@ -426,10 +418,6 @@
   <AnnotationsPanel onnavigate={navAnnotation} />
 </Sheet>
 
-<Sheet bind:open={translateOpen} title="Translation">
-  <TranslationSheet bind:open={translateOpen} text={translateText} />
-</Sheet>
-
 <DictionaryPopup
   bind:open={dictState.open}
   x={dictState.x}
@@ -446,7 +434,6 @@
   rect={sel.rect}
   onColor={createHighlight}
   onCopy={copySelection}
-  onTranslate={translateSelection}
 />
 
 <!-- Toolbar for editing an existing highlight -->
@@ -455,7 +442,6 @@
   rect={hlEdit.rect}
   activeColor={hlEdit.color}
   showCopy={false}
-  showTranslate={false}
   showDelete={true}
   onColor={recolorHighlight}
   onDelete={deleteHighlight}
