@@ -28,8 +28,7 @@ survive reflow, font-size changes, and writing-mode changes.
 | `BookMeta` | interface | see below | Shelf entry; one per imported book. Persisted in `books` store. |
 | `ReadingProgress` | interface | see below | Last-read position per book. Persisted in `progress` store. |
 | `AnnotationKind` | type | `'highlight' \| 'bookmark'` | Discriminates an `Annotation`. |
-| `HighlightColor` | type | `'yellow' \| 'green' \| 'blue' \| 'pink'` | Allowed highlight swatch keys. |
-| `HIGHLIGHT_HEX` | const | `Record<HighlightColor, string>` | Maps each swatch to a saturated hex (`yellow #ffd54a`, `green #7ed47e`, `blue #6fb4f5`, `pink #f48fb1`) chosen to read well behind text at the overlay's ~0.3 opacity. |
+| `HIGHLIGHT_HEX` | const | `string` | The single highlight colour — yellow `#ffd54a`, chosen to read well behind text at the overlay's ~0.3 opacity. Highlights are no longer multi-colour (the colour picker was dropped); there is no `HighlightColor` type or per-highlight `color` field. |
 | `Annotation` | interface | see below | A highlight or bookmark, CFI-anchored. Persisted in `annotations` store. |
 | `ReaderSettings` | interface | see below | Global (not per-book) appearance + behaviour prefs. Persisted in `settings` store under key `'reader'`. |
 | `DEFAULT_SETTINGS` | const | `ReaderSettings` | Seed values used before/absent any saved settings. |
@@ -67,8 +66,7 @@ survive reflow, font-size changes, and writing-mode changes.
 | `bookId` | `string` | Indexed by `byBook` for per-book queries and cascade delete. |
 | `kind` | `AnnotationKind` | `'highlight'` or `'bookmark'`. |
 | `cfi` | `string` | CFI anchor (range for highlights, point for bookmarks). |
-| `text` | `string` | Selected text (highlights) or a short context snippet (bookmarks). |
-| `color?` | `HighlightColor` | Swatch for highlights; resolved to hex via `HIGHLIGHT_HEX`. |
+| `text` | `string` | Selected text (highlights) or a short context snippet (bookmarks). For tap-to-define highlights this is the looked-up word. |
 | `note?` | `string` | Optional user note. |
 | `sectionLabel?` | `string` | TOC label of the containing section, for grouping in the annotations panel. |
 | `createdAt` | `number` | Epoch ms. |

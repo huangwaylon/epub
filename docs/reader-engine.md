@@ -120,8 +120,8 @@ declares the minimal surface it touches as the `FoliateView` interface
 | `relocate` | `{ cfi, fraction, tocItem:{label,href}, range, size, ... }` | view.js:333 (`#onRelocate`, forwarding paginator's `relocate`) | Store `lastCFI`; call `onRelocate({cfi,fraction,tocItem,range})`. **Note: the emitted detail carries no `reason`.** `#onRelocate` (view.js:325-333) *destructures* a `reason` off the paginator's event and uses it only for its internal `history.replaceState`, but `lastLocation` — the object it `#emit`s — does **not** include `reason`. So you cannot tell a user turn from a startup jump off this event; intent is tracked from the gesture side instead (§4 `onTurn`, §12 `userInteracted`). |
 | `load` | `{ doc: Document, index: number }` | view.js:344 (`#onLoad`) — fires once per section load | Record `doc→index` in `#docIndex`; detect writing-mode; attach taps/selection; call `onLoad`. |
 | `create-overlay` | `{ index }` | view.js:414 (`#createOverlayer`, when a section's SVG overlay is created) | `reapplyHighlights()` so stored highlights redraw on this freshly-loaded section. |
-| `draw-annotation` | `{ draw, annotation:{value}, doc, range }` | view.js:389 (inside `addAnnotation`, when the section is loaded) | `draw(Overlayer.highlight, { color })` where color comes from `#highlightColors`. **This is where a highlight is actually painted.** |
-| `show-annotation` | `{ value, index, range }` | view.js:407 (a **click** hit-tests the overlayer) | Call `onShowAnnotation(value, range)` → opens the recolor/delete toolbar. |
+| `draw-annotation` | `{ draw, annotation:{value}, doc, range }` | view.js:389 (inside `addAnnotation`, when the section is loaded) | `draw(Overlayer.highlight, { color: HIGHLIGHT_HEX })` — highlights are a single yellow (`HIGHLIGHT_HEX` in `types.ts`); there is no per-highlight colour. **This is where a highlight is actually painted.** |
+| `show-annotation` | `{ value, index, range }` | view.js:407 (a **click** hit-tests the overlayer) | Call `onShowAnnotation(value, range)` → **reopens the dictionary popup** for that word (definition + a remove-highlight footer toggle). |
 
 Note the asymmetry: `addAnnotation` only *requests* a draw — the actual paint
 happens in our `draw-annotation` handler. And `show-annotation` is a real
@@ -155,8 +155,9 @@ appends it to `container` (reader.ts:151-156). Nothing is rendered until
 | `bookDir` | `'ltr'\|'rtl'` | Page-progression direction from `book.dir`; most vertical JP novels are `'rtl'`. |
 
 Private state: `#cb`, `#settings`, `#docIndex` (`WeakMap<Document, index>` for
-CFI creation), `#highlightColors` (`Map<cfi, hex>` — the **source of truth** for
-highlight colours), `#vertical` (boolean, current writing mode), `#turning` +
+CFI creation), `#highlights` (`Set<cfi>` — the **source of truth** for which
+ranges are highlighted; highlights are a single yellow, so there is no
+per-highlight colour map), `#vertical` (boolean, current writing mode), `#turning` +
 `#pendingDir` (the page-turn-slide coalescing flags, §8a), `#resizeTimer`,
 and `#ac` (a single `AbortController` (reader.ts:146) whose `signal` is passed to
 **every** per-document listener — taps and `selectionchange`; `destroy()` aborts
@@ -172,11 +173,11 @@ it to remove them all at once, so re-loaded sections don't leak listeners).
 | `reopenForWritingMode` | `(file: File) => Promise<void>` | Re-`open()`s the book at `lastCFI` because writing-mode must be re-detected from the content doc. Used only when the user flips horizontal/vertical (§14). |
 | `goLeft` / `goRight` | `() => Promise<void>` | Dir-aware page turn, animated as a horizontal **slide** (§8a) — not a direct foliate call. Each fires the `onTurn` callback (reader.ts:320/324) before sliding. |
 | `goTo` | `(target: string\|number) => Promise<any>` | TOC / annotation nav. |
+| `goToFraction` | `(frac: number) => Promise<void>` | Seek to an overall-book fraction (0..1), clamped. Backs the progress **scrubber** (§12). Not animated. |
 | `cfiForSelection` | `(doc, range) => string \| null` | Looks up `doc`'s index in `#docIndex`, then `view.getCFI(index, range)`. Returns `null` if doc unknown or CFI throws. |
-| `addHighlight` | `(cfi, hex) => Promise<void>` | Records colour, then `view.addAnnotation({value:cfi})` (paints if loaded). |
-| `removeHighlight` | `(cfi) => Promise<void>` | Drops colour, `view.deleteAnnotation`. |
-| `recolorHighlight` | `(cfi, hex) => Promise<void>` | Updates colour, then delete+add to force a redraw at the new colour. |
-| `setHighlights` | `(items: {cfi,hex}[]) => void` | Replaces the whole colour map (book-open seeding), then `reapplyHighlights()`. |
+| `addHighlight` | `(cfi) => Promise<void>` | Adds the CFI to `#highlights`, then `view.addAnnotation({value:cfi})` (paints yellow if loaded). |
+| `removeHighlight` | `(cfi) => Promise<void>` | Drops the CFI, `view.deleteAnnotation`. |
+| `setHighlights` | `(cfis: string[]) => void` | Replaces the whole highlight set (book-open seeding), then `reapplyHighlights()`. |
 | `reapplyHighlights` | `() => void` | `addAnnotation` for every known CFI (no-ops for unloaded sections). Called on `create-overlay`. |
 | `clearSelection` | `() => void` | Best-effort `view.deselect()`. |
 | `destroy` | `() => void` | Removes the resize listener, clears the timer, **`#ac.abort()`** (removes every per-document tap/selection listener in one shot), best-effort `view.close()`, removes the element. |
@@ -546,22 +547,22 @@ a tap carries no notion of edge rails anymore.
 `onTap` (Reader.svelte:223) and `handleTap` (Reader.svelte:235) do the routing.
 `handleTap` runs in a fixed order:
 
-1. **Dismiss-first.** If `dictState.open || hlEdit.open`, set both `false` and
-   `return` — **any** tap dismisses an open dictionary popup / highlight-edit
-   toolbar and is *consumed*.
+1. **Dismiss-first.** If `dictState.open`, set it `false` and `return` — **any** tap
+   dismisses an open dictionary popup and is *consumed*.
 2. **Top/bottom band → toggle chrome.** If the tap's top-window `py` lands in the
    top or bottom edge band (`inChromeToggleBand`, sized `clamp(80, vh*0.12, 160)` ≈
    the nav-bar height), toggle `chromeVisible` and `return`. This is the **only** way
    a tap shows/hides the bars — a tap in the central reading area never toggles the
    chrome, so reading taps don't flash the bars. It fires even on a glyph, and it's
    how a margin/host tap in the band reveals the chrome.
-3. **Define a glyph.** Otherwise (a tap in the central reading area), if
+3. **Define + highlight a glyph.** Otherwise (a tap in the central reading area), if
    `settings.tapToDefine` call `tryDefine(info)` — `tryDefine` first bails when
    `info.doc` is null (a margin/host tap), then requires the tap to land on an actual
    Japanese **glyph** per `extractTextAt`'s glyph + word-char gate (the `pointOnGlyph`
    hit-test in extract.ts:42 rejects taps in margins / inter-column gaps; §10,
    `docs/japanese.md`). A central tap on **blank space** therefore does **nothing** —
-   it does **not** toggle the chrome.
+   it does **not** toggle the chrome. On a real match the looked-up word is also
+   **auto-highlighted yellow** (a vocab record) — see §10.
 
 There is **no pagination on tap** — turning the page is exclusively the swipe
 path above — and the central area no longer toggles the chrome on a blank tap.
@@ -632,7 +633,8 @@ A real `click` fires on the same gesture as our tap, and may hit-test a highligh
 → `show-annotation`. So `onTap` defers `handleTap` by **~60ms via `pendingTap =
 setTimeout(...)` *only when `hasHighlights` is true*** (Reader.svelte:223-233). If
 `onShowAnnotation` fires first it clears `pendingTap` (Reader.svelte:159-162) and
-opens the edit toolbar instead of defining. With no highlights, the tap runs
+**reopens the dictionary popup** for that highlight (definition + remove toggle)
+instead of defining-and-re-highlighting. With no highlights, the tap runs
 immediately. `pendingTap` is also cleared in `onDestroy`.
 
 ### Overlays auto-close on a turn
@@ -640,9 +642,9 @@ immediately. `pendingTap` is also cleared in `onDestroy`.
 Because `relocate` no longer carries a `reason` (§3), overlay-close on a page turn
 is driven from the **gesture** side: `goLeft`/`goRight` fire `onTurn`, and
 `Reader.svelte`'s `onTurn` (Reader.svelte:103-106) sets `userInteracted = true` and
-calls `closeOverlays()` (closes `dictState`, `hlEdit`, and `sel`) — a turn
+calls `closeOverlays()` (closes `dictState` and `sel`) — a turn
 invalidates any popup/toolbar anchored to the page being left. TOC/annotation
-navigation sets `userInteracted` the same way (Reader.svelte:215/291).
+navigation and a scrubber **seek** (§12) set `userInteracted` the same way.
 
 ---
 
@@ -661,13 +663,13 @@ onSelection({ doc, range, text: sel.toString(),
 ```
 
 Otherwise it calls `onSelectionCleared()`. The top-window `rect` is what
-positions the `SelectionToolbar` (which now places itself via
+positions the `SelectionToolbar` (which places itself via
 `placeAnchored(centerX, rect.top, rect.top+rect.height, …)` — §12). In
 `Reader.svelte`, `onSelection` opens the toolbar with two actions:
 
-- **Highlight** (`createHighlight(color)`): `cfiForSelection` → persist an
-  `Annotation` via `saveAnnotation` → `controller.addHighlight(cfi, hex)` →
-  `clearSelection()`.
+- **Highlight** (`createHighlight()`): `cfiForSelection` → persist an
+  `Annotation` via `saveAnnotation` → `controller.addHighlight(cfi)` →
+  `clearSelection()`. Always yellow — there is no colour choice.
 - **Copy** (`copySelection`): `navigator.clipboard.writeText(sel.text)`.
 
 A user page turn closes the selection toolbar along with the other overlays via
@@ -681,39 +683,57 @@ own concern and doesn't interfere with ours.)
 
 ## 10. Highlights & CFI
 
-The colour map `#highlightColors: Map<cfi, hex>` (reader.ts:142) is the **single
-source of truth** for how a highlight is drawn. Persistence is separate — the
-`annotations` store (`docs/storage-pwa-ios.md`, `docs/japanese.md`) holds the
-durable records; `#highlightColors` is the in-memory render state.
+Highlights are a **single colour** (yellow, `HIGHLIGHT_HEX` in `types.ts`). The set
+`#highlights: Set<cfi>` (reader.ts) is the **source of truth** for which ranges are
+drawn; there is no per-highlight colour. Persistence is separate — the `annotations`
+store (`docs/storage-pwa-ios.md`, `docs/japanese.md`) holds the durable records (a
+highlight `Annotation` has **no `color` field**); `#highlights` is the in-memory
+render state.
+
+**Two ways a highlight is created:**
+
+1. **Tap-to-define (primary).** Tapping a Japanese word looks it up *and* highlights
+   the matched word — a lightweight vocab record of what you've looked up. The flow
+   (Reader.svelte): `extractTextAt` now returns a **`positions` map** (text index →
+   `{node, offset}`), and `lookupAt` returns **`matchStart`** alongside `matchLength`.
+   On a real result, `rangeForSpan(doc, positions, matchStart, matchStart+matchLength)`
+   (extract.ts) rebuilds a `Range` for exactly the matched word (it can straddle text
+   nodes — a kanji compound with ruby splits its base text — which is why an index→node
+   map, not a string offset, is the bridge), `cfiForSelection` → CFI, then
+   `saveAnnotation` + `controller.addHighlight(cfi)`. The dictionary popup carries a
+   **footer toggle** (`Remove highlight` / `Highlight`) that removes/re-adds it without
+   closing the card. Auto-highlighting happens only on a real match — not on a
+   no-match, a download prompt, or a tap already on an existing highlight.
+2. **Drag-select (§9).** A selection → the `SelectionToolbar`'s **Highlight** action
+   (yellow) / **Copy**.
 
 Draw/paint flow:
 
-1. `addHighlight(cfi, hex)` / `setHighlights(...)` records the colour, then asks
-   the view to annotate. `setHighlights` (called on book open with the loaded
-   `Annotation`s) clears + reseeds the whole map.
+1. `addHighlight(cfi)` / `setHighlights(cfis)` records the CFI, then asks the view to
+   annotate. `setHighlights` (called on book open with the loaded highlight
+   `Annotation`s' CFIs) clears + reseeds the whole set.
 2. `view.addAnnotation({value:cfi})` resolves the CFI to a section + range.
-   - If that section is **loaded**, view emits `draw-annotation`; our handler
-     (reader.ts:196-200) calls `draw(Overlayer.highlight, { color })` — color =
-     `#highlightColors.get(value) ?? '#ffd54a'`. `Overlayer.highlight`
+   - If that section is **loaded**, view emits `draw-annotation`; our handler calls
+     `draw(Overlayer.highlight, { color: HIGHLIGHT_HEX })`. `Overlayer.highlight`
      (overlayer.js:126) draws filled `<rect>`s at the range's client rects, at
      `opacity: var(--overlayer-highlight-opacity, .3)`.
    - If **not loaded**, it's a no-op. Later, when that section paints, view emits
      `create-overlay` → we call `reapplyHighlights()` → `addAnnotation` for every
      known CFI → the now-loaded ones draw. This is why highlights survive page
      turns and section loads.
-3. `recolorHighlight` = delete + add (forces a redraw at the new colour).
-   `removeHighlight` drops the colour and `deleteAnnotation`s.
+3. `removeHighlight(cfi)` drops the CFI from the set and `deleteAnnotation`s.
 
-CFI creation: `cfiForSelection(doc, range)` (reader.ts:396) looks up the doc's
-spine index in the `#docIndex` `WeakMap` (populated on every `load`), then
-`view.getCFI(index, range)`. Returns `null` if the doc is unknown or CFI
-throwing. CFIs are stable across reflow/font changes, which is exactly why
-annotations and reading progress are anchored by CFI rather than offsets (see
-`epubcfi.js`: `fromRange`, `toRange`, `compare`, `parse`).
+CFI creation: `cfiForSelection(doc, range)` looks up the doc's spine index in the
+`#docIndex` `WeakMap` (populated on every `load`), then `view.getCFI(index, range)`.
+Returns `null` if the doc is unknown or CFI throwing. CFIs are stable across
+reflow/font changes, which is exactly why annotations and reading progress are
+anchored by CFI rather than offsets (see `epubcfi.js`: `fromRange`, `toRange`,
+`compare`, `parse`).
 
-Editing a highlight: tapping it → `show-annotation` → `onShowAnnotation(value,
-range)` opens the second `SelectionToolbar` instance (recolor / delete only,
-`showCopy={false} showDelete={true}`).
+Tapping an existing highlight → `show-annotation` → `onShowAnnotation(value, range)`
+**reopens the dictionary popup** for that word: it looks up `range.toString()` and
+shows the definition with the `Remove highlight` footer toggle. There is no separate
+recolor/delete toolbar.
 
 ---
 
@@ -767,9 +787,8 @@ getProgress])` → throw if no file → **seed displayed progress from the saved
 `progress`** (`fraction`/`currentCFI`/`sectionLabel`) so the bar is correct before
 the first relocate → `new ReaderController(host, settings, callbacks)` →
 `controller.open(file, progress?.cfi)` → read `controller.view.book?.toc` for the
-TOC sheet → `loadAnnotations(bookId)` → `controller.setHighlights(highlights
-mapped to {cfi,hex})` → `status='ready'`. Errors set `status='error'` and show a
-back-to-library CTA.
+TOC sheet → `loadAnnotations(bookId)` → `controller.setHighlights(highlight CFIs)`
+→ `status='ready'`. Errors set `status='error'` and show a back-to-library CTA.
 
 **Reactive UI state** (`$state`/`$derived`): `chromeVisible`, `fraction`,
 `sectionLabel`, `currentCFI`, `isBookmarked` (derived: a bookmark annotation at
@@ -800,9 +819,9 @@ progress persistence — see below.
   a glyph; a central blank tap does **nothing**), with the 60ms defer when
   `hasHighlights`. (No pagination on tap; the central area never toggles chrome — the
   bars hide via their own `dismissChromeFromBar` click.)
-- `onSelection`/`onSelectionCleared` → drive the first `SelectionToolbar`.
-- `onShowAnnotation` → clears `pendingTap`, closes the dict popup, opens the
-  highlight-edit toolbar.
+- `onSelection`/`onSelectionCleared` → drive the `SelectionToolbar`.
+- `onShowAnnotation` → clears `pendingTap`, then **reopens the `DictionaryPopup`**
+  for the tapped highlight (definition + remove toggle) via `openDefine(existingCfi)`.
 
 **Sheets & popups** (all `<Sheet>` overlays): `TocSheet` (`onnavigate` →
 `controller.goTo(href)`), `ReaderSettings` (its `onchange(kind)` →
@@ -810,17 +829,39 @@ progress persistence — see below.
 `'appearance'|'layout'|'writingmode'`), `AnnotationsPanel` (`onnavigate` →
 `goTo(cfi)`), `DictionaryPopup`.
 
-**Two `SelectionToolbar` instances**: one for fresh selections (color/copy), one
-for editing an existing highlight (recolor/delete). Both position themselves
-through the shared `placeAnchored(...)` helper
-(`src/lib/util/anchoredPosition.ts`, §12-anchoring). Component props verified
-(SelectionToolbar.svelte:6-24): `open, rect, activeColor, showCopy, showDelete,
-onColor, onCopy, onDelete` — there is **no translate prop**.
+**One `SelectionToolbar` instance** — fresh selections only (Highlight yellow /
+Copy). Props (SelectionToolbar.svelte): `open, rect, onHighlight, onCopy`. It
+positions itself through the shared `placeAnchored(...)` helper
+(`src/lib/util/anchoredPosition.ts`, §12-anchoring). (Editing an existing highlight
+no longer uses a toolbar — it routes through the dictionary popup, §10.)
 
-The `DictionaryPopup` likewise positions via `placeAnchored` from its tap
-anchor (`x/y`); its effect re-runs on `x`/`y` *or content* change so a re-tap on
-another word — or a result loading in — re-places the card rather than leaving it
-at the first spot, and it carries a focusable close (×) button.
+**Define + highlight in one popup.** `tryDefine` → `openDefine({text, tapOffset,
+px, py, doc, positions})`; `runLookup` resolves and, on a real match, calls
+`autoHighlight` (build the word `Range` from `positions` + `matchStart/matchLength`,
+CFI it, save + `addHighlight`). `dictState` carries `cfi`/`highlighted`/`word` so the
+popup's footer toggle (`ontogglehighlight` → `toggleWordHighlight`) can remove/re-add
+without closing the card; `DictionaryPopup` shows the toggle only when a real result
+is present.
+
+**Progress scrubber.** The bottom bar's progress is a `ProgressScrubber` component
+(`src/lib/reader/ProgressScrubber.svelte`) — `{fraction, sectionLabel, onseek}`. It's
+a hairline track + section-label/% readout at rest; **press-and-drag** turns it into
+a fast-scroll scrubber. Tuning (to avoid accidental skips without being stiff): the
+press must cross an **8px (touch) / 4px (mouse) dead-zone** before it *arms*, then
+maps pointer-x positionally across the track to a preview fraction shown in a floating
+**bubble**; the seek (`onseek` → `seek` → `controller.goToFraction`) commits only on
+**release** (so foliate re-paginates once, not per move). A clean **tap is a no-op**
+(it only flashes the thumb) — tapping a hairline must never jump your place. The
+thumb is hidden at rest, 12px while dragging (9px on hover for mouse). The component
+`stopPropagation`s its own click so it doesn't trip the bar's `dismissChromeFromBar`,
+and exposes `role="slider"` + arrow/Home/End keys for a11y. `seek` also sets
+`userInteracted` and `closeOverlays()`.
+
+The `DictionaryPopup` positions via `placeAnchored` from its tap anchor (`x/y`); its
+effect re-runs on `x`/`y` *or content* change so a re-tap on another word — or a
+result loading in — re-places the card rather than leaving it at the first spot, and
+it carries a focusable close (×) button. It's a flex column: a scrolling `.body` and
+a non-scrolling sticky `.actions` footer (the highlight toggle).
 
 **Chrome**: top bar (library / notes / display) + bottom bar (TOC / progress /
 bookmark toggle). `toggleBookmark` adds/removes a `bookmark` annotation at
@@ -935,7 +976,7 @@ beware: it has no JS property API (attributes only) and a closed shadow DOM.
   actual glyph* — `extractTextAt` returns `null` in margins / inter-column gaps
   because `pointOnGlyph` (extract.ts:42) bounds `caretRangeFromPoint`'s snapping
   (§10, `docs/japanese.md`), so a tap on blank space falls through to the chrome
-  toggle. And any tap while a popup / edit toolbar is open just dismisses it. If you
+  toggle. And any tap while the dictionary popup is open just dismisses it. If you
   change `SWIPE_MIN_DISTANCE` / `GLYPH_HIT_SLACK`, preserve that separation.
 
 ---

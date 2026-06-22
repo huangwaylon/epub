@@ -131,7 +131,7 @@ client-side with no backend; it ships as static files to GitHub Pages
 | `lib/library/Shelf.svelte` | Library screen: grid of books, import (`<input type=file multiple>`), progress ring, long-press action sheet (delete), settings sheet. |
 | `lib/library/BookCover.svelte` | Cover image from `book.cover` Blob (object URL, revoked on cleanup); hashed-hue placeholder spine fallback. |
 | `lib/library/ShelfSettings.svelte` | App settings sheet: theme, dictionary download/status, storage usage. |
-| `lib/reader/Reader.svelte` | **The reader screen.** Owns a `ReaderController`, wires all callbacks (relocate/tap/turn/selection/show-annotation), manages chrome bars, dictionary popup, selection & highlight-edit toolbars, sheets (TOC/settings/notes), progress persistence, bookmark toggle. |
+| `lib/reader/Reader.svelte` | **The reader screen.** Owns a `ReaderController`, wires all callbacks (relocate/tap/turn/selection/show-annotation), manages chrome bars, dictionary popup (with the highlight toggle), selection toolbar, progress scrubber, sheets (TOC/settings/notes), progress persistence, bookmark toggle. |
 | `lib/reader/ReaderSettings.svelte` | Display sheet: theme, serif/sans, font-size/line-height/margin steppers, writing-mode segmented; emits `onchange('appearance'\|'layout'\|'writingmode')`. |
 | `lib/reader/TocSheet.svelte` | Flattens `book.toc` (with depth) → tappable nav list; highlights current section. |
 | `lib/reader/DictionaryPopup.svelte` | Tap-to-define card: positioned near tap (viewport-clamped); loading / needs-download / results states; download CTA. |
@@ -150,7 +150,7 @@ client-side with no backend; it ships as static files to GitHub Pages
 |---|---|
 | `services/types.ts` | Core data model: `BookMeta`, `ReadingProgress`, `Annotation`, `ReaderSettings`, `DEFAULT_SETTINGS`, `HIGHLIGHT_HEX`. The persisted shapes. |
 | `services/library.ts` | `importEpub` (sha-256 dedupe → OPFS bytes → foliate `makeBook` metadata/cover), `listBooks`, `touchBook`, `removeBook`; re-exports `getBookFile`. |
-| `services/reader.ts` | **`ReaderController`** — creates/owns one `<foliate-view>`; injects appearance CSS from live theme tokens; applies page geometry; detects writing mode; custom pointer handling → swipe-to-turn + `TapInfo`; selection geometry → `SelectionInfo`; highlight add/remove/recolor/reapply; CFI for selections. |
+| `services/reader.ts` | **`ReaderController`** — creates/owns one `<foliate-view>`; injects appearance CSS from live theme tokens; applies page geometry; detects writing mode; custom pointer handling → swipe-to-turn + `TapInfo`; selection geometry → `SelectionInfo`; highlight add/remove/reapply (single yellow); `goToFraction` for the scrubber; CFI for selections. |
 
 ### Services — storage (`src/services/storage/`)
 | Path | Responsibility |
@@ -227,7 +227,7 @@ foliate's own touch page-turn is patched out (a documented "TSUZURI PATCH" in
   `goLeft()` ("page follows the finger"). `goLeft`/`goRight` are foliate's
   direction-aware nav, so the turn goes the right way in LTR, RTL, and 縦書き;
   they animate as a horizontal slide and fire `onTurn`.
-- **Tap** (no swipe) → `onTap` → `handleTap`: if a popup/edit toolbar is open,
+- **Tap** (no swipe) → `onTap` → `handleTap`: if the dictionary popup is open,
   dismiss it; else if `settings.tapToDefine` and the tap hit a Japanese glyph,
   `tryDefine(info)`; else toggle the reader chrome. **A tap never turns the page.**
 
@@ -242,14 +242,15 @@ If ready, `jp/lookup.lookupAt(text, tapOffset)`: **segments** the run — scans 
 A stale-tap guard (`dictState.lastKey`) discards superseded lookups. (When highlights
 exist, the tap action is deferred ~60ms so a highlight hit-test can cancel it.)
 
-### (d) Select → highlight / bookmark
+### (d) Select / tap → highlight, bookmark
 **Selection:** `selectionchange` (debounced 250ms) in the content doc →
 `onSelection(SelectionInfo)` → `SelectionToolbar` over the selection rect.
-**Highlight:** `createHighlight(color)` → `controller.cfiForSelection(doc, range)`
+**Highlight:** `createHighlight()` → `controller.cfiForSelection(doc, range)`
 (`view.getCFI(index, range)`) → `annotations.saveAnnotation` (IDB + store) →
-`controller.addHighlight(cfi, HIGHLIGHT_HEX[color])` → foliate `addAnnotation`
-draws via the `draw-annotation` event. Tapping an existing highlight fires
-foliate's `show-annotation` → `onShowAnnotation` → edit toolbar (recolor/delete).
+`controller.addHighlight(cfi)` → foliate `addAnnotation` draws (always yellow)
+via the `draw-annotation` event. Tap-to-define also auto-highlights the looked-up
+word the same way. Tapping an existing highlight fires foliate's `show-annotation`
+→ `onShowAnnotation` → reopens the dictionary popup (definition + remove toggle).
 **Bookmark:** footer button → `toggleBookmark()` toggles a `bookmark`-kind
 `Annotation` at `currentCFI`. The notes panel (`AnnotationsPanel`) lists both and
 navigates via `goTo(cfi)`.

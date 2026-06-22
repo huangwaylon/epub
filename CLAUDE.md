@@ -6,7 +6,10 @@ landscape**). Reads on-device EPUBs offline, paginated like Apple Books, with
 vertical 縦書き support, integrated **10ten-style tap-to-define**, **highlights**
 and **bookmarks**. A horizontal **swipe** turns the page (always horizontal, in
 the correct direction for every writing mode); a **tap** defines a tapped
-Japanese word or, on blank space, toggles the chrome — there are no tap edge-rails.
+Japanese word — and highlights it yellow as a vocab record — or, on blank space,
+toggles the chrome (there are no tap edge-rails). Tapping a highlighted word
+reopens its definition with a remove option; the bottom progress bar is a
+**drag-to-scrub** control. Highlights are always yellow (no colour picker).
 Fully client-side; **deployed to GitHub Pages** at https://huangwaylon.github.io/epub/
 (see [docs/deployment.md](docs/deployment.md)).
 
@@ -54,7 +57,7 @@ npm test         # vitest (deinflection unit tests)
 npm run build    # production build → dist/
 ```
 - **Test book:** `node scripts/make-test-epub.mjs` → `test-books/tsuki-to-neko.epub` (vertical 縦書き JP EPUB with ruby + conjugated verbs, multi-page).
-- **Verify in a browser** with the **chrome-devtools MCP at iPad-landscape (1194×834)**: new page → resize → import the test EPUB (upload to the "Import book" button) → open → download the dictionary in Settings → check vertical RTL pagination, swipe-to-turn (a horizontal swipe turns the page both directions, always animating as a horizontal slide), tap-to-define (tap a Japanese word defines; tap blank centre toggles chrome; any tap dismisses an open popup — no tap edge-rails), drag-select → highlight, bookmark. Console should show only the benign foliate iframe `allow-scripts and allow-same-origin` sandbox warning. Full recipe + on-device (HTTPS tunnel + Add to Home Screen) in [development.md](docs/development.md). The **`/prs`** and **`tsuzuri-verify`** skills also cover this.
+- **Verify in a browser** with the **chrome-devtools MCP at iPad-landscape (1194×834)**: new page → resize → import the test EPUB (upload to the "Import book" button) → open → download the dictionary in Settings → check vertical RTL pagination, swipe-to-turn (a horizontal swipe turns the page both directions, always animating as a horizontal slide), tap-to-define (tap a Japanese word defines **and highlights it yellow**; tapping a highlight reopens its definition with a **Remove highlight** option; tap blank centre toggles chrome; any tap dismisses an open popup — no tap edge-rails), drag-select → highlight (yellow) / copy, the **drag-to-scrub** bottom progress bar, bookmark. Console should show only the benign foliate iframe `allow-scripts and allow-same-origin` sandbox warning. Full recipe + on-device (HTTPS tunnel + Add to Home Screen) in [development.md](docs/development.md). The **`/prs`** and **`tsuzuri-verify`** skills also cover this.
 - **Base path:** the dev server runs at `/`; the production build uses the `/epub/` base and deploys to GitHub Pages on push to `main` — see [deployment.md](docs/deployment.md).
 
 ## Conventions

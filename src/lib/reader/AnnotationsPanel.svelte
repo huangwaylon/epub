@@ -2,7 +2,6 @@
   import { annotations, removeAnnotation } from '../../stores/annotations.svelte'
   import { HIGHLIGHT_HEX } from '../../services/types'
   import Icon from '../components/Icon.svelte'
-
   let { onnavigate }: { onnavigate: (cfi: string) => void } = $props()
 
   let tab = $state<'highlights' | 'bookmarks'>('highlights')
@@ -27,7 +26,7 @@
 
 {#if list.length === 0}
   <p class="empty">
-    {tab === 'highlights' ? 'Select text in the book to highlight it.' : 'Tap the bookmark icon to save your place.'}
+    {tab === 'highlights' ? 'Tap a word to look it up — it’s highlighted as you go.' : 'Tap the bookmark icon to save your place.'}
   </p>
 {:else}
   <ul>
@@ -35,7 +34,7 @@
       <li>
         <button class="row" onclick={() => onnavigate(a.cfi)}>
           {#if a.kind === 'highlight'}
-            <span class="bar" style="background:{a.color ? HIGHLIGHT_HEX[a.color] : 'var(--accent)'}"></span>
+            <span class="bar" style="background:{HIGHLIGHT_HEX}"></span>
           {:else}
             <span class="bm"><Icon name="bookmark" size={16} fill /></span>
           {/if}

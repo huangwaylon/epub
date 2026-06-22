@@ -6,7 +6,7 @@
   import { getBookFile } from '../../services/library'
   import { getBookMeta, getProgress, putProgress } from '../../services/storage/db'
   import { ReaderController, type RelocateDetail, type TapInfo, type SelectionInfo, type TocItem } from '../../services/reader'
-  import { extractTextAt } from '../../services/jp/extract'
+  import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
   import { lookupAt, type LookupResult } from '../../services/jp/lookup'
   import { isDictReady, downloadDictionary } from '../../services/jp/dictdb'
   import {
@@ -18,13 +18,14 @@
     newId,
   } from '../../stores/annotations.svelte'
   import { debounce } from '../util/debounce'
-  import { HIGHLIGHT_HEX, type BookMeta, type HighlightColor, type Annotation } from '../../services/types'
+  import type { BookMeta, Annotation } from '../../services/types'
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
   import ReaderSettings from './ReaderSettings.svelte'
   import TocSheet from './TocSheet.svelte'
   import DictionaryPopup from './DictionaryPopup.svelte'
   import SelectionToolbar from './SelectionToolbar.svelte'
+  import ProgressScrubber from './ProgressScrubber.svelte'
   import AnnotationsPanel from './AnnotationsPanel.svelte'
 
   let { bookId }: { bookId: string } = $props()
@@ -46,13 +47,9 @@
   let settingsOpen = $state(false)
   let annotationsOpen = $state(false)
 
-  // Active text selection → highlight/translate toolbar.
+  // Active text selection → highlight/copy toolbar.
   let sel = $state<{ open: boolean; rect: SelectionInfo['rect']; text: string; doc: Document | null; range: Range | null }>(
     { open: false, rect: { left: 0, top: 0, width: 0, height: 0 }, text: '', doc: null, range: null },
-  )
-  // Tapping an existing highlight → edit toolbar (recolor / delete).
-  let hlEdit = $state<{ open: boolean; rect: SelectionInfo['rect']; cfi: string; color?: HighlightColor }>(
-    { open: false, rect: { left: 0, top: 0, width: 0, height: 0 }, cfi: '' },
   )
 
   let currentCFI = $state('')
@@ -61,7 +58,8 @@
   )
   const hasHighlights = $derived(annotations.items.some((a) => a.kind === 'highlight'))
 
-  // Dictionary popup state.
+  // Dictionary popup state. Tapping a word looks it up *and* highlights it yellow
+  // (a vocab record); the popup's footer toggles that highlight off/on.
   let dictState = $state<{
     open: boolean
     x: number
@@ -69,12 +67,26 @@
     loading: boolean
     needsDownload: boolean
     result: LookupResult | null
-    /** Pending query (kept so a post-download retry can re-run the same lookup). */
+    /** Pending query text (kept so a post-download retry can re-run the same lookup). */
     text: string
     tapOffset: number
-    /** Stable per-tap key; guards against a stale lookup landing in a newer popup. */
+    /** Stable per-lookup key; guards against a stale lookup landing in a newer popup. */
     lastKey: string
-  }>({ open: false, x: 0, y: 0, loading: false, needsDownload: false, result: null, text: '', tapOffset: 0, lastKey: '' })
+    /** CFI of this word's highlight (set once highlighted), '' if not yet highlighted. */
+    cfi: string
+    /** Whether this word is currently highlighted (drives the footer toggle). */
+    highlighted: boolean
+    /** The matched surface word, for re-saving when the highlight is toggled back on. */
+    word: string
+  }>({
+    open: false, x: 0, y: 0, loading: false, needsDownload: false, result: null,
+    text: '', tapOffset: 0, lastKey: '', cfi: '', highlighted: false, word: '',
+  })
+
+  // DOM context for the in-flight define, used to build the word's range after the
+  // (async) lookup resolves. Plain refs, not $state — they hold live DOM nodes.
+  let defineDoc: Document | null = null
+  let definePositions: CharPosition[] = []
 
   // Only persist reading progress once the user has actually moved (a turn, swipe,
   // or TOC/annotation jump). This keeps the noisy relocations emitted while the
@@ -109,23 +121,21 @@
     closeOverlays()
   }
 
-  /** Close every transient overlay (dict popup, selection + highlight toolbars). */
+  /** Close every transient overlay (dict popup, selection toolbar). */
   function closeOverlays() {
     dictState.open = false
-    hlEdit.open = false
     sel.open = false
   }
 
   // ── Selection → highlight / copy ──────────────────────────────────────────
   function onSelection(info: SelectionInfo) {
-    hlEdit.open = false
     sel = { open: true, rect: info.rect, text: info.text, doc: info.doc, range: info.range }
   }
   function onSelectionCleared() {
     sel.open = false
   }
 
-  async function createHighlight(color: HighlightColor) {
+  async function createHighlight() {
     if (!controller || !sel.doc || !sel.range) return
     const cfi = controller.cfiForSelection(sel.doc, sel.range)
     if (!cfi) return
@@ -135,12 +145,11 @@
       kind: 'highlight',
       cfi,
       text: sel.text.slice(0, 240),
-      color,
       sectionLabel,
       createdAt: Date.now(),
     }
     await saveAnnotation(anno)
-    await controller.addHighlight(cfi, HIGHLIGHT_HEX[color])
+    await controller.addHighlight(cfi)
     controller.clearSelection()
     sel.open = false
   }
@@ -157,40 +166,49 @@
     sel.open = false
   }
 
-  // ── Tapping an existing highlight → recolor / delete ──────────────────────
+  // ── Tapping an existing highlight → reopen its definition (with a remove option) ──
   function onShowAnnotation(value: string, range: Range) {
-    // This tap was on a highlight — cancel the deferred page-turn/dictionary action.
+    // This tap was on a highlight — cancel the deferred tap-define action.
     if (pendingTap) {
       clearTimeout(pendingTap)
       pendingTap = undefined
     }
-    dictState.open = false
     const doc = range.startContainer.ownerDocument
     const frame = doc?.defaultView?.frameElement as HTMLElement | null
     const fr = frame?.getBoundingClientRect()
     const r = range.getBoundingClientRect()
-    const existing = annotations.items.find((a) => a.cfi === value)
     sel.open = false
-    hlEdit = {
-      open: true,
-      cfi: value,
-      color: existing?.color,
-      rect: { left: (fr?.left ?? 0) + r.left, top: (fr?.top ?? 0) + r.top, width: r.width, height: r.height },
+    openDefine({
+      text: range.toString(),
+      tapOffset: 0,
+      px: (fr?.left ?? 0) + r.left + r.width / 2,
+      py: (fr?.top ?? 0) + r.top,
+      existingCfi: value,
+      word: range.toString(),
+    })
+  }
+
+  /** Toggle the looked-up word's highlight from the popup footer. Keeps the card open. */
+  async function toggleWordHighlight() {
+    if (!controller || !dictState.cfi) return
+    if (dictState.highlighted) {
+      const existing = annotations.items.find((a) => a.kind === 'highlight' && a.cfi === dictState.cfi)
+      if (existing) await removeAnnotation(existing.id)
+      await controller.removeHighlight(dictState.cfi)
+      dictState.highlighted = false
+    } else {
+      await saveAnnotation({
+        id: newId(),
+        bookId,
+        kind: 'highlight',
+        cfi: dictState.cfi,
+        text: dictState.word.slice(0, 240),
+        sectionLabel,
+        createdAt: Date.now(),
+      })
+      await controller.addHighlight(dictState.cfi)
+      dictState.highlighted = true
     }
-  }
-
-  async function recolorHighlight(color: HighlightColor) {
-    const existing = annotations.items.find((a) => a.cfi === hlEdit.cfi)
-    if (existing) await saveAnnotation({ ...existing, color })
-    await controller?.recolorHighlight(hlEdit.cfi, HIGHLIGHT_HEX[color])
-    hlEdit.open = false
-  }
-
-  async function deleteHighlight() {
-    const existing = annotations.items.find((a) => a.cfi === hlEdit.cfi)
-    if (existing) await removeAnnotation(existing.id)
-    await controller?.removeHighlight(hlEdit.cfi)
-    hlEdit.open = false
   }
 
   // ── Bookmarks ─────────────────────────────────────────────────────────────
@@ -237,11 +255,10 @@
   }
 
   function handleTap(info: TapInfo) {
-    // While a popup or edit toolbar is open, a tap simply dismisses it and is
-    // consumed (predictable dismissal). Pagination is by swipe — never by tap.
-    if (dictState.open || hlEdit.open) {
+    // While a popup is open, a tap simply dismisses it and is consumed
+    // (predictable dismissal). Pagination is by swipe — never by tap.
+    if (dictState.open) {
       dictState.open = false
-      hlEdit.open = false
       return
     }
     // A tap in the top or bottom edge band (over the nav bars) toggles the chrome.
@@ -283,18 +300,48 @@
     if (!info.doc) return false
     const ex = extractTextAt(info.doc, info.ix, info.iy)
     if (!ex) return false
-    const key = `${ex.tapOffset}:${ex.text}`
+    openDefine({
+      text: ex.text,
+      tapOffset: ex.tapOffset,
+      px: info.px,
+      py: info.py,
+      doc: info.doc,
+      positions: ex.positions,
+    })
+    return true
+  }
+
+  /**
+   * Open the dictionary popup for a word. For a fresh tap (`doc` + `positions`)
+   * the matched word is auto-highlighted once the lookup resolves; for a tap on an
+   * existing highlight (`existingCfi`) the popup just reopens with a remove option.
+   */
+  function openDefine(o: {
+    text: string
+    tapOffset: number
+    px: number
+    py: number
+    doc?: Document | null
+    positions?: CharPosition[]
+    existingCfi?: string
+    word?: string
+  }) {
+    const key = `${o.existingCfi ?? ''}:${o.tapOffset}:${o.text}`
+    defineDoc = o.doc ?? null
+    definePositions = o.positions ?? []
     dictState.open = true
-    dictState.x = info.px
-    dictState.y = info.py
+    dictState.x = o.px
+    dictState.y = o.py
     dictState.loading = true
     dictState.needsDownload = false
     dictState.result = null
-    dictState.text = ex.text
-    dictState.tapOffset = ex.tapOffset
+    dictState.text = o.text
+    dictState.tapOffset = o.tapOffset
     dictState.lastKey = key
-    void runLookup(ex.text, ex.tapOffset, key)
-    return true
+    dictState.cfi = o.existingCfi ?? ''
+    dictState.word = o.word ?? ''
+    dictState.highlighted = !!o.existingCfi
+    void runLookup(o.text, o.tapOffset, key)
   }
 
   async function runLookup(text: string, tapOffset: number, key: string) {
@@ -309,6 +356,38 @@
     if (!dictState.open || dictState.lastKey !== key) return
     dictState.loading = false
     dictState.result = res
+    // Auto-highlight the matched word — but only a real match, only a fresh tap
+    // that isn't already highlighted, and not on a download/no-match miss.
+    if (res && res.entries.length && !dictState.cfi && defineDoc && definePositions.length) {
+      void autoHighlight(res, key)
+    }
+  }
+
+  /** Highlight the matched word yellow and persist it as a vocab annotation. */
+  async function autoHighlight(res: LookupResult, key: string) {
+    if (!controller || !defineDoc) return
+    const range = rangeForSpan(defineDoc, definePositions, res.matchStart, res.matchStart + res.matchLength)
+    if (!range) return
+    const cfi = controller.cfiForSelection(defineDoc, range)
+    if (!cfi) return
+    // Bail if a newer lookup superseded this one while we built the range/CFI.
+    if (!dictState.open || dictState.lastKey !== key) return
+    const word = range.toString()
+    if (!annotations.items.some((a) => a.kind === 'highlight' && a.cfi === cfi)) {
+      await saveAnnotation({
+        id: newId(),
+        bookId,
+        kind: 'highlight',
+        cfi,
+        text: word.slice(0, 240),
+        sectionLabel,
+        createdAt: Date.now(),
+      })
+      await controller.addHighlight(cfi)
+    }
+    dictState.cfi = cfi
+    dictState.word = word
+    dictState.highlighted = true
   }
 
   async function downloadDict() {
@@ -326,6 +405,14 @@
     tocOpen = false
     userInteracted = true
     controller?.goTo(href)
+  }
+
+  /** Fast-scroll via the progress scrubber: jump to an overall-book fraction. */
+  function seek(frac: number) {
+    if (!controller) return
+    userInteracted = true
+    closeOverlays()
+    void controller.goToFraction(frac)
   }
 
   function onSettingChange(kind: 'appearance' | 'layout' | 'writingmode') {
@@ -365,11 +452,7 @@
 
       // Load annotations and seed the highlight overlays.
       await loadAnnotations(bookId)
-      controller.setHighlights(
-        annotations.items
-          .filter((a) => a.kind === 'highlight')
-          .map((a) => ({ cfi: a.cfi, hex: a.color ? HIGHLIGHT_HEX[a.color] : HIGHLIGHT_HEX.yellow })),
-      )
+      controller.setHighlights(annotations.items.filter((a) => a.kind === 'highlight').map((a) => a.cfi))
       status = 'ready'
     } catch (err) {
       console.error(err)
@@ -416,11 +499,7 @@
         <Icon name="list" size={22} />
       </button>
       <div class="progress">
-        <div class="track"><div class="fill" style="width:{Math.round(fraction * 100)}%"></div></div>
-        <div class="ptext">
-          {#if sectionLabel}<span class="sec" lang="ja">{sectionLabel}</span>{/if}
-          <span class="pct">{Math.round(fraction * 100)}%</span>
-        </div>
+        <ProgressScrubber {fraction} {sectionLabel} onseek={seek} />
       </div>
       <button
         class="cbtn"
@@ -462,26 +541,17 @@
   loading={dictState.loading}
   needsDownload={dictState.needsDownload}
   result={dictState.result}
+  highlighted={dictState.highlighted}
   ondownload={downloadDict}
+  ontogglehighlight={toggleWordHighlight}
 />
 
-<!-- Toolbar for a fresh text selection -->
+<!-- Toolbar for a fresh text selection (highlight yellow / copy) -->
 <SelectionToolbar
   open={sel.open}
   rect={sel.rect}
-  onColor={createHighlight}
+  onHighlight={createHighlight}
   onCopy={copySelection}
-/>
-
-<!-- Toolbar for editing an existing highlight -->
-<SelectionToolbar
-  open={hlEdit.open}
-  rect={hlEdit.rect}
-  activeColor={hlEdit.color}
-  showCopy={false}
-  showDelete={true}
-  onColor={recolorHighlight}
-  onDelete={deleteHighlight}
 />
 
 <style>
@@ -554,36 +624,8 @@
   }
   .progress {
     flex: 1;
+    min-width: 0;
     display: flex;
-    flex-direction: column;
-    gap: 5px;
-    padding: 0 6px;
-  }
-  .track {
-    height: 3px;
-    border-radius: 2px;
-    background: var(--line-strong);
-    overflow: hidden;
-  }
-  .fill {
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.2s var(--ease);
-  }
-  .ptext {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
-    font-size: 11px;
-    color: var(--ink-faint);
-  }
-  .sec {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-  .pct {
-    font-variant-numeric: tabular-nums;
   }
 
   /* Standalone reading-% readout, centred at the very bottom of the screen. */

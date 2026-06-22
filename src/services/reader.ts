@@ -2,7 +2,7 @@
 import '../vendor/foliate-js/view.js'
 // @ts-ignore — vendored JS module, no type declarations
 import { Overlayer } from '../vendor/foliate-js/overlayer.js'
-import type { ReaderSettings } from './types'
+import { HIGHLIGHT_HEX, type ReaderSettings } from './types'
 
 /** What we read off foliate's `relocate` event. */
 export interface RelocateDetail {
@@ -45,6 +45,7 @@ interface FoliateView extends HTMLElement {
   goRight(): Promise<void>
   prev(distance?: number): Promise<void>
   next(distance?: number): Promise<void>
+  goToFraction(frac: number): Promise<void>
   getCFI(index: number, range: Range): string
   addAnnotation(a: { value: string }, remove?: boolean): Promise<{ index: number; label: string }>
   deleteAnnotation(a: { value: string }): Promise<any>
@@ -151,8 +152,9 @@ export class ReaderController {
   bookDir: 'ltr' | 'rtl' = 'ltr'
   /** Maps each loaded content document to its spine index (for CFI creation). */
   #docIndex = new WeakMap<Document, number>()
-  /** Highlight CFI → colour, the source of truth when (re)drawing overlays. */
-  #highlightColors = new Map<string, string>()
+  /** Set of highlighted CFIs — the source of truth when (re)drawing overlays.
+   *  Highlights are a single colour (yellow); there is no per-highlight colour. */
+  #highlights = new Set<string>()
   /** Whether the current book renders vertically (縦書き); affects measure. */
   #vertical = false
   /** Aborts every per-document listener we attach, in one shot, on destroy. */
@@ -209,9 +211,8 @@ export class ReaderController {
     // Re-draw stored highlights whenever a section's overlay becomes available.
     this.view.addEventListener('create-overlay', () => this.reapplyHighlights())
     this.view.addEventListener('draw-annotation', (e: any) => {
-      const { draw, annotation } = e.detail
-      const color = this.#highlightColors.get(annotation.value) ?? '#ffd54a'
-      draw(Overlayer.highlight, { color })
+      const { draw } = e.detail
+      draw(Overlayer.highlight, { color: HIGHLIGHT_HEX })
     })
 
     this.applyAppearance(this.#settings)
@@ -447,6 +448,11 @@ export class ReaderController {
     return this.view.goTo(target)
   }
 
+  /** Seek to an overall-book fraction (0..1) — backs the progress scrubber. */
+  goToFraction(frac: number) {
+    return this.view.goToFraction(Math.max(0, Math.min(1, frac)))
+  }
+
   /** Builds a CFI for a selection range living in a loaded content document. */
   cfiForSelection(doc: Document, range: Range): string | null {
     const index = this.#docIndex.get(doc)
@@ -458,34 +464,27 @@ export class ReaderController {
     }
   }
 
-  /** Adds (and immediately paints) a highlight. */
-  async addHighlight(cfi: string, hex: string): Promise<void> {
-    this.#highlightColors.set(cfi, hex)
+  /** Adds (and immediately paints) a yellow highlight. */
+  async addHighlight(cfi: string): Promise<void> {
+    this.#highlights.add(cfi)
     await this.view.addAnnotation({ value: cfi })
   }
 
   async removeHighlight(cfi: string): Promise<void> {
-    this.#highlightColors.delete(cfi)
+    this.#highlights.delete(cfi)
     await this.view.deleteAnnotation({ value: cfi })
-  }
-
-  /** Re-colour an existing highlight in place. */
-  async recolorHighlight(cfi: string, hex: string): Promise<void> {
-    this.#highlightColors.set(cfi, hex)
-    await this.view.deleteAnnotation({ value: cfi })
-    await this.view.addAnnotation({ value: cfi })
   }
 
   /** Seed the highlight set (e.g. on book open) so they draw as sections load. */
-  setHighlights(items: Array<{ cfi: string; hex: string }>): void {
-    this.#highlightColors.clear()
-    for (const { cfi, hex } of items) this.#highlightColors.set(cfi, hex)
+  setHighlights(cfis: string[]): void {
+    this.#highlights.clear()
+    for (const cfi of cfis) this.#highlights.add(cfi)
     void this.reapplyHighlights()
   }
 
   /** Ask foliate to (re)draw every known highlight; no-ops for unloaded sections. */
   reapplyHighlights(): void {
-    for (const cfi of this.#highlightColors.keys()) {
+    for (const cfi of this.#highlights) {
       void this.view.addAnnotation({ value: cfi }).catch(() => {})
     }
   }

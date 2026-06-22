@@ -11,7 +11,9 @@
     loading = false,
     needsDownload = false,
     result = null,
+    highlighted = false,
     ondownload,
+    ontogglehighlight,
   }: {
     open?: boolean
     x?: number
@@ -19,10 +21,16 @@
     loading?: boolean
     needsDownload?: boolean
     result?: LookupResult | null
+    /** Whether the looked-up word is currently highlighted (drives the footer toggle). */
+    highlighted?: boolean
     ondownload?: () => void
+    ontogglehighlight?: () => void
   } = $props()
 
   let card = $state<HTMLDivElement>()
+
+  // The highlight toggle only makes sense once we have a real match to anchor it to.
+  const showActions = $derived(!loading && !needsDownload && !!result?.entries.length)
 
   // Position near the tap, re-running when the anchor (x/y) or the content — hence
   // the card's size — changes, so a re-tap on another word or a loaded result is
@@ -35,6 +43,7 @@
     void loading
     void needsDownload
     void result
+    void showActions
     requestAnimationFrame(() => {
       const w = card?.offsetWidth ?? 300
       const h = card?.offsetHeight ?? 160
@@ -54,51 +63,61 @@
     <button class="close" aria-label="Close" onclick={() => (open = false)}>
       <Icon name="x" size={16} />
     </button>
-    {#if loading}
-      <div class="loading"><div class="spinner"></div></div>
-    {:else if needsDownload}
-      <div class="download">
-        <p class="dl-title">Dictionary not installed</p>
-        <p class="dl-sub">Download the Japanese dictionary (~few MB) to look up words offline.</p>
-        {#if dict.updating}
-          <div class="track"><div class="fill" style="width:{Math.round(dict.progress * 100)}%"></div></div>
-          <p class="dl-sub">Downloading… {Math.round(dict.progress * 100)}%</p>
-        {:else}
-          <button class="dl-btn" onclick={ondownload}>Download dictionary</button>
-          {#if dict.error}<p class="err">{dict.error}</p>{/if}
-        {/if}
-      </div>
-    {:else if result}
-      <div class="entries">
-        {#if result.reasons.length}
-          <div class="reasons">
-            {#each result.reasons as r}<span class="chip">{r}</span>{/each}
-          </div>
-        {/if}
-        {#each result.entries as entry, i (entry.headword + entry.reading + ':' + i)}
-          <div class="entry">
-            <div class="head">
-              <span class="word" lang="ja">{entry.headword}</span>
-              {#if !entry.kanaOnly && entry.reading}
-                <span class="reading" lang="ja">{entry.reading}</span>
-              {/if}
-              {#if entry.pitch !== undefined}<span class="pitch">[{entry.pitch}]</span>{/if}
+    <div class="body">
+      {#if loading}
+        <div class="loading"><div class="spinner"></div></div>
+      {:else if needsDownload}
+        <div class="download">
+          <p class="dl-title">Dictionary not installed</p>
+          <p class="dl-sub">Download the Japanese dictionary (~few MB) to look up words offline.</p>
+          {#if dict.updating}
+            <div class="track"><div class="fill" style="width:{Math.round(dict.progress * 100)}%"></div></div>
+            <p class="dl-sub">Downloading… {Math.round(dict.progress * 100)}%</p>
+          {:else}
+            <button class="dl-btn" onclick={ondownload}>Download dictionary</button>
+            {#if dict.error}<p class="err">{dict.error}</p>{/if}
+          {/if}
+        </div>
+      {:else if result}
+        <div class="entries">
+          {#if result.reasons.length}
+            <div class="reasons">
+              {#each result.reasons as r}<span class="chip">{r}</span>{/each}
             </div>
-            <ol class="senses">
-              {#each entry.senses as sense}
-                <li>
-                  {#if sense.pos.length}<span class="pos">{sense.pos.join(', ')}</span>{/if}
-                  <span class="gloss">{sense.glosses.join('; ')}</span>
-                </li>
-              {/each}
-            </ol>
-          </div>
-        {/each}
-      </div>
-    {:else}
-      <div class="none">
-        <Icon name="search" size={20} />
-        <span>No dictionary match.</span>
+          {/if}
+          {#each result.entries as entry, i (entry.headword + entry.reading + ':' + i)}
+            <div class="entry">
+              <div class="head">
+                <span class="word" lang="ja">{entry.headword}</span>
+                {#if !entry.kanaOnly && entry.reading}
+                  <span class="reading" lang="ja">{entry.reading}</span>
+                {/if}
+                {#if entry.pitch !== undefined}<span class="pitch">[{entry.pitch}]</span>{/if}
+              </div>
+              <ol class="senses">
+                {#each entry.senses as sense}
+                  <li>
+                    {#if sense.pos.length}<span class="pos">{sense.pos.join(', ')}</span>{/if}
+                    <span class="gloss">{sense.glosses.join('; ')}</span>
+                  </li>
+                {/each}
+              </ol>
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <div class="none">
+          <Icon name="search" size={20} />
+          <span>No dictionary match.</span>
+        </div>
+      {/if}
+    </div>
+    {#if showActions}
+      <div class="actions">
+        <button class="hl-toggle" class:on={highlighted} onclick={ontogglehighlight}>
+          <span class="hl-swatch" class:filled={highlighted}></span>
+          {highlighted ? 'Remove highlight' : 'Highlight'}
+        </button>
       </div>
     {/if}
   </div>
@@ -108,17 +127,21 @@
   .popup {
     position: fixed;
     z-index: 50;
+    display: flex;
+    flex-direction: column;
     width: min(340px, calc(100vw - 20px));
     max-height: 46dvh;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
     background: var(--paper-raised);
     border: 1px solid var(--line);
     border-radius: var(--r-lg);
     box-shadow: var(--shadow-2);
-    padding: 14px 16px;
     animation: pop 0.14s var(--ease);
+  }
+  .body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    padding: 14px 16px;
   }
   .close {
     position: absolute;
@@ -227,6 +250,49 @@
     color: var(--ink-faint);
     font-size: 14px;
     padding: 4px;
+  }
+
+  /* Sticky footer action: toggle the word's yellow vocab highlight. */
+  .actions {
+    flex: none;
+    padding: 6px 10px;
+    border-top: 1px solid var(--line);
+    background: var(--paper-raised);
+    border-radius: 0 0 var(--r-lg) var(--r-lg);
+  }
+  .hl-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 40px;
+    padding: 0 8px;
+    border-radius: var(--r-md);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .hl-toggle.on {
+    color: var(--ink-soft);
+  }
+  .hl-toggle:active {
+    background: var(--accent-soft);
+  }
+  .hl-swatch {
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    border: 1.5px solid var(--line-strong);
+    transition:
+      transform 0.16s var(--ease),
+      background 0.16s var(--ease);
+  }
+  .hl-swatch.filled {
+    background: #ffd54a;
+    border-color: color-mix(in srgb, #ffd54a 65%, var(--ink));
+  }
+  .hl-toggle:active .hl-swatch {
+    transform: scale(0.85);
   }
 
   .download {

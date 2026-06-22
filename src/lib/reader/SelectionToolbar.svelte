@@ -1,29 +1,19 @@
 <script lang="ts">
-  import { HIGHLIGHT_HEX, type HighlightColor } from '../../services/types'
+  import { HIGHLIGHT_HEX } from '../../services/types'
   import { placeAnchored } from '../util/anchoredPosition'
   import Icon from '../components/Icon.svelte'
 
   let {
     open = false,
     rect = { left: 0, top: 0, width: 0, height: 0 },
-    activeColor,
-    showCopy = true,
-    showDelete = false,
-    onColor,
+    onHighlight,
     onCopy,
-    onDelete,
   }: {
     open?: boolean
     rect?: { left: number; top: number; width: number; height: number }
-    activeColor?: HighlightColor
-    showCopy?: boolean
-    showDelete?: boolean
-    onColor?: (c: HighlightColor) => void
+    onHighlight?: () => void
     onCopy?: () => void
-    onDelete?: () => void
   } = $props()
-
-  const colors: HighlightColor[] = ['yellow', 'green', 'blue', 'pink']
 
   let bar = $state<HTMLDivElement>()
   let pos = $state({ left: 0, top: 0 })
@@ -31,7 +21,7 @@
     if (!open) return
     const r = rect
     requestAnimationFrame(() => {
-      const w = bar?.offsetWidth ?? 240
+      const w = bar?.offsetWidth ?? 200
       const h = bar?.offsetHeight ?? 48
       pos = placeAnchored(r.left + r.width / 2, r.top, r.top + r.height, w, h)
     })
@@ -40,23 +30,12 @@
 
 {#if open}
   <div bind:this={bar} class="toolbar" style="left:{pos.left}px; top:{pos.top}px" role="toolbar">
-    {#each colors as c}
-      <button
-        class="swatch"
-        class:active={c === activeColor}
-        aria-label={`Highlight ${c}`}
-        onclick={() => onColor?.(c)}
-      >
-        <span class="dot" style="--c:{HIGHLIGHT_HEX[c]}"></span>
-      </button>
-    {/each}
-    {#if showCopy || showDelete}<span class="sep"></span>{/if}
-    {#if showCopy}
-      <button class="act" aria-label="Copy" onclick={onCopy}><Icon name="copy" size={19} /></button>
-    {/if}
-    {#if showDelete}
-      <button class="act danger" aria-label="Delete highlight" onclick={onDelete}><Icon name="trash" size={19} /></button>
-    {/if}
+    <button class="act" onclick={onHighlight}>
+      <span class="swatch" style="--c:{HIGHLIGHT_HEX}"></span>
+      Highlight
+    </button>
+    <span class="sep"></span>
+    <button class="icon" aria-label="Copy" onclick={onCopy}><Icon name="copy" size={19} /></button>
   </div>
 {/if}
 
@@ -80,34 +59,34 @@
       transform: translateY(4px) scale(0.96);
     }
   }
-  /* 44px hit areas (HIG) with a smaller visible swatch/icon inside. */
+  .act {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 12px 0 10px;
+    border-radius: 100px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .act:active {
+    background: var(--accent-soft);
+  }
   .swatch {
-    width: 44px;
-    height: 44px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-  }
-  .dot {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
     background: var(--c);
-    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
-  }
-  .swatch.active .dot {
-    box-shadow:
-      inset 0 0 0 1px rgba(0, 0, 0, 0.12),
-      0 0 0 2px var(--paper-raised),
-      0 0 0 4px var(--ink-soft);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.16);
   }
   .sep {
     width: 1px;
     height: 24px;
-    margin: 0 4px;
+    margin: 0 2px;
     background: var(--line-strong);
   }
-  .act {
+  .icon {
     width: 44px;
     height: 44px;
     display: grid;
@@ -115,10 +94,7 @@
     border-radius: 50%;
     color: var(--ink-soft);
   }
-  .act:active {
+  .icon:active {
     background: var(--accent-soft);
-  }
-  .act.danger {
-    color: #c0392b;
   }
 </style>

@@ -201,11 +201,16 @@ export interface DictEntry {
 }
 
 export interface LookupResult {
-  matchLength: number  // # chars from the start of the window that matched
+  matchStart: number   // offset of the match within the text passed to lookupAt (0 for `lookup`)
+  matchLength: number  // # chars from matchStart that matched
   reasons: string[]    // human-readable deinflection reasons, outermost first
   entries: DictEntry[]
 }
 ```
+
+`matchStart` + `matchLength` give the matched word's span `[matchStart, matchStart+matchLength)`,
+which the reader uses to rebuild a DOM range for the tapped word — e.g. to auto-highlight it
+(see `docs/reader-engine.md` §10).
 
 ### `matchAt(window)` — longest match at one position
 
@@ -229,6 +234,7 @@ for (let len = limit; len > 0; len--) {
     const matched = words.filter((w) => candidateMatches(w, cand))
     if (!matched.length) continue
     return {
+      matchStart: 0,                             // relative to `window`; lookupAt rebases it
       matchLength: len,                          // surface chars consumed (the token's span)
       reasons: reasonsToLabels(cand.reasonChains),
       entries: matched.map(toEntry),
@@ -270,13 +276,13 @@ export async function lookupAt(text: string, tapOffset: number): Promise<LookupR
   const tokenStart = tokenStartAt(text, tapOffset)   // null until the tokenizer is ready
   if (tokenStart !== null) {
     const res = await matchAt(text.slice(tokenStart), queryWords)
-    if (res && res.matchLength > tapOffset - tokenStart) return res
+    if (res && res.matchLength > tapOffset - tokenStart) { res.matchStart = tokenStart; return res }
   }
 
   // Greedy leftmost-covering fallback (also used while kuromoji loads).
   for (let start = 0; start <= tapOffset; start++) {
     const res = await matchAt(text.slice(start), queryWords)
-    if (res && res.matchLength > tapOffset - start) return res
+    if (res && res.matchLength > tapOffset - start) { res.matchStart = start; return res }
   }
   return null
 }
@@ -419,11 +425,17 @@ The unit tests (§8) are the authoritative spec for the engine's observable beha
 ## 6. Word extraction (`extract.ts`)
 
 ```ts
-export interface Extracted { text: string; tapOffset: number }
+export interface CharPosition { node: Text; offset: number }   // DOM location of one char
+export interface Extracted {
+  text: string                 // the contiguous Japanese run around the tap
+  tapOffset: number            // index of the tapped char within `text`
+  positions: CharPosition[]    // positions[i] = where text[i] lives in the DOM
+}
 const MAX_BEFORE = 12   // word-chars gathered before the tap
 const MAX_AFTER = 16    // word-chars gathered from the tap forward
 
 export function extractTextAt(doc: Document, x: number, y: number): Extracted | null
+export function rangeForSpan(doc, positions, start, end): Range | null   // text[start,end) → Range
 export function looksJapanese(s: string): boolean
 ```
 
@@ -464,12 +476,18 @@ export function looksJapanese(s: string): boolean
    word-char run **forward** from the tap (`node.data.slice(pos.offset)` then successive text
    nodes, capped at `MAX_AFTER`, stopping at the first non-word char) and **backward** from the
    tap (`node.data.slice(0, pos.offset)` then previous text nodes, the trailing word-char run,
-   capped at `MAX_BEFORE`). Punctuation / spaces / latin bound the run on each side, so it stays
-   within one clause.
-7. Returns `{ text, tapOffset }` where `text = before + after` and `tapOffset = before.length`
-   (so `text[tapOffset]` is the tapped char). `lookupAt` (§4) then segments `text` and returns
-   the word covering `tapOffset` — this is what makes tapping *any* character of a word resolve
-   the **whole** word (decided previously only what followed the tap).
+   capped at `MAX_BEFORE`). Each character's `{node, offset}` is tracked alongside it (not just
+   the string). Punctuation / spaces / latin bound the run on each side, so it stays within one
+   clause.
+7. Returns `{ text, tapOffset, positions }` where `text = before + after`, `tapOffset =
+   before.length` (so `text[tapOffset]` is the tapped char), and `positions[i]` is the DOM
+   `{node, offset}` of `text[i]`. `lookupAt` (§4) then segments `text` and returns the word
+   covering `tapOffset` — this is what makes tapping *any* character of a word resolve the
+   **whole** word. `positions` lets the caller rebuild a `Range` for the matched span via
+   `rangeForSpan(doc, positions, matchStart, matchStart+matchLength)` — used to auto-highlight
+   the looked-up word (`docs/reader-engine.md` §10). The run can straddle multiple text nodes (a
+   kanji compound with ruby splits its base text), so an index→node map, not a string offset, is
+   the only safe bridge back to the DOM.
 
 ### `looksJapanese(s)`
 
@@ -491,44 +509,46 @@ reader chrome:
 
 ```ts
 function handleTap(info: TapInfo) {
-  // An open dict popup / highlight-edit toolbar swallows the tap (dismiss + consume).
-  if (dictState.open || hlEdit.open) {
+  // An open dictionary popup swallows the tap (dismiss + consume).
+  if (dictState.open) {
     dictState.open = false
-    hlEdit.open = false
     return
   }
-  // Otherwise: define a tapped Japanese word, or toggle the reader chrome.
-  if (settings.tapToDefine && tryDefine(info)) return   // dictionary wins
-  chromeVisible = !chromeVisible
+  // A tap in the top/bottom edge band toggles the reader chrome.
+  if (inChromeToggleBand(info.py)) {
+    chromeVisible = !chromeVisible
+    return
+  }
+  // Otherwise (central reading area): define a tapped Japanese word — and on a real
+  // match, auto-highlight it yellow. A central blank tap does nothing.
+  if (settings.tapToDefine) tryDefine(info)
 }
 ```
 
 The glyph hit-test inside `extractTextAt` (§6) is what lets a blank-space tap fall through
 `tryDefine` to the chrome toggle instead of always defining.
 
-### `tryDefine(info): boolean`
+### `tryDefine(info)` → `openDefine(...)`
+
+`tryDefine` extracts the run and hands off to `openDefine`, which opens the popup in the
+loading state and kicks off the async lookup:
 
 ```ts
 function tryDefine(info: TapInfo): boolean {
+  if (!info.doc) return false
   const ex = extractTextAt(info.doc, info.ix, info.iy)
   if (!ex) return false                 // null ⇒ blank / non-word tap (gate is in extract.ts)
-  const key = `${ex.tapOffset}:${ex.text}`
-  dictState.open = true
-  dictState.x = info.px; dictState.y = info.py
-  dictState.loading = true
-  dictState.needsDownload = false
-  dictState.result = null
-  dictState.text = ex.text              // pending query, kept so a post-download retry can re-run it
-  dictState.tapOffset = ex.tapOffset
-  dictState.lastKey = key               // ← stable per-tap key, used to discard stale taps
-  void runLookup(ex.text, ex.tapOffset, key)
+  openDefine({ text: ex.text, tapOffset: ex.tapOffset, px: info.px, py: info.py,
+               doc: info.doc, positions: ex.positions })   // positions ⇒ can highlight the word
   return true
 }
 ```
 
-Returns `true` (consuming the tap) only when the tap landed on a Japanese glyph
-(`extractTextAt` returned non-null — the word-char gate lives in `extract.ts` now). It opens
-the popup in the loading state immediately, then kicks off the async lookup.
+`openDefine` also handles the **tap-on-existing-highlight** path (`onShowAnnotation` passes
+`existingCfi` + the word, no `doc`/`positions`), so the same popup serves both "define a fresh
+word" and "reopen a highlighted word." It sets `dictState.lastKey` (a stable per-lookup key used
+to discard stale taps), `dictState.cfi`/`highlighted`/`word` (for the footer toggle), and stashes
+the in-flight `doc`/`positions` so the matched word's range can be built after the lookup.
 
 ### `runLookup(text, tapOffset, key)`
 
@@ -545,13 +565,17 @@ async function runLookup(text: string, tapOffset: number, key: string) {
   if (!dictState.open || dictState.lastKey !== key) return
   dictState.loading = false
   dictState.result = res
+  // On a real match for a fresh tap (not an already-highlighted word), auto-highlight it:
+  // build the word range from the extract positions + res.matchStart/matchLength, CFI it,
+  // saveAnnotation + controller.addHighlight. See docs/reader-engine.md §10.
+  if (res && res.entries.length && !dictState.cfi && /* have doc+positions */ true) void autoHighlight(res, key)
 }
 ```
 
-The guard `!dictState.open || dictState.lastKey !== key` (the key is `${tapOffset}:${text}`)
-drops a late lookup two ways: if the user has since **dismissed** the popup (`!dictState.open`),
-or if a **newer tap** changed `lastKey` — so a slow lookup never overwrites the popup with stale
-results.
+The guard `!dictState.open || dictState.lastKey !== key` drops a late lookup two ways: if the
+user has since **dismissed** the popup, or if a **newer tap** changed `lastKey` — so a slow
+lookup never overwrites the popup with stale results. `autoHighlight` re-checks the same guard
+after it builds the CFI (which is itself async-safe but cheap).
 
 ### `downloadDict()`
 
@@ -563,9 +587,12 @@ present. Errors are swallowed here and surfaced via `dict.error` in the store.
 
 ### `DictionaryPopup.svelte`
 
-Props: `{ open, x, y, loading, needsDownload, result, ondownload }`. It positions itself near
-`(x, y)`, clamped to the viewport (prefers above the tap, flips below if cramped), and renders
-one of four states:
+Props: `{ open, x, y, loading, needsDownload, result, highlighted, ondownload, ontogglehighlight }`.
+It positions itself near `(x, y)`, clamped to the viewport (prefers above the tap, flips below
+if cramped), and renders one of four states in a scrolling `.body`, with a sticky `.actions`
+footer (shown only when `result` has entries) holding a single **highlight toggle** — `Remove
+highlight` when `highlighted`, else `Highlight` (a yellow swatch). The toggle calls
+`ontogglehighlight` and the card stays open. The four body states:
 
 | State | Renders |
 | --- | --- |

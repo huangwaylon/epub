@@ -33,15 +33,14 @@ export interface ReadingProgress {
 }
 
 export type AnnotationKind = 'highlight' | 'bookmark'
-export type HighlightColor = 'yellow' | 'green' | 'blue' | 'pink'
 
-/** Saturated swatches that read well behind text at the overlay's ~0.3 opacity. */
-export const HIGHLIGHT_HEX: Record<HighlightColor, string> = {
-  yellow: '#ffd54a',
-  green: '#7ed47e',
-  blue: '#6fb4f5',
-  pink: '#f48fb1',
-}
+/**
+ * Highlights are a single colour — a yellow that reads well behind text at the
+ * overlay's ~0.3 opacity. (The reader used to offer a colour picker; it was
+ * dropped in favour of one consistent yellow that doubles as a vocab marker for
+ * words you've looked up.)
+ */
+export const HIGHLIGHT_HEX = '#ffd54a'
 
 /** A highlight or bookmark, anchored by CFI so it survives reflow / font changes. */
 export interface Annotation {
@@ -51,7 +50,6 @@ export interface Annotation {
   cfi: string
   /** Selected text (highlights) or a short context snippet (bookmarks). */
   text: string
-  color?: HighlightColor
   note?: string
   /** TOC label of the containing section, for grouping in the panel. */
   sectionLabel?: string

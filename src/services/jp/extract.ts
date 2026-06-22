@@ -12,6 +12,20 @@ export interface Extracted {
   text: string
   /** Index within `text` of the tapped character. */
   tapOffset: number
+  /**
+   * DOM location of each character in `text`: `positions[i]` is where `text[i]`
+   * lives. Lets the caller rebuild a `Range` for any sub-span of the run — e.g.
+   * to highlight the matched word `[matchStart, matchStart + matchLength)` after
+   * a lookup. (The run can straddle multiple text nodes — a kanji compound with
+   * ruby splits its base text — so an index→node map is the only safe bridge.)
+   */
+  positions: CharPosition[]
+}
+
+/** The DOM location of a single character in the extracted run. */
+export interface CharPosition {
+  node: Text
+  offset: number
 }
 
 /** How many word-chars to gather before / after the tap (also stops at boundaries). */
@@ -90,23 +104,23 @@ function isInRuby(node: Node): boolean {
   return false
 }
 
-/** Trailing run of word-chars in `s` (its suffix), capped at `max` characters. */
-function trailingRun(s: string, max: number): string {
-  let i = s.length
+/** Trailing run of word-chars in `cells` (its suffix), capped at `max` cells. */
+function trailingRun(cells: CharPosition[], max: number): CharPosition[] {
+  let i = cells.length
   let n = 0
-  while (i > 0 && n < max && WORD_CHAR.test(s.charAt(i - 1))) {
+  while (i > 0 && n < max && WORD_CHAR.test((cells[i - 1].node as Text).data.charAt(cells[i - 1].offset))) {
     i--
     n++
   }
-  return s.slice(i)
+  return cells.slice(i)
 }
 
-/** Leading run of word-chars in `s` (its prefix), capped at `max` characters. */
-function leadingRun(s: string, max: number): string {
+/** Leading run of word-chars in `cells` (its prefix), capped at `max` cells. */
+function leadingRun(cells: CharPosition[], max: number): CharPosition[] {
   let i = 0
-  const cap = Math.min(s.length, max)
-  while (i < cap && WORD_CHAR.test(s.charAt(i))) i++
-  return s.slice(0, i)
+  const cap = Math.min(cells.length, max)
+  while (i < cap && WORD_CHAR.test(cells[i].node.data.charAt(cells[i].offset))) i++
+  return cells.slice(0, i)
 }
 
 export function extractTextAt(doc: Document, x: number, y: number): Extracted | null {
@@ -126,29 +140,54 @@ export function extractTextAt(doc: Document, x: number, y: number): Extracted | 
     acceptNode: (n) => (isInRuby(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   })
 
-  // Forward run, starting at (and including) the tapped char.
-  let after = tapNode.data.slice(pos.offset)
+  // Forward run, starting at (and including) the tapped char. Track each char's
+  // DOM location so the caller can map a matched span back to a Range.
+  let afterCells: CharPosition[] = []
+  for (let k = pos.offset; k < tapNode.data.length; k++) afterCells.push({ node: tapNode, offset: k })
   walker.currentNode = tapNode
-  while (after.length < MAX_AFTER) {
+  while (afterCells.length < MAX_AFTER) {
     const n = walker.nextNode() as Text | null
     if (!n) break
-    after += n.data
+    for (let k = 0; k < n.data.length; k++) afterCells.push({ node: n, offset: k })
   }
-  after = leadingRun(after, MAX_AFTER)
+  afterCells = leadingRun(afterCells, MAX_AFTER)
 
   // Backward run, the word-chars immediately before the tap.
-  let before = tapNode.data.slice(0, pos.offset)
+  let beforeCells: CharPosition[] = []
+  for (let k = 0; k < pos.offset; k++) beforeCells.push({ node: tapNode, offset: k })
   walker.currentNode = tapNode
-  while (before.length < MAX_BEFORE) {
+  while (beforeCells.length < MAX_BEFORE) {
     const n = walker.previousNode() as Text | null
     if (!n) break
-    before = n.data + before
+    const pre: CharPosition[] = []
+    for (let k = 0; k < n.data.length; k++) pre.push({ node: n, offset: k })
+    beforeCells = pre.concat(beforeCells)
   }
-  before = trailingRun(before, MAX_BEFORE)
+  beforeCells = trailingRun(beforeCells, MAX_BEFORE)
 
-  const text = before + after
-  if (!text) return null
-  return { text, tapOffset: before.length }
+  const positions = beforeCells.concat(afterCells)
+  if (!positions.length) return null
+  const text = positions.map((c) => c.node.data.charAt(c.offset)).join('')
+  return { text, tapOffset: beforeCells.length, positions }
+}
+
+/**
+ * Builds a DOM `Range` spanning `text[start, end)` from a `positions` map (see
+ * `extractTextAt`). Used to highlight the exact word a tap looked up. Returns
+ * null if the span is empty or out of range.
+ */
+export function rangeForSpan(doc: Document, positions: CharPosition[], start: number, end: number): Range | null {
+  if (start < 0 || end > positions.length || start >= end) return null
+  const first = positions[start]
+  const last = positions[end - 1]
+  try {
+    const range = doc.createRange()
+    range.setStart(first.node, first.offset)
+    range.setEnd(last.node, last.offset + 1)
+    return range
+  } catch {
+    return null
+  }
 }
 
 /** Quick test for whether a string starts with a character worth looking up. */

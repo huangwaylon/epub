@@ -22,7 +22,14 @@ export interface DictEntry {
 }
 
 export interface LookupResult {
-  /** Number of characters from the start of the window that were matched. */
+  /**
+   * Offset of the match within the text passed to `lookupAt` (0 for `lookup`,
+   * which is forward-only from the window start). With `matchLength` this gives
+   * the matched word's span `[matchStart, matchStart + matchLength)`, which the
+   * caller uses to build a DOM range for the tapped word (e.g. to highlight it).
+   */
+  matchStart: number
+  /** Number of characters from `matchStart` that were matched. */
   matchLength: number
   /** Human-readable deinflection reasons, outermost first. */
   reasons: string[]
@@ -174,6 +181,7 @@ async function matchAt(window: string, queryWords: (t: string) => Promise<any[]>
       const matched = words.filter((w) => candidateMatches(w, cand))
       if (!matched.length) continue
       return {
+        matchStart: 0, // relative to `window`; lookupAt rebases it onto the full text
         matchLength: len,
         reasons: reasonsToLabels(cand.reasonChains),
         entries: matched.map(toEntry),
@@ -215,14 +223,20 @@ export async function lookupAt(text: string, tapOffset: number): Promise<LookupR
   const tokenStart = tokenStartAt(text, tapOffset)
   if (tokenStart !== null) {
     const res = await matchAt(text.slice(tokenStart), queryWords)
-    if (res && res.matchLength > tapOffset - tokenStart) return res
+    if (res && res.matchLength > tapOffset - tokenStart) {
+      res.matchStart = tokenStart
+      return res
+    }
   }
 
   // Greedy fallback (also used while kuromoji is still loading).
   for (let start = 0; start <= tapOffset; start++) {
     const res = await matchAt(text.slice(start), queryWords)
     // The token spans [start, start + matchLength); keep it only if it covers the tap.
-    if (res && res.matchLength > tapOffset - start) return res
+    if (res && res.matchLength > tapOffset - start) {
+      res.matchStart = start
+      return res
+    }
   }
   return null
 }
