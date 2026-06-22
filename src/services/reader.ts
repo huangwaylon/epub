@@ -450,7 +450,6 @@ export class ReaderController {
     const el = this.view
     const exit = dir === 'left' ? '100%' : '-100%' // old page slides off this edge
     const enter = dir === 'left' ? '-100%' : '100%' // new page enters from this edge
-    el.style.boxShadow = '0 0 28px rgba(0, 0, 0, 0.18)' // depth cue while the page moves
     // Phase 1: slide the current page out (transitionend-driven so the phases stay
     // tight even under load — a drifting timer here would show a blank-paper gap).
     await this.#transition(`transform ${TURN_PHASE_MS}ms cubic-bezier(.4, 0, 1, 1)`, `translateX(${exit})`)
@@ -467,7 +466,6 @@ export class ReaderController {
     await this.#transition(`transform ${TURN_PHASE_MS}ms cubic-bezier(0, 0, .2, 1)`, 'translateX(0)')
     el.style.transition = ''
     el.style.transform = ''
-    el.style.boxShadow = ''
   }
 
   /** Apply a transform transition and resolve when it ends (with a safety timeout). */

@@ -258,17 +258,13 @@
   }
 
   function handleTap(info: TapInfo) {
-    // While a popup is open, a tap simply dismisses it and is consumed
-    // (predictable dismissal). Pagination is by swipe — never by tap.
-    if (dictState.open) {
-      dictState.open = false
-      return
-    }
     // A tap in the top or bottom edge band (over the nav bars) toggles the chrome.
     // This is the way a tap *shows* the bars — a tap in the central reading area
-    // never reveals them, so reading taps don't flash the chrome.
+    // never reveals them, so reading taps don't flash the chrome. Toggling also
+    // clears any open popup so the two layers don't overlap.
     if (inChromeToggleBand(info.py)) {
       chromeVisible = !chromeVisible
+      closeOverlays()
       return
     }
     // While the chrome is visible, a tap anywhere in the reading area dismisses it
@@ -278,10 +274,15 @@
       chromeVisible = false
       return
     }
-    // Otherwise (a tap in the central reading area, chrome hidden): define a tapped
-    // Japanese word. The glyph hit-test in extractTextAt means taps on blank space
-    // simply do nothing rather than toggling the chrome.
-    if (settings.tapToDefine) tryDefine(info)
+    // Reading area, chrome hidden: a tap on a Japanese word defines it — *even when a
+    // popup is already open*, so looking up word after word is one tap each (the popup
+    // simply re-anchors to the new word) instead of needing a dismiss tap in between.
+    // Pagination is by swipe — never by tap. The glyph hit-test in extractTextAt makes
+    // tryDefine return false for blank space…
+    if (settings.tapToDefine && tryDefine(info)) return
+    // …and a tap on blank space instead dismisses an open popup (or does nothing). The
+    // popup's own × button and a page-turn also close it.
+    if (dictState.open) dictState.open = false
   }
 
   /**

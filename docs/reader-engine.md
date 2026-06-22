@@ -551,27 +551,32 @@ a tap carries no notion of edge rails anymore.
 `onTap` (Reader.svelte:223) and `handleTap` (Reader.svelte:235) do the routing.
 `handleTap` runs in a fixed order:
 
-1. **Dismiss-first.** If `dictState.open`, set it `false` and `return` — **any** tap
-   dismisses an open dictionary popup and is *consumed*.
-2. **Top/bottom band → toggle chrome.** If the tap's top-window `py` lands in the
+1. **Top/bottom band → toggle chrome.** If the tap's top-window `py` lands in the
    top or bottom edge band (`inChromeToggleBand`, sized `clamp(80, vh*0.12, 160)` ≈
-   the nav-bar height), toggle `chromeVisible` and `return`. This is how a tap
-   **shows** the bars — a tap in the central reading area never *reveals* them, so
-   reading taps don't flash the chrome. It fires even on a glyph, and it's how a
-   margin/host tap in the band reveals the chrome.
-3. **Chrome visible → dismiss.** Otherwise, if `chromeVisible`, set it `false` and
+   the nav-bar height), toggle `chromeVisible`, `closeOverlays()` (so the popup and
+   chrome don't overlap), and `return`. This is how a tap **shows** the bars — a tap
+   in the central reading area never *reveals* them, so reading taps don't flash the
+   chrome. It fires even on a glyph, and it's how a margin/host tap in the band
+   reveals the chrome.
+2. **Chrome visible → dismiss.** Otherwise, if `chromeVisible`, set it `false` and
    `return` — while the bars are up, a tap **anywhere** in the reading area hides
    them (and is *consumed*, so it doesn't also define). This makes the chrome easy
    to clear without reaching for the bars.
-4. **Define + highlight a glyph.** Otherwise (a tap in the central reading area with
-   the chrome already hidden), if `settings.tapToDefine` call `tryDefine(info)` —
-   `tryDefine` first bails when `info.doc` is null (a margin/host tap), then requires
-   the tap to land on an actual Japanese **glyph** per `extractTextAt`'s glyph +
-   word-char gate (the `pointOnGlyph` hit-test in extract.ts:42 rejects taps in
-   margins / inter-column gaps; §10, `docs/japanese.md`). A central tap on **blank
-   space** therefore does **nothing** — it does **not** toggle the chrome. On a real
-   match the looked-up word is also **auto-highlighted yellow** (a vocab record) —
-   see §10.
+3. **Define + highlight a glyph.** Otherwise (a tap in the central reading area with
+   the chrome already hidden), if `settings.tapToDefine` call `tryDefine(info)`. This
+   fires **even when a dictionary popup is already open** — so looking up word after
+   word is **one tap each** (the popup simply re-anchors to the new word), rather than
+   the old behaviour where the first tap was consumed to *dismiss* the open popup and
+   you had to tap a second time to define. `tryDefine` first bails when `info.doc` is
+   null (a margin/host tap), then requires the tap to land on an actual Japanese
+   **glyph** per `extractTextAt`'s glyph + word-char gate (the `pointOnGlyph` hit-test
+   in extract.ts:42 rejects taps in margins / inter-column gaps; §10,
+   `docs/japanese.md`), returning `true` only if it started a lookup. On a real match
+   the looked-up word is also **auto-highlighted yellow** (a vocab record) — see §10.
+4. **Blank tap → dismiss popup.** If `tryDefine` returned `false` (blank space, a
+   margin/host tap, or `tapToDefine` off) **and** a popup is open, set `dictState.open
+   = false`. So a tap on empty space dismisses the popup; a tap on a word redefines it.
+   (The popup's own × button and a page-turn also close it.)
 
 There is **no pagination on tap** — turning the page is exclusively the swipe
 path above — and the central area only toggles the chrome to *dismiss* it (never to
@@ -606,7 +611,11 @@ leave foliate's `animated` attribute **off** (§6), patch its own touch turn out
 (§1/§7), and drive the visual ourselves:
 
 1. Slide the whole `<foliate-view>` out to one edge (`transform: translateX(±100%)`,
-   `TURN_PHASE_MS` = 150ms) with a soft `box-shadow` as a depth cue.
+   `TURN_PHASE_MS` = 150ms). No box-shadow: a full-screen `0 0 28px` shadow used to be
+   applied here as a depth cue, but on the full-viewport element it painted blurred
+   dark bands on the **top and bottom** edges that swept across as the view slid —
+   visibly flashing twice (once per phase), most pronounced on the light theme — so it
+   was removed. The page now slides cleanly over the paper.
 2. Jump to the target page while off-screen — `await view.goLeft()/goRight()`,
    instant because `animated` is off (direction-aware, correct for LTR + RTL).
 3. Slide the new page in from the opposite edge back to `translateX(0)`.
@@ -837,10 +846,11 @@ progress persistence — see below.
 - `onTurn` (Reader.svelte:103-106) → sets `userInteracted = true` and
   `closeOverlays()`. This is the page-turn signal that `relocate` can't give us:
   a swipe (or any `goLeft`/`goRight`) fires it.
-- `onTap` → §8 routing (dismiss-first → top/bottom band toggles chrome → else define
-  a glyph; a central blank tap does **nothing**), with the 60ms defer when
-  `hasHighlights`. (No pagination on tap; the central area never toggles chrome — the
-  bars hide via their own `dismissChromeFromBar` click.)
+- `onTap` → §8 routing (top/bottom band toggles chrome → chrome-visible dismiss →
+  else define the tapped glyph, **even over an open popup**, so each word is one tap;
+  a central blank tap dismisses an open popup, else does **nothing**), with the 60ms
+  defer when `hasHighlights`. (No pagination on tap; the central area never toggles
+  chrome — the bars hide via their own `dismissChromeFromBar` click.)
 - `onSelection`/`onSelectionCleared` → drive the `SelectionToolbar`.
 - `onShowAnnotation` → clears `pendingTap`, then **reopens the `DictionaryPopup`**
   for the tapped highlight (definition + remove toggle) via `openDefine(existingCfi)`.
@@ -997,9 +1007,10 @@ beware: it has no JS property API (attributes only) and a closed shadow DOM.
   tap branch — §8). On top of that, define fires *only when the tap lands on an
   actual glyph* — `extractTextAt` returns `null` in margins / inter-column gaps
   because `pointOnGlyph` (extract.ts:42) bounds `caretRangeFromPoint`'s snapping
-  (§10, `docs/japanese.md`), so a tap on blank space falls through to the chrome
-  toggle. And any tap while the dictionary popup is open just dismisses it. If you
-  change `SWIPE_MIN_DISTANCE` / `GLYPH_HIT_SLACK`, preserve that separation.
+  (§10, `docs/japanese.md`), so a tap on blank space does nothing (or dismisses an
+  open popup). A tap on a glyph defines it **even while a popup is already open** (the
+  popup re-anchors — one tap per word). If you change `SWIPE_MIN_DISTANCE` /
+  `GLYPH_HIT_SLACK`, preserve that separation.
 
 ---
 
