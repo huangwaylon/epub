@@ -145,6 +145,10 @@ type DeinflectRule = {
   fromType: number;
   toType: number;
   reasons: Array<Reason>;
+  /** Precomputed `new Set(reasons)`, built once per rule when the rule groups are
+   *  assembled, so the hot deinflect loop doesn't allocate a fresh Set for every
+   *  candidate × rule iteration (GC pressure on a memory-constrained device). */
+  reasonsSet: Set<Reason>;
 };
 
 // prettier-ignore
@@ -415,7 +419,7 @@ function getDeinflectRuleGroups() {
     let ruleGroup: DeinflectRuleGroup;
 
     for (const [from, to, fromType, toType, reasons] of deinflectRuleData) {
-      const rule: DeinflectRule = { from, to, fromType, toType, reasons };
+      const rule: DeinflectRule = { from, to, fromType, toType, reasons, reasonsSet: new Set(reasons) };
 
       if (prevLen !== rule.from.length) {
         prevLen = rule.from.length;
@@ -547,8 +551,7 @@ export function deinflect(word: string): Array<CandidateWord> {
 
         // Continue if the rule introduces a duplicate in the reason chain,
         // as it wouldn't make sense grammatically.
-        const ruleReasons = new Set(rule.reasons);
-        if (thisCandidate.reasonChains.flat().some((r) => ruleReasons.has(r))) {
+        if (thisCandidate.reasonChains.flat().some((r) => rule.reasonsSet.has(r))) {
           continue;
         }
 

@@ -41,6 +41,10 @@ export async function getDb(): Promise<JpdictIdb> {
 
 /** True once the words series is downloaded and queryable. */
 export async function isDictReady(): Promise<boolean> {
+  // Fast path: the reactive `dict.state` is kept in sync by the change listener, so
+  // once the dictionary is ready every subsequent tap skips the IndexedDB round-trip
+  // that `getDb()` would otherwise await on the hot lookup path.
+  if (dict.state === 'ok') return true
   const d = await getDb()
   return d.words.state === 'ok'
 }

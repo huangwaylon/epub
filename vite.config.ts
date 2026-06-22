@@ -65,7 +65,18 @@ export default defineConfig(({ command }) => {
           globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
           // PDF.js and the ~19 MB kuromoji IPADIC dict are large; keep them out of the
           // install-time precache (the dict is runtime-cached on first use, below).
-          globIgnores: ['**/pdfjs/**', '**/kuromoji/**'],
+          // Also drop foliate's format loaders this app can never reach — it opens
+          // EPUB only, with no TTS/search UI — so the PWA install isn't padded with
+          // ~17 KB of dead chunks the browser would never request.
+          globIgnores: [
+            '**/pdfjs/**',
+            '**/kuromoji/**',
+            '**/mobi-*.js',
+            '**/fb2-*.js',
+            '**/comic-book-*.js',
+            '**/tts-*.js',
+            '**/search-*.js',
+          ],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           navigateFallback: `${base}index.html`,
           cleanupOutdatedCaches: true,

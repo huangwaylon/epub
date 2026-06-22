@@ -15,6 +15,26 @@ export const library = $state<{
   importing: 0,
 })
 
+/** Display-affecting fields only. Cover blobs are re-read from IDB on every refresh
+ *  (so they're never identity-equal); a book's cover image never changes once
+ *  imported, so comparing presence is enough to know the row is unchanged. */
+function bookMetaEqual(a: BookMeta, b: BookMeta): boolean {
+  return (
+    a.title === b.title &&
+    a.author === b.author &&
+    a.lastOpenedAt === b.lastOpenedAt &&
+    a.fileSize === b.fileSize &&
+    a.dir === b.dir &&
+    !!a.cover === !!b.cover
+  )
+}
+
+function progressEqual(a: ReadingProgress | undefined, b: ReadingProgress | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.cfi === b.cfi && a.fraction === b.fraction && a.updatedAt === b.updatedAt
+}
+
 export async function refreshLibrary(): Promise<void> {
   const books = await listBooks()
   const progress: Record<string, ReadingProgress | undefined> = {}
@@ -23,8 +43,25 @@ export async function refreshLibrary(): Promise<void> {
       progress[b.id] = await getProgress(b.id)
     }),
   )
-  library.books = books
-  library.progress = progress
+
+  // Reconcile against the current list so unchanged books keep their existing
+  // reactive object identity. Replacing the whole array (as before) handed every
+  // BookCover a brand-new `book` proxy on each refresh — fired after every import,
+  // delete, and book-open — which re-ran its objectURL effect and forced the browser
+  // to re-decode every cover. Only books whose display fields actually changed get a
+  // new reference; the rest (and their object URLs) are reused as-is.
+  const prev = new Map(library.books.map((b) => [b.id, b]))
+  library.books = books.map((b) => {
+    const old = prev.get(b.id)
+    return old && bookMetaEqual(old, b) ? old : b
+  })
+
+  // Update progress per key so one changed book doesn't invalidate the whole map.
+  const next = library.progress
+  for (const id of Object.keys(next)) if (!(id in progress)) delete next[id]
+  for (const [id, p] of Object.entries(progress)) {
+    if (!progressEqual(next[id], p)) next[id] = p
+  }
   library.loading = false
 }
 

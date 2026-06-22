@@ -21,7 +21,7 @@
 </script>
 
 {#if url}
-  <img class="cover" src={url} alt={book.title} loading="lazy" />
+  <img class="cover" src={url} alt={book.title} loading="lazy" decoding="async" />
 {:else}
   <div class="cover placeholder" style="--h:{hue}">
     <div class="spine"></div>

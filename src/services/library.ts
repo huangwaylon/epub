@@ -27,13 +27,50 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
     .join('')
 }
 
+/** Target width for stored cover thumbnails. The shelf renders covers ~120–170px
+ *  wide; 320px stays crisp on 2–3× displays while keeping the stored (and later
+ *  decoded) blob small, instead of holding the publisher's full-resolution art —
+ *  often 1400×2100+ — in IndexedDB and in heap for every book on the shelf. */
+const COVER_THUMB_WIDTH = 320
+
+/**
+ * Downscale a cover image to a small thumbnail at import time. Falls back to the
+ * original blob on any failure (missing OffscreenCanvas, decode error, or if the
+ * source is already small enough), so a cover is never lost to downscaling.
+ */
+async function thumbnailCover(blob: Blob | undefined): Promise<Blob | undefined> {
+  if (!blob) return undefined
+  if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas === 'undefined') return blob
+  let bmp: ImageBitmap | undefined
+  try {
+    bmp = await createImageBitmap(blob)
+    if (bmp.width <= COVER_THUMB_WIDTH) return blob
+    const w = COVER_THUMB_WIDTH
+    const h = Math.max(1, Math.round((bmp.height * COVER_THUMB_WIDTH) / bmp.width))
+    const canvas = new OffscreenCanvas(w, h)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return blob
+    ctx.drawImage(bmp, 0, 0, w, h)
+    const out = await canvas.convertToBlob({ type: 'image/webp', quality: 0.82 })
+    // Tiny covers can grow when re-encoded — keep whichever is smaller.
+    return out.size < blob.size ? out : blob
+  } catch {
+    return blob
+  } finally {
+    bmp?.close()
+  }
+}
+
 /**
  * Import an EPUB: dedupe by content hash, persist the bytes, then parse metadata
  * and cover via foliate. Returns the (new or existing) shelf entry.
  */
 export async function importEpub(file: File): Promise<BookMeta> {
-  const buf = await file.arrayBuffer()
-  const id = await sha256Hex(buf)
+  // Hash the bytes to dedupe by content. The ArrayBuffer is only needed for the
+  // digest, so we don't hold it in a long-lived binding — it becomes GC-eligible
+  // immediately after, keeping peak heap near 1× the file size rather than ~3×
+  // (an oversized light-novel EPUB on an iPad can otherwise OOM the tab).
+  const id = await sha256Hex(await file.arrayBuffer())
 
   const existing = await getBookMeta(id)
   if (existing) {
@@ -42,7 +79,9 @@ export async function importEpub(file: File): Promise<BookMeta> {
     return existing
   }
 
-  await putBook(id, buf)
+  // Store the original File directly (it's a Blob); putBook writes it to OPFS without
+  // allocating a second copy. makeBook likewise reads ranges from the same File.
+  await putBook(id, file)
 
   let title = file.name.replace(/\.epub$/i, '')
   let author = ''
@@ -51,7 +90,7 @@ export async function importEpub(file: File): Promise<BookMeta> {
   let cover: Blob | undefined
 
   try {
-    const book: any = await makeBook(new File([buf], file.name, { type: 'application/epub+zip' }))
+    const book: any = await makeBook(file)
     const meta = book?.metadata ?? {}
     title = flattenLangMap(meta.title) || title
     if (Array.isArray(meta.author)) {
@@ -61,7 +100,7 @@ export async function importEpub(file: File): Promise<BookMeta> {
     }
     language = (Array.isArray(meta.language) ? meta.language[0] : meta.language) ?? ''
     dir = book?.dir === 'rtl' ? 'rtl' : 'ltr'
-    cover = (await book?.getCover?.()) ?? undefined
+    cover = await thumbnailCover((await book?.getCover?.()) ?? undefined)
   } catch (err) {
     console.warn('Could not parse EPUB metadata; using fallbacks.', err)
   }
@@ -75,7 +114,7 @@ export async function importEpub(file: File): Promise<BookMeta> {
     dir,
     cover,
     fileName: file.name,
-    fileSize: buf.byteLength,
+    fileSize: file.size,
     addedAt: now,
     lastOpenedAt: now,
   }

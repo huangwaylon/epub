@@ -174,7 +174,25 @@ export class ReaderController {
   async open(file: File, lastCFI?: string): Promise<void> {
     await this.view.open(file)
     this.bookDir = this.view.book?.dir === 'rtl' ? 'rtl' : 'ltr'
+    this.#wireView()
 
+    this.applyAppearance(this.#settings)
+    this.applyLayout(this.#settings)
+    this.#attachHostGestures()
+    window.addEventListener('resize', this.#onResize)
+    await this.view.init({ lastLocation: lastCFI || undefined, showTextStart: true })
+    this.#nudgeLayout()
+  }
+
+  /**
+   * Wire the foliate-view events to our callbacks. These listeners live on the
+   * persistent `<foliate-view>` host (not the renderer), so they survive a
+   * `reopenForWritingMode` re-open and must only be attached once — hence this is
+   * called solely from `open()`. All are registered with `#ac.signal` so the single
+   * `destroy()` abort removes them deterministically alongside the gesture listeners.
+   */
+  #wireView(): void {
+    const signal = this.#ac.signal
     this.view.addEventListener('relocate', (e: any) => {
       const d = e.detail
       this.lastCFI = d.cfi
@@ -184,7 +202,7 @@ export class ReaderController {
         tocItem: d.tocItem,
         range: d.range,
       })
-    })
+    }, { signal })
     this.view.addEventListener('load', (e: any) => {
       const { doc, index } = e.detail
       this.#docIndex.set(doc, index)
@@ -204,23 +222,16 @@ export class ReaderController {
       }
       this.#attachTaps(doc)
       this.#cb.onLoad?.(doc, index)
-    })
+    }, { signal })
     this.view.addEventListener('show-annotation', (e: any) => {
       this.#cb.onShowAnnotation?.(e.detail.value, e.detail.range)
-    })
+    }, { signal })
     // Re-draw stored highlights whenever a section's overlay becomes available.
-    this.view.addEventListener('create-overlay', () => this.reapplyHighlights())
+    this.view.addEventListener('create-overlay', () => this.reapplyHighlights(), { signal })
     this.view.addEventListener('draw-annotation', (e: any) => {
       const { draw } = e.detail
       draw(Overlayer.highlight, { color: HIGHLIGHT_HEX })
-    })
-
-    this.applyAppearance(this.#settings)
-    this.applyLayout(this.#settings)
-    this.#attachHostGestures()
-    window.addEventListener('resize', this.#onResize)
-    await this.view.init({ lastLocation: lastCFI || undefined, showTextStart: true })
-    this.#nudgeLayout()
+    }, { signal })
   }
 
   /**
@@ -268,7 +279,9 @@ export class ReaderController {
    * reliable backstop if a real device still under-measures.
    */
   #nudgeLayout(): void {
-    setTimeout(() => {
+    if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
+    this.#nudgeTimer = window.setTimeout(() => {
+      this.#nudgeTimer = undefined
       try {
         this.view.renderer?.render?.()
       } catch {
@@ -276,6 +289,7 @@ export class ReaderController {
       }
     }, 250)
   }
+  #nudgeTimer: number | undefined
 
   /** Re-applies the injected stylesheet (theme, fonts, spacing). Safe to call live. */
   applyAppearance(s: ReaderSettings): void {
@@ -340,13 +354,29 @@ export class ReaderController {
     this.#resizeTimer = window.setTimeout(() => this.applyLayout(this.#settings), 150)
   }
   #resizeTimer: number | undefined
+  /** Debounce timer for the active document's selectionchange (cleared on destroy). */
+  #selTimer: number | undefined
 
   /**
    * Writing-mode changes must be re-detected from the content document, so we
    * re-open the book at the current location. Infrequent, so a reload is fine.
+   *
+   * `view.close()` first: foliate's `open()` creates a fresh `<foliate-paginator>`
+   * and appends it without removing the previous one, so a bare re-open orphans the
+   * old renderer — its iframe document, two ResizeObservers, and non-passive touch
+   * listeners leak (one full paginator per toggle, confirmed via heap snapshot).
+   * `close()` calls the old renderer's `destroy()` + `remove()`. Our foliate-view
+   * listeners live on the persistent host (see `#wireView`), so they keep working
+   * with the new renderer — no re-wiring needed.
    */
   async reopenForWritingMode(file: File): Promise<void> {
     const at = this.lastCFI
+    if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
+    try {
+      this.view.close()
+    } catch {
+      /* ignore */
+    }
     await this.view.open(file)
     this.applyAppearance(this.#settings)
     this.applyLayout(this.#settings)
@@ -500,6 +530,8 @@ export class ReaderController {
   destroy() {
     window.removeEventListener('resize', this.#onResize)
     if (this.#resizeTimer) clearTimeout(this.#resizeTimer)
+    if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
+    if (this.#selTimer) clearTimeout(this.#selTimer)
     this.#pendingDir = null
     this.#ac.abort() // removes every per-document tap/selection listener at once
     try {
@@ -625,12 +657,12 @@ export class ReaderController {
 
     // Surface finished text selections for the highlight / translate toolbar.
     const signal = this.#ac.signal
-    let selTimer: number | undefined
     doc.addEventListener(
       'selectionchange',
       () => {
-        if (selTimer) clearTimeout(selTimer)
-        selTimer = window.setTimeout(() => {
+        if (this.#selTimer) clearTimeout(this.#selTimer)
+        this.#selTimer = window.setTimeout(() => {
+          this.#selTimer = undefined
           const sel = doc.getSelection()
           if (sel && sel.type === 'Range' && sel.toString().trim().length > 0) {
             const range = sel.getRangeAt(0)

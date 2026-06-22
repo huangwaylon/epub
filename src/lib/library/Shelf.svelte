@@ -7,11 +7,22 @@
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
   import BookCover from './BookCover.svelte'
-  import ShelfSettings from './ShelfSettings.svelte'
 
   let fileInput: HTMLInputElement
   let menuFor = $state<BookMeta | null>(null)
   let settingsOpen = $state(false)
+
+  // Lazy-load the settings sheet: it pulls in the dictionary download code
+  // (jpdict-idb), which the shelf never needs at startup. Fetch it the first time the
+  // user opens Settings so jpdict-idb stays out of the cold-start chunk.
+  let SettingsComp = $state<typeof import('./ShelfSettings.svelte').default | null>(null)
+  $effect(() => {
+    if (settingsOpen && !SettingsComp) {
+      void import('./ShelfSettings.svelte').then((m) => {
+        SettingsComp = m.default
+      })
+    }
+  })
 
   onMount(refreshLibrary)
 
@@ -67,6 +78,7 @@
   {:else}
     <div class="grid">
       {#each library.books as book (book.id)}
+        {@const p = percent(book.id)}
         <button
           class="card"
           onclick={() => open(book)}
@@ -78,9 +90,9 @@
         >
           <div class="cover-wrap">
             <BookCover {book} />
-            {#if percent(book.id) > 0}
-              <div class="ring" style="--p:{percent(book.id)}">
-                <span>{percent(book.id)}%</span>
+            {#if p > 0}
+              <div class="ring" style="--p:{p}">
+                <span>{p}%</span>
               </div>
             {/if}
           </div>
@@ -120,7 +132,9 @@
 
 <!-- App settings -->
 <Sheet bind:open={settingsOpen} title="Settings">
-  <ShelfSettings />
+  {#if SettingsComp}
+    <SettingsComp />
+  {/if}
 </Sheet>
 
 <style>

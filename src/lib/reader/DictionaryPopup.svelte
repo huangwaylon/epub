@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { LookupResult } from '../../services/jp/lookup'
+  import type { LookupResult } from '../../services/jp/lookupTypes'
   import { dict } from '../../stores/dict.svelte'
   import { placeAnchored } from '../util/anchoredPosition'
   import Icon from '../components/Icon.svelte'

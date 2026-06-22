@@ -77,7 +77,6 @@
     position: fixed;
     inset: 0;
     background: var(--scrim);
-    backdrop-filter: blur(2px);
     z-index: 40;
   }
   .sheet {
@@ -92,6 +91,9 @@
     box-shadow: var(--shadow-2);
     padding-bottom: calc(var(--safe-bottom) + 8px);
     animation: rise var(--dur) var(--ease);
+    /* Promote to its own layer for the rise/pop animation so WebKit doesn't repaint
+       the large --shadow-2 blur every frame while the sheet transforms in. */
+    will-change: transform;
     overscroll-behavior: contain;
   }
   @keyframes rise {

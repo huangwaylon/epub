@@ -7,7 +7,7 @@
   import { getBookMeta, getProgress, putProgress } from '../../services/storage/db'
   import { ReaderController, type RelocateDetail, type TapInfo, type SelectionInfo, type TocItem } from '../../services/reader'
   import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
-  import { lookupAt, type LookupResult } from '../../services/jp/lookup'
+  import { lookupAt, warmupLookup, type LookupResult } from '../../services/jp/lookupClient'
   import { isDictReady, downloadDictionary } from '../../services/jp/dictdb'
   import {
     annotations,
@@ -241,6 +241,8 @@
   // A tap and foliate's highlight hit-test (click) both fire on the same gesture.
   // When highlights exist, briefly defer the tap action so a highlight tap can
   // cancel it (and open the edit toolbar) instead of also turning the page/defining.
+  // The window only needs to outlast the click→show-annotation hop (the lookup itself
+  // now runs in a worker, so this delay is purely for race-resolution, not work).
   let pendingTap: number | undefined
   function onTap(info: TapInfo) {
     if (hasHighlights) {
@@ -248,7 +250,7 @@
       pendingTap = window.setTimeout(() => {
         pendingTap = undefined
         handleTap(info)
-      }, 60)
+      }, 40)
     } else {
       handleTap(info)
     }
@@ -454,6 +456,15 @@
       await loadAnnotations(bookId)
       controller.setHighlights(annotations.items.filter((a) => a.kind === 'highlight').map((a) => a.cfi))
       status = 'ready'
+
+      // If the dictionary is already downloaded, warm the lookup worker (and its
+      // kuromoji build) now so the first tap-to-define is fast rather than paying
+      // the ~19 MB trie build on the tap itself.
+      if (settings.tapToDefine) {
+        void isDictReady().then((ok) => {
+          if (ok) warmupLookup()
+        })
+      }
     } catch (err) {
       console.error(err)
       errorMsg = err instanceof Error ? err.message : 'Could not open this book.'

@@ -27,6 +27,8 @@
     background: var(--paper-raised);
     box-shadow: var(--shadow-2);
     animation: rise 0.25s var(--ease);
+    /* Layer-promote during the rise so the large shadow isn't repainted per frame. */
+    will-change: transform;
   }
   @keyframes rise {
     from {

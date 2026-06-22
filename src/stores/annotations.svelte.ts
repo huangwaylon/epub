@@ -20,7 +20,12 @@ export async function saveAnnotation(a: Annotation): Promise<void> {
 }
 
 export async function removeAnnotation(id: string): Promise<void> {
-  annotations.items = annotations.items.filter((x) => x.id !== id)
+  // Splice in place rather than reassigning `items = items.filter(...)`: replacing
+  // the array re-proxies every element and invalidates all subscribers at once,
+  // whereas a targeted splice only signals the removed index — cheaper for the
+  // reader overlay and the annotations panel on a heavily-highlighted book.
+  const idx = annotations.items.findIndex((x) => x.id === id)
+  if (idx >= 0) annotations.items.splice(idx, 1)
   await deleteAnnotation(id)
 }
 
