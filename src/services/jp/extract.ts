@@ -58,15 +58,72 @@ function caretPosition(doc: Document, x: number, y: number): { node: Node; offse
   return null
 }
 
-/** Slack (px) around a glyph's box when deciding whether a tap actually hit text. */
-const GLYPH_HIT_SLACK = 6
+/**
+ * Minimum hit slack (px) on every side. Matches the old flat slack so the line-aware
+ * box below is never *tighter* than before — it only ever grows the target. Acts as a
+ * floor when there's no leading to borrow (text set solid at line-height ~1).
+ */
+const MIN_HIT_SLACK = 6
+/**
+ * Reading-axis slack, as a fraction of the font size, added on top of the floor. Along
+ * the reading axis glyphs are contiguous (Japanese has no inter-word spaces), so this
+ * only needs to forgive a small near-miss past a glyph — not fill a gap. Kept modest so
+ * a tap well past the last glyph of a column / line (blank space) still falls through.
+ */
+const READING_SLACK_EM = 0.15
+
+/** A glyph's tap target: its measured box plus per-axis slack, in px. */
+interface GlyphSlack {
+  /** Slack along the page's x axis. */
+  x: number
+  /** Slack along the page's y axis. */
+  y: number
+}
+
+/**
+ * Per-axis tap slack derived from the line metrics at `el`, so the hit target grows
+ * with the line spacing and text size rather than being a flat margin.
+ *
+ * The line-stacking ("cross") axis carries the leading: with line-height 1.9 at 16px
+ * the columns sit ~26px apart but each glyph is only ~16px wide, leaving a ~13px gap
+ * on each side. We expand the box by **half the leading** in that axis so the *whole*
+ * line/column pitch is tappable and maps to the nearest line — full coverage, and no
+ * overlap with the neighbour (each side reaches exactly the midpoint). The reading
+ * axis, where glyphs are contiguous, only gets a small font-scaled slack.
+ *
+ * `leading = lineHeight − fontSize` assumes the glyph spans ~1em across the cross axis,
+ * which holds because lookups are gated to CJK/kana (`WORD_CHAR`) — roughly square
+ * glyphs. (Widen `WORD_CHAR` to proportional/latin and this estimate would need the
+ * glyph's real cross-extent instead.)
+ *
+ * In vertical (縦書き) writing the columns stack horizontally, so the cross axis is x;
+ * in horizontal writing the lines stack vertically, so the cross axis is y. We treat
+ * every non-`horizontal-*` mode (vertical-rl/-lr, sideways-rl/-lr) as vertical, since
+ * all of them stack lines horizontally. A missing view/element falls back to a flat
+ * floor on both axes (never tighter than the old behaviour).
+ */
+function glyphSlack(win: Window | null, el: Element | null): GlyphSlack {
+  const cs = win && el ? win.getComputedStyle(el) : null
+  const vertical = cs ? !cs.writingMode.startsWith('horizontal') : false
+  const fontSize = (cs && parseFloat(cs.fontSize)) || 16
+  // `line-height: normal` yields no numeric px; approximate it so the math still holds.
+  let lineHeight = cs ? parseFloat(cs.lineHeight) : NaN
+  if (!isFinite(lineHeight)) lineHeight = fontSize * 1.5
+  const leading = Math.max(0, lineHeight - fontSize)
+  const crossSlack = leading / 2 + MIN_HIT_SLACK
+  const readingSlack = MIN_HIT_SLACK + fontSize * READING_SLACK_EM
+  // Vertical: cross axis is x (columns stack horizontally). Horizontal: cross axis is y.
+  return vertical ? { x: crossSlack, y: readingSlack } : { x: readingSlack, y: crossSlack }
+}
 
 /**
  * Whether (x, y) lands on the glyph at/next to the caret. `caretRangeFromPoint`
  * snaps to the *nearest* text even in blank margins and inter-column gaps, so on a
  * page that is wall-to-wall Japanese it reports a hit almost everywhere. We bound
- * that by confirming the tap point is inside the glyph's own box, so taps on empty
- * space fall through to page-turn / chrome / dismiss instead of always defining.
+ * that by confirming the tap point is inside the glyph's own box (grown by a
+ * line-aware, per-axis slack — see `glyphSlack`), so taps on empty space fall through
+ * to page-turn / chrome / dismiss instead of always defining, while a tap anywhere in
+ * the line's own spacing still resolves the word.
  */
 function pointOnGlyph(doc: Document, node: Node, offset: number, x: number, y: number): boolean {
   if (node.nodeType !== Node.TEXT_NODE) return false
@@ -87,13 +144,9 @@ function pointOnGlyph(doc: Document, node: Node, offset: number, x: number, y: n
   } catch {
     return false
   }
+  const slack = glyphSlack(doc.defaultView, node.parentElement)
   for (const r of range.getClientRects()) {
-    if (
-      x >= r.left - GLYPH_HIT_SLACK &&
-      x <= r.right + GLYPH_HIT_SLACK &&
-      y >= r.top - GLYPH_HIT_SLACK &&
-      y <= r.bottom + GLYPH_HIT_SLACK
-    )
+    if (x >= r.left - slack.x && x <= r.right + slack.x && y >= r.top - slack.y && y <= r.bottom + slack.y)
       return true
   }
   return false

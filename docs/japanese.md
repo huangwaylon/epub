@@ -445,17 +445,30 @@ export function looksJapanese(s: string): boolean
    Chrome, returns a `Range`) first, then falls back to `doc.caretPositionFromPoint(x, y)`
    (Firefox, returns `{ offsetNode, offset }`). Returns `{ node, offset }` or `null`. Both are
    accessed via `doc as any` because TS lib types don't reliably declare them.
-2. **Glyph hit-test** (`pointOnGlyph`, `extract.ts:42`) — the most important gate. Once the
+2. **Glyph hit-test** (`pointOnGlyph`) — the most important gate. Once the
    caret resolves, `extractTextAt` calls `pointOnGlyph(doc, pos.node, pos.offset, x, y)` and
-   **returns `null` if `(x, y)` is not inside the caret glyph's box** (the gate at
-   `extract.ts:89`). `caretRangeFromPoint` snaps to the *nearest* text even in blank margins
+   **returns `null` if `(x, y)` is not inside the caret glyph's box** (grown by a line-aware
+   slack, below). `caretRangeFromPoint` snaps to the *nearest* text even in blank margins
    and inter-column gaps, so on a wall-to-wall Japanese page it reports a hit almost everywhere;
    without this gate **every tap would define**. `pointOnGlyph` builds a `Range` over the single
    character at the caret offset (clamped to the node end), and checks whether the point lies in
-   any of its client rects, expanded by `GLYPH_HIT_SLACK = 6` px (`extract.ts:33`). A
-   blank-space tap therefore fails the test, `extractTextAt` returns `null`, and the tap falls
-   through to the reader-chrome toggle in `handleTap` (§7). (Pagination is by **swipe**, handled
-   in the controller, not by tap — see `docs/reader-engine.md`.)
+   any of its client rects expanded by a **per-axis, line-aware slack** (`glyphSlack`). The
+   slack is asymmetric because the two axes are not alike: along the **line-stacking (cross)
+   axis** the leading is large (with `line-height: 1.9` at 16px the columns sit ~26px apart but
+   each glyph is only ~16px wide, a ~13px gap each side), so the box is grown by **half the
+   leading** — `(lineHeight − fontSize) / 2`, read from the parent's computed style — so the
+   *whole* column/line pitch is tappable and maps to the nearest line, reaching exactly the
+   midpoint to the neighbour (full coverage, no overlap, no wrong-word). Along the **reading
+   axis** glyphs are contiguous (no inter-word spaces), so it gets only a small font-scaled
+   slack (`4px + 0.15·fontSize`) — enough to forgive a near-miss without swallowing the blank at
+   a column/line end. In vertical (縦書き) writing the columns stack horizontally so the cross
+   axis is *x*; in horizontal writing the lines stack vertically so it is *y*. A blank-space tap
+   (beyond half the pitch from any glyph) still fails the test, `extractTextAt` returns `null`,
+   and the tap falls through to the reader-chrome toggle in `handleTap` (§7). (Pagination is by
+   **swipe**, handled in the controller, not by tap — see `docs/reader-engine.md`.) This
+   line-aware slack replaced an earlier flat 6px margin that ignored line spacing, which made a
+   word feel hard to hit — every tap had to land within ±6px of the narrow glyph even though the
+   columns were ~26px apart, so a third of the cross-axis was a dead zone.
 3. **TreeWalker over text nodes**, rejecting furigana:
 
    ```ts

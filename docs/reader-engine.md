@@ -1006,11 +1006,14 @@ beware: it has no JS property API (attributes only) and a closed shadow DOM.
   is by **tap**, so they're already distinct gestures (a swipe `return`s before the
   tap branch — §8). On top of that, define fires *only when the tap lands on an
   actual glyph* — `extractTextAt` returns `null` in margins / inter-column gaps
-  because `pointOnGlyph` (extract.ts:42) bounds `caretRangeFromPoint`'s snapping
+  because `pointOnGlyph` bounds `caretRangeFromPoint`'s snapping with a **line-aware,
+  per-axis slack** that grows the glyph box by half the leading across the
+  line-stacking axis (so the whole column/line pitch is tappable, up to the midpoint
+  with the neighbour) while keeping the reading axis tight
   (§10, `docs/japanese.md`), so a tap on blank space does nothing (or dismisses an
   open popup). A tap on a glyph defines it **even while a popup is already open** (the
-  popup re-anchors — one tap per word). If you change `SWIPE_MIN_DISTANCE` /
-  `GLYPH_HIT_SLACK`, preserve that separation.
+  popup re-anchors — one tap per word). If you change `SWIPE_MIN_DISTANCE` or the
+  glyph-hit slack in `pointOnGlyph`/`glyphSlack`, preserve that separation.
 
 ---
 
