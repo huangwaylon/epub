@@ -4,6 +4,7 @@
   import { storageStatus, formatBytes, type StorageStatus } from '../../services/storage/persist'
   import { dict } from '../../stores/dict.svelte'
   import { getDb, downloadDictionary } from '../../services/jp/dictdb'
+  import { warmupLookup } from '../../services/jp/lookupClient'
   import Segmented from '../components/Segmented.svelte'
   import type { ThemeName } from '../../services/types'
 
@@ -16,6 +17,9 @@
   async function getDict() {
     try {
       await downloadDictionary('en')
+      // Warm kuromoji while online so the SW runtime-caches the IPADIC dict files;
+      // this is what makes tap-to-define segmentation work offline afterwards.
+      warmupLookup()
     } catch {
       /* error shown via store */
     }

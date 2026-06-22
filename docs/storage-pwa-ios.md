@@ -383,6 +383,7 @@ const updateSW = registerSW({
 
 `registerSW` comes from `virtual:pwa-register` (vite-plugin-pwa). On a waiting update it sets
 `pwa.needRefresh` and wires `pwa.update` to `updateSW(true)` (which skips waiting and reloads).
+`onOfflineReady` (fired once when the SW first precaches the shell) sets `pwa.offlineReady`.
 
 ### `src/stores/pwa.svelte.ts` — update store
 
@@ -391,9 +392,12 @@ all initialised falsy / no-op.
 
 ### `src/lib/components/UpdateToast.svelte`
 
-Renders only when `pwa.needRefresh`. Shows "A new version is ready." with a **Refresh** button
-(`pwa.update()`) and a dismiss button that flips `pwa.needRefresh = false`. Positioned above the
-bottom safe area (`bottom: calc(var(--safe-bottom) + 18px)`).
+Renders the **update** prompt when `pwa.needRefresh` — "A new version is ready." with a
+**Refresh** button (`pwa.update()`) and a dismiss button — and otherwise the one-time
+**"Ready to read offline."** confirmation when `pwa.offlineReady`. The offline confirmation
+auto-dismisses after 4 s via a `$effect` whose cleanup clears the timer (so no stray timer
+survives a manual dismiss or unmount). Positioned above the bottom safe area
+(`bottom: calc(var(--safe-bottom) + 18px)`).
 
 ### Icons — `scripts/gen-icons.mjs`
 

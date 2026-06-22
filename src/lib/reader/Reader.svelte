@@ -7,7 +7,7 @@
   import { getBookMeta, getProgress, putProgress } from '../../services/storage/db'
   import { ReaderController, type RelocateDetail, type TapInfo, type SelectionInfo, type TocItem } from '../../services/reader'
   import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
-  import { lookupAt, warmupLookup, type LookupResult } from '../../services/jp/lookupClient'
+  import { lookupAt, warmupLookup, disposeLookup, type LookupResult } from '../../services/jp/lookupClient'
   import { isDictReady, downloadDictionary } from '../../services/jp/dictdb'
   import {
     annotations,
@@ -395,6 +395,10 @@
   async function downloadDict() {
     try {
       await downloadDictionary('en')
+      // Build kuromoji now (while online) so the service worker runtime-caches the
+      // ~19 MB IPADIC dict files; otherwise the first offline tap would fail to fetch
+      // them and silently fall back to degraded segmentation.
+      warmupLookup()
       dictState.needsDownload = false
       dictState.loading = true
       await runLookup(dictState.text, dictState.tapOffset, dictState.lastKey)
@@ -474,7 +478,11 @@
 
   onDestroy(() => {
     if (pendingTap) clearTimeout(pendingTap)
+    saveProgress.cancel()
     controller?.destroy()
+    // Free the worker's resident kuromoji trie while no book is open (re-warmed on
+    // the next open from the SW-cached dict — no network).
+    disposeLookup()
     clearAnnotations()
   })
 </script>

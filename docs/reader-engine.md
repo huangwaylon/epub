@@ -119,7 +119,7 @@ declares the minimal surface it touches as the `FoliateView` interface
 | --- | --- | --- | --- |
 | `relocate` | `{ cfi, fraction, tocItem:{label,href}, range, size, ... }` | view.js:333 (`#onRelocate`, forwarding paginator's `relocate`) | Store `lastCFI`; call `onRelocate({cfi,fraction,tocItem,range})`. **Note: the emitted detail carries no `reason`.** `#onRelocate` (view.js:325-333) *destructures* a `reason` off the paginator's event and uses it only for its internal `history.replaceState`, but `lastLocation` — the object it `#emit`s — does **not** include `reason`. So you cannot tell a user turn from a startup jump off this event; intent is tracked from the gesture side instead (§4 `onTurn`, §12 `userInteracted`). |
 | `load` | `{ doc: Document, index: number }` | view.js:344 (`#onLoad`) — fires once per section load | Record `doc→index` in `#docIndex`; detect writing-mode; attach taps/selection; call `onLoad`. |
-| `create-overlay` | `{ index }` | view.js:414 (`#createOverlayer`, when a section's SVG overlay is created) | `reapplyHighlights()` so stored highlights redraw on this freshly-loaded section. |
+| `create-overlay` | `{ index }` | view.js:414 (`#createOverlayer`, when a section's SVG overlay is created) | `reapplyHighlights(e.detail.index)` so **only this freshly-loaded section's** stored highlights redraw. The index scoping (backed by a cached `cfi→index` map) keeps a page-turn into a new section O(highlights-in-that-section), not O(all-highlights-in-the-book) — important because tap-to-define auto-highlights every defined word, so the set grows large. |
 | `draw-annotation` | `{ draw, annotation:{value}, doc, range }` | view.js:389 (inside `addAnnotation`, when the section is loaded) | `draw(Overlayer.highlight, { color: HIGHLIGHT_HEX })` — highlights are a single yellow (`HIGHLIGHT_HEX` in `types.ts`); there is no per-highlight colour. **This is where a highlight is actually painted.** |
 | `show-annotation` | `{ value, index, range }` | view.js:407 (a **click** hit-tests the overlayer) | Call `onShowAnnotation(value, range)` → **reopens the dictionary popup** for that word (definition + a remove-highlight footer toggle). |
 
@@ -175,12 +175,12 @@ it to remove them all at once, so re-loaded sections don't leak listeners).
 | `goTo` | `(target: string\|number) => Promise<any>` | TOC / annotation nav. |
 | `goToFraction` | `(frac: number) => Promise<void>` | Seek to an overall-book fraction (0..1), clamped. Backs the progress **scrubber** (§12). Not animated. |
 | `cfiForSelection` | `(doc, range) => string \| null` | Looks up `doc`'s index in `#docIndex`, then `view.getCFI(index, range)`. Returns `null` if doc unknown or CFI throws. |
-| `addHighlight` | `(cfi) => Promise<void>` | Adds the CFI to `#highlights`, then `view.addAnnotation({value:cfi})` (paints yellow if loaded). |
-| `removeHighlight` | `(cfi) => Promise<void>` | Drops the CFI, `view.deleteAnnotation`. |
-| `setHighlights` | `(cfis: string[]) => void` | Replaces the whole highlight set (book-open seeding), then `reapplyHighlights()`. |
-| `reapplyHighlights` | `() => void` | `addAnnotation` for every known CFI (no-ops for unloaded sections). Called on `create-overlay`. |
+| `addHighlight` | `(cfi) => Promise<void>` | Adds the CFI to `#highlights`, caches its spine index (`#indexForCFI` via `view.resolveCFI`), then `view.addAnnotation({value:cfi})` (paints yellow if loaded). |
+| `removeHighlight` | `(cfi) => Promise<void>` | Drops the CFI (and its cached index), `view.deleteAnnotation`. |
+| `setHighlights` | `(cfis: string[]) => void` | Replaces the whole highlight set (book-open seeding) and re-seeds the `cfi→index` cache, then `reapplyHighlights()` (full sweep). |
+| `reapplyHighlights` | `(index?: number) => void` | `addAnnotation` for known CFIs (no-ops for unloaded sections). With an `index` (the `create-overlay` path) only redraws that section's highlights; with no index (the `setHighlights` seed) sweeps all. |
 | `clearSelection` | `() => void` | Best-effort `view.deselect()`. |
-| `destroy` | `() => void` | Removes the resize listener, clears the timer, **`#ac.abort()`** (removes every per-document tap/selection listener in one shot), best-effort `view.close()`, removes the element. |
+| `destroy` | `() => void` | Removes the resize listener, clears the turn/nudge/resize/selection timers, **`#ac.abort()`** (removes every per-document tap/selection listener *and* any in-flight page-turn `transitionend` listener in one shot), best-effort `view.close()` **then `book.destroy()`** (revokes the EPUB's resource blob URLs), removes the element. |
 
 ### `ReaderCallbacks` (reader.ts:60-70)
 
@@ -718,9 +718,11 @@ Draw/paint flow:
      (overlayer.js:126) draws filled `<rect>`s at the range's client rects, at
      `opacity: var(--overlayer-highlight-opacity, .3)`.
    - If **not loaded**, it's a no-op. Later, when that section paints, view emits
-     `create-overlay` → we call `reapplyHighlights()` → `addAnnotation` for every
-     known CFI → the now-loaded ones draw. This is why highlights survive page
-     turns and section loads.
+     `create-overlay` with its `{ index }` → we call `reapplyHighlights(index)` →
+     `addAnnotation` for **only this section's** known CFIs (matched against the
+     cached `cfi→index` map) → the now-loaded ones draw. This is why highlights
+     survive page turns and section loads, while staying cheap as the highlight set
+     grows.
 3. `removeHighlight(cfi)` drops the CFI from the set and `deleteAnnotation`s.
 
 CFI creation: `cfiForSelection(doc, range)` looks up the doc's spine index in the

@@ -686,10 +686,29 @@ Run with `npm test`.
   JMdict has homographs with identical headword+reading (e.g. several 度/ど entries), so keying
   on `headword + reading` alone throws Svelte's `each_key_duplicate` and the popup hangs on the
   spinner. Keep the index in the key.
-- **kuromoji loads lazily and segments on the main thread.** The first tap-to-define triggers a
-  one-time ~19 MB IPADIC fetch + trie build (then SW-cached). Until it's ready, segmentation
-  falls back to greedy. The gzip-decompression loader shim (`kuromojiLoader.cjs`) is required —
-  see the note in §4 and `docs/development.md`.
+- **The whole lookup pipeline runs in a Web Worker.** kuromoji segmentation (incl. the
+  one-time ~19 MB IPADIC fetch + trie build), deinflection, and the JMdict reads all run in
+  `lookup.worker.ts`, fronted by `lookupClient.ts`, so a tap never blocks the main thread or
+  janks a page-turn. The main thread keeps only the DOM parts (`extractTextAt`/`rangeForSpan`).
+  Lifecycle (all in `lookupClient.ts`):
+  - **One lazy singleton worker** for the whole app, created on first `lookupAt`/`warmupLookup`.
+  - **Warmed on book open** (`warmupLookup`, when the dict is present) so the first tap is fast.
+  - **Disposed on reader exit** (`disposeLookup` from `Reader.svelte` `onDestroy`): the worker is
+    `terminate()`d so its resident kuromoji trie (tens of MB) isn't pinned while no book is open —
+    important under iPad-PWA memory pressure. It rebuilds lazily (and re-warms) on the next open
+    from the SW-cached dict, with **no network**.
+  - **Error recovery is non-latching**: a runtime worker error (e.g. an OOM-killed worker under
+    iOS memory pressure) just drops the instance; the next call builds a fresh one. Only repeated
+    *construction* failures (≥3) disable the feature, so a transient hiccup self-heals instead of
+    killing tap-to-define for the session.
+  - Until kuromoji is ready, segmentation falls back to greedy. The gzip-decompression loader shim
+    (`kuromojiLoader.cjs`) is required — see the note in §4 and `docs/development.md`.
+- **Offline depends on warming kuromoji *before* going offline.** The 12 IPADIC `*.dat.gz` files
+  are only fetched (and thus SW-runtime-cached) when the worker builds. So the dictionary-download
+  handlers (`ShelfSettings.getDict`, `Reader.downloadDict`) call `warmupLookup()` right after
+  `downloadDictionary` resolves, ensuring the trie is cached while still online. Without that, a
+  user who downloaded JMdict but never tapped online would hit failed fetches offline and silently
+  fall back to greedy segmentation.
 
 ---
 

@@ -47,6 +47,8 @@ interface FoliateView extends HTMLElement {
   next(distance?: number): Promise<void>
   goToFraction(frac: number): Promise<void>
   getCFI(index: number, range: Range): string
+  /** Resolve a CFI to its spine index (+ a doc→Range anchor) synchronously. */
+  resolveCFI(cfi: string): { index: number; anchor?: unknown } | undefined
   addAnnotation(a: { value: string }, remove?: boolean): Promise<{ index: number; label: string }>
   deleteAnnotation(a: { value: string }): Promise<any>
   deselect(): void
@@ -155,6 +157,10 @@ export class ReaderController {
   /** Set of highlighted CFIs — the source of truth when (re)drawing overlays.
    *  Highlights are a single colour (yellow); there is no per-highlight colour. */
   #highlights = new Set<string>()
+  /** Cache of each highlight CFI → its spine index, so the per-section overlay
+   *  redraw only touches the highlights that live in the just-loaded section
+   *  (instead of re-resolving every highlight in the book on every page-turn). */
+  #highlightIndex = new Map<string, number>()
   /** Whether the current book renders vertically (縦書き); affects measure. */
   #vertical = false
   /** Aborts every per-document listener we attach, in one shot, on destroy. */
@@ -226,8 +232,11 @@ export class ReaderController {
     this.view.addEventListener('show-annotation', (e: any) => {
       this.#cb.onShowAnnotation?.(e.detail.value, e.detail.range)
     }, { signal })
-    // Re-draw stored highlights whenever a section's overlay becomes available.
-    this.view.addEventListener('create-overlay', () => this.reapplyHighlights(), { signal })
+    // Re-draw stored highlights whenever a section's overlay becomes available —
+    // only the highlights belonging to *that* section, not the whole book.
+    this.view.addEventListener('create-overlay', (e: any) => this.reapplyHighlights(e.detail?.index), {
+      signal,
+    })
     this.view.addEventListener('draw-annotation', (e: any) => {
       const { draw } = e.detail
       draw(Overlayer.highlight, { color: HIGHLIGHT_HEX })
@@ -372,8 +381,17 @@ export class ReaderController {
   async reopenForWritingMode(file: File): Promise<void> {
     const at = this.lastCFI
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
+    // foliate's close() destroys the renderer but not the Book, whose Loader holds an
+    // object URL per resolved resource (images, rewritten CSS). Destroy the old Book so
+    // those blob URLs are revoked instead of leaking on every writing-mode toggle.
+    const old = this.view.book
     try {
       this.view.close()
+    } catch {
+      /* ignore */
+    }
+    try {
+      old?.destroy?.()
     } catch {
       /* ignore */
     }
@@ -456,21 +474,25 @@ export class ReaderController {
     const el = this.view
     return new Promise((resolve) => {
       let done = false
+      let timer: number | undefined
       const finish = () => {
         if (done) return
         done = true
+        if (timer) clearTimeout(timer)
         el.removeEventListener('transitionend', onEnd)
         resolve()
       }
       const onEnd = (e: TransitionEvent) => {
         if (e.propertyName === 'transform') finish()
       }
-      el.addEventListener('transitionend', onEnd)
+      // Register on the controller's abort signal so destroy() mid-turn removes the
+      // listener (and the closure's reference to the view) deterministically.
+      el.addEventListener('transitionend', onEnd, { signal: this.#ac.signal })
       el.style.transition = transition
       requestAnimationFrame(() => {
         el.style.transform = transform
       })
-      setTimeout(finish, TURN_PHASE_MS + 120) // fallback if transitionend doesn't fire
+      timer = window.setTimeout(finish, TURN_PHASE_MS + 120) // fallback if transitionend doesn't fire
     })
   }
 
@@ -494,27 +516,53 @@ export class ReaderController {
     }
   }
 
+  /** Resolve (and cache) the spine index a highlight CFI lives in. */
+  #indexForCFI(cfi: string): number | undefined {
+    let idx = this.#highlightIndex.get(cfi)
+    if (idx === undefined) {
+      try {
+        idx = this.view.resolveCFI(cfi)?.index
+      } catch {
+        idx = undefined
+      }
+      if (idx !== undefined) this.#highlightIndex.set(cfi, idx)
+    }
+    return idx
+  }
+
   /** Adds (and immediately paints) a yellow highlight. */
   async addHighlight(cfi: string): Promise<void> {
     this.#highlights.add(cfi)
+    this.#indexForCFI(cfi)
     await this.view.addAnnotation({ value: cfi })
   }
 
   async removeHighlight(cfi: string): Promise<void> {
     this.#highlights.delete(cfi)
+    this.#highlightIndex.delete(cfi)
     await this.view.deleteAnnotation({ value: cfi })
   }
 
   /** Seed the highlight set (e.g. on book open) so they draw as sections load. */
   setHighlights(cfis: string[]): void {
     this.#highlights.clear()
-    for (const cfi of cfis) this.#highlights.add(cfi)
+    this.#highlightIndex.clear()
+    for (const cfi of cfis) {
+      this.#highlights.add(cfi)
+      this.#indexForCFI(cfi)
+    }
     void this.reapplyHighlights()
   }
 
-  /** Ask foliate to (re)draw every known highlight; no-ops for unloaded sections. */
-  reapplyHighlights(): void {
+  /**
+   * Ask foliate to (re)draw highlights; no-ops for unloaded sections. When a section
+   * `index` is given (the `create-overlay` path) only that section's highlights are
+   * redrawn — so a page-turn into a new section costs O(highlights-in-that-section),
+   * not O(all-highlights-in-the-book). With no index (the initial seed) it sweeps all.
+   */
+  reapplyHighlights(index?: number): void {
     for (const cfi of this.#highlights) {
+      if (index !== undefined && this.#indexForCFI(cfi) !== index) continue
       void this.view.addAnnotation({ value: cfi }).catch(() => {})
     }
   }
@@ -534,8 +582,16 @@ export class ReaderController {
     if (this.#selTimer) clearTimeout(this.#selTimer)
     this.#pendingDir = null
     this.#ac.abort() // removes every per-document tap/selection listener at once
+    const book = this.view.book
     try {
       this.view.close()
+    } catch {
+      /* ignore */
+    }
+    // Revoke the EPUB's resource blob URLs (close() tears down the renderer but not
+    // the Book, whose Loader cache holds them until destroy()).
+    try {
+      book?.destroy?.()
     } catch {
       /* ignore */
     }

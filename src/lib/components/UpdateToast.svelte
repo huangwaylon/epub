@@ -1,5 +1,14 @@
 <script lang="ts">
   import { pwa } from '../../stores/pwa.svelte'
+
+  // Auto-dismiss the one-time "ready offline" confirmation (the update prompt stays
+  // until the user acts on it). The effect's cleanup clears the timer if the toast is
+  // dismissed or the component unmounts, so no stray timer survives.
+  $effect(() => {
+    if (!pwa.offlineReady) return
+    const t = setTimeout(() => (pwa.offlineReady = false), 4000)
+    return () => clearTimeout(t)
+  })
 </script>
 
 {#if pwa.needRefresh}
@@ -7,6 +16,11 @@
     <span>A new version is ready.</span>
     <button onclick={() => pwa.update()}>Refresh</button>
     <button class="dismiss" onclick={() => (pwa.needRefresh = false)} aria-label="Dismiss">✕</button>
+  </div>
+{:else if pwa.offlineReady}
+  <div class="toast" role="status">
+    <span>Ready to read offline.</span>
+    <button class="dismiss" onclick={() => (pwa.offlineReady = false)} aria-label="Dismiss">✕</button>
   </div>
 {/if}
 
