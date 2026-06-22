@@ -115,9 +115,11 @@
   }
 
   // A user page-turn (swipe). The new page invalidates any popup/toolbar anchored to
-  // the previous page, and means the current position is now worth persisting.
+  // the previous page, hides the chrome if it was up (so a swipe clears the bars the
+  // same way a reading-area tap does), and means the current position is worth saving.
   function onTurn() {
     userInteracted = true
+    chromeVisible = false
     closeOverlays()
   }
 
@@ -274,15 +276,16 @@
       chromeVisible = false
       return
     }
-    // Reading area, chrome hidden: a tap on a Japanese word defines it — *even when a
-    // popup is already open*, so looking up word after word is one tap each (the popup
-    // simply re-anchors to the new word) instead of needing a dismiss tap in between.
-    // Pagination is by swipe — never by tap. The glyph hit-test in extractTextAt makes
-    // tryDefine return false for blank space…
-    if (settings.tapToDefine && tryDefine(info)) return
-    // …and a tap on blank space instead dismisses an open popup (or does nothing). The
-    // popup's own × button and a page-turn also close it.
-    if (dictState.open) dictState.open = false
+    // Reading area, chrome hidden: a tap while a popup is open just dismisses it — it
+    // doesn't define a new word (forgiving glyph hit-slack, not re-anchoring, is what
+    // keeps tap-to-define reliable). Only a tap with no popup open looks a word up.
+    // Pagination is by swipe — never by tap; the glyph hit-test in extractTextAt makes
+    // tryDefine return false for blank space.
+    if (dictState.open) {
+      dictState.open = false
+      return
+    }
+    if (settings.tapToDefine) tryDefine(info)
   }
 
   /**

@@ -562,20 +562,19 @@ a tap carries no notion of edge rails anymore.
    `return` — while the bars are up, a tap **anywhere** in the reading area hides
    them (and is *consumed*, so it doesn't also define). This makes the chrome easy
    to clear without reaching for the bars.
-3. **Define + highlight a glyph.** Otherwise (a tap in the central reading area with
-   the chrome already hidden), if `settings.tapToDefine` call `tryDefine(info)`. This
-   fires **even when a dictionary popup is already open** — so looking up word after
-   word is **one tap each** (the popup simply re-anchors to the new word), rather than
-   the old behaviour where the first tap was consumed to *dismiss* the open popup and
-   you had to tap a second time to define. `tryDefine` first bails when `info.doc` is
-   null (a margin/host tap), then requires the tap to land on an actual Japanese
-   **glyph** per `extractTextAt`'s glyph + word-char gate (the `pointOnGlyph` hit-test
-   in extract.ts:42 rejects taps in margins / inter-column gaps; §10,
+3. **Popup open → dismiss.** Otherwise (a tap in the central reading area with the
+   chrome already hidden), if a dictionary popup is open, set `dictState.open = false`
+   and `return`. A tap while a popup is showing just **dismisses** it — it never
+   defines a new word. (Tap-to-define stays reliable through forgiving glyph
+   hit-slack — `extractTextAt`'s line-aware `glyphSlack`, §10 — not through
+   re-anchoring on every tap.)
+4. **Define + highlight a glyph.** Otherwise (no popup open), if `settings.tapToDefine`
+   call `tryDefine(info)`. `tryDefine` first bails when `info.doc` is null (a
+   margin/host tap), then requires the tap to land on an actual Japanese **glyph** per
+   `extractTextAt`'s glyph + word-char gate (the `pointOnGlyph` hit-test in
+   extract.ts:42 rejects taps in margins / inter-column gaps; §10,
    `docs/japanese.md`), returning `true` only if it started a lookup. On a real match
    the looked-up word is also **auto-highlighted yellow** (a vocab record) — see §10.
-4. **Blank tap → dismiss popup.** If `tryDefine` returned `false` (blank space, a
-   margin/host tap, or `tapToDefine` off) **and** a popup is open, set `dictState.open
-   = false`. So a tap on empty space dismisses the popup; a tap on a word redefines it.
    (The popup's own × button and a page-turn also close it.)
 
 There is **no pagination on tap** — turning the page is exclusively the swipe
@@ -1011,9 +1010,10 @@ beware: it has no JS property API (attributes only) and a closed shadow DOM.
   line-stacking axis (so the whole column/line pitch is tappable, up to the midpoint
   with the neighbour) while keeping the reading axis tight
   (§10, `docs/japanese.md`), so a tap on blank space does nothing (or dismisses an
-  open popup). A tap on a glyph defines it **even while a popup is already open** (the
-  popup re-anchors — one tap per word). If you change `SWIPE_MIN_DISTANCE` or the
-  glyph-hit slack in `pointOnGlyph`/`glyphSlack`, preserve that separation.
+  open popup). A tap on a glyph defines it **only when no popup is open**; while a
+  popup is showing, any tap just dismisses it (no new lookup). If you change
+  `SWIPE_MIN_DISTANCE` or the glyph-hit slack in `pointOnGlyph`/`glyphSlack`, preserve
+  that separation.
 
 ---
 
