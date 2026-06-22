@@ -34,8 +34,14 @@ const MAX_AFTER = 16
 
 /** Characters that can be part of a Japanese word: kana, CJK ideographs, the
  *  long-vowel mark (ー) and the iteration mark (々). Anything else — punctuation,
- *  spaces, latin, digits — is a word boundary that bounds the lookup run. */
-const WORD_CHAR = /[぀-ヿ㐀-鿿豈-﫿ー々]/
+ *  spaces, latin, digits — is a word boundary that bounds the lookup run.
+ *  Ranges: hiragana+katakana (U+3040–30FF), CJK Ext-A + Unified (U+3400–9FFF),
+ *  and CJK Compatibility Ideographs (U+F900–FAFF). NOTE: the compat-block start
+ *  glyph below is U+F900, which is visually identical to the CJK-Unified U+8C48 —
+ *  do not retype it. Using U+8C48 here would span U+8C48–FAFF and wrongly include
+ *  the UTF-16 surrogate range (U+D800–DFFF), matching lone surrogate halves. (The
+ *  run is iterated per UTF-16 unit, so astral CJK — Ext-B+ — is out of scope.) */
+const WORD_CHAR = /[぀-ヿ㐀-鿿豈-﫿ー々]/
 
 function caretPosition(doc: Document, x: number, y: number): { node: Node; offset: number } | null {
   const anyDoc = doc as any

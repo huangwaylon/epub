@@ -257,17 +257,22 @@ lacking the API.
    `crypto.subtle.digest('SHA-256', buf)`, hex-encoded).
 2. **Dedupe:** `getBookMeta(id)`. If a book with that hash already exists, only bump
    `lastOpenedAt = Date.now()`, `putBookMeta`, and return it — the bytes are *not* re-stored.
-3. **Persist bytes:** `await putBook(id, buf)` (OPFS, fallback to IndexedDB — §2).
-4. **Parse metadata** (best-effort, in try/catch — failures fall back to defaults and only
-   `console.warn`): `await makeBook(new File([buf], file.name, { type: 'application/epub+zip' }))`
-   from the vendored `src/vendor/foliate-js/view.js`, then:
+3. **Persist bytes:** `await putBook(id, file)` (OPFS, fallback to IndexedDB — §2).
+4. **From here, any failure rolls the bytes back.** Steps 4–5 run inside a `try/catch`; on
+   any throw it calls `deleteBook(id)` and rethrows. The bytes are already in OPFS at this
+   point, so a throw — most plausibly `putBookMeta` hitting quota on a near-full iPad — would
+   otherwise orphan multi-MB OPFS bytes with no `books` row pointing at them: invisible to the
+   shelf and to `removeBook` (which deletes by *known* id), leaking against quota forever.
+5. **Parse metadata** (best-effort, in a nested try/catch — failures fall back to defaults and
+   only `console.warn`): `await makeBook(file)` from the vendored
+   `src/vendor/foliate-js/view.js`, then:
    - `title` ← `flattenLangMap(meta.title)` else filename minus `.epub`.
    - `author` ← array → `flattenLangMap(a.name ?? a)` per entry joined with `、`; else
      `flattenLangMap(meta.author)`.
    - `language` ← `meta.language[0]` if array, else `meta.language`, else `''`.
    - `dir` ← `book.dir === 'rtl' ? 'rtl' : 'ltr'`.
-   - `cover` ← `await book.getCover()` (a `Blob`) or `undefined`.
-5. Build `BookMeta` (with `addedAt = lastOpenedAt = Date.now()`, `fileSize = buf.byteLength`)
+   - `cover` ← `thumbnailCover(await book.getCover())` (downscaled WebP `Blob`) or `undefined`.
+6. Build `BookMeta` (with `addedAt = lastOpenedAt = Date.now()`, `fileSize = file.size`)
    and `putBookMeta`.
 
 `flattenLangMap(x)` collapses EPUB language-map values, **preferring Japanese**:
@@ -284,9 +289,11 @@ yield `''`.
 
 **UI wiring:** `src/stores/library.svelte.ts` holds the reactive shelf state and exposes
 `importFiles(files)` (filters to `.epub` / `application/epub+zip`, tracks an `importing`
-counter, imports sequentially, then `refreshLibrary()`). `src/lib/library/Shelf.svelte`
-triggers it from a hidden `<input>` (see §6/§7) and on long-press exposes a delete action
-that routes to `removeBook`.
+counter, imports sequentially, then `refreshLibrary()`). A per-file failure is counted and,
+when any fail, surfaced via `library.importError` — a dismissible alert on the shelf — because
+a standalone iOS PWA has no visible console, so a silent `console.error` would just read as
+"the book never appeared." `src/lib/library/Shelf.svelte` triggers import from a hidden
+`<input>` (see §6/§7) and on long-press exposes a delete action that routes to `removeBook`.
 
 ---
 
@@ -318,11 +325,18 @@ VitePWA({
     ],
   },
   workbox: {
-    globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],    // app shell only
-    globIgnores: ['**/pdfjs/**'],                          // PDF.js is large; EPUB-focused
+    clientsClaim: true,                                   // control the page on first activation
+    globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],   // app shell only
+    globIgnores: ['**/pdfjs/**', '**/kuromoji/**', /* dead format loaders */],
     maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-    navigateFallback: `${base}index.html`,                 // base-derived
+    navigateFallback: `${base}index.html`,                // base-derived
     cleanupOutdatedCaches: true,
+    runtimeCaching: [{                                    // ~19 MB IPADIC dict, fetched on first use
+      urlPattern: /\/kuromoji\/dict\/.*\.dat\.gz$/,
+      handler: 'CacheFirst',
+      options: { cacheName: 'kuromoji-ipadic', expiration: { maxEntries: 16, maxAgeSeconds: 180*24*3600 },
+                 cacheableResponse: { statuses: [0, 200] } },
+    }],
   },
   devOptions: { enabled: true, type: 'module' },           // SW runs in `vite dev`
 })
@@ -337,13 +351,21 @@ Key points:
   production while local development stays at the root. See
   [`docs/deployment.md`](./deployment.md) for the deploy pipeline, the base-path
   handling, and the `sharp` CI gotcha — not duplicated here.
-- **`registerType: 'prompt'`** → the SW does not auto-activate; the app surfaces a refresh
-  prompt (below).
+- **`registerType: 'prompt'`** → the SW does not auto-activate an *update*; the app surfaces a
+  refresh prompt (below). It does **not** skipWaiting, so a reading user is never reloaded out
+  from under themselves.
+- **`clientsClaim: true`** → on first install the freshly-activated SW takes control of the
+  already-loaded page immediately. This is what lets the IPADIC dict the lookup worker fetches
+  *in that first session* (right after the dictionary download → `warmupLookup`) be runtime-cached
+  while still online; without it the SW wouldn't control the page until a reload, and the first
+  offline tap would fail to fetch the dict and silently degrade to greedy segmentation.
 - The **apple-touch icon (180)** is in `includeAssets` (it is not part of the web manifest
   `icons` array, which iOS largely ignores — iOS uses the `<link rel="apple-touch-icon">`).
 - **Precache is the app shell only.** Books live in OPFS and the JP dictionary lives in
   jpdict's own IndexedDB — neither is fetched through the SW, so neither is precached.
-- `globIgnores: ['**/pdfjs/**']` keeps the large PDF.js bundle out of the precache.
+- `globIgnores` keeps the large PDF.js bundle and the ~19 MB kuromoji IPADIC dict out of the
+  install-time precache; the dict is instead **runtime-cached** (`CacheFirst`) on first use, so
+  word segmentation works offline thereafter.
 - `navigateFallback: '${base}index.html'` makes the SPA work offline for any route under the scope.
 - `devOptions.enabled: true` runs the SW under `vite dev` so install/offline can be tested
   on-device (the `server.host: true` setting exposes the dev server on the LAN for that).

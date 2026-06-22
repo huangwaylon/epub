@@ -52,7 +52,7 @@ The other stores follow the identical pattern (all in `src/stores/`):
 | Store | Shape (abridged) | Mutators |
 | --- | --- | --- |
 | `settings.svelte.ts` | `ReaderSettings` (theme, fontScale, lineHeight, marginScale, fontFamily, writingMode, tapToDefine) | `initSettings`, `updateSettings`, `applyTheme` |
-| `library.svelte.ts` | `{ books, progress, loading, importing }` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` |
+| `library.svelte.ts` | `{ books, progress, loading, importing, importError }` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` |
 | `annotations.svelte.ts` | `{ items: Annotation[] }` | `loadAnnotations`, `clearAnnotations`, `saveAnnotation`, `removeAnnotation`, `newId` |
 | `dict.svelte.ts` | `{ state, updating, progress, error? }` (offline JMdict download status) | mutated directly by `services/jp/dictdb.ts` |
 | `pwa.svelte.ts` | `{ needRefresh, offlineReady, update() }` | written by the SW registration in `main.ts` |
@@ -70,7 +70,7 @@ The other stores follow the identical pattern (all in `src/stores/`):
 | `$derived(...)` | `BookCover` (`hue`), `TocSheet` (`items`), `AnnotationsPanel` (`highlights`/`bookmarks`/`list`) | computed values |
 | `$props()` | every component | destructure incoming props (replaces `export let`) |
 | `$bindable(default)` | `Sheet.open`, `Segmented.value`, `DictionaryPopup.open` | two-way-bindable props |
-| `$effect(...)` | `BookCover` (objectURL lifecycle), `Sheet` (move/restore focus on open/close), `DictionaryPopup`/`SelectionToolbar` (re-position via `placeAnchored` on open + anchor/content change) | side effects with optional cleanup return |
+| `$effect(...)` | `BookCover` (objectURL lifecycle), `Sheet` (move/restore focus on open/close — capture is **edge-gated** on a real closed→open transition so the `bind:this` re-run can't re-capture the sheet itself as the restore target), `DictionaryPopup`/`SelectionToolbar` (re-position via `placeAnchored` on open + anchor/content change, **cancelling the queued rAF** on cleanup so rapid re-taps don't pile up layout reads) | side effects with optional cleanup return |
 
 **Generics on components:** `Segmented.svelte` declares
 `<script lang="ts" generics="T extends string | number">`, so `value`/`options`/`onchange` are

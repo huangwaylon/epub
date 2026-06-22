@@ -77,6 +77,14 @@ export default defineConfig(({ command }) => {
           ],
         },
         workbox: {
+          // Take control of the page as soon as the SW activates, even on the very
+          // first visit. Without this, a freshly-installed SW doesn't control the
+          // already-loaded page, so the kuromoji IPADIC dict the lookup worker fetches
+          // *during that first session* (right after the dictionary download, via
+          // warmupLookup) bypasses the SW and is never runtime-cached — and the first
+          // offline tap would then fail to fetch it. `registerType: 'prompt'` still
+          // governs *updates* (we never skipWaiting out from under a reading user).
+          clientsClaim: true,
           // Precache the app shell. Books live in OPFS and the JMdict data lives in
           // jpdict's own IndexedDB, so neither is fetched through the service worker.
           globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],

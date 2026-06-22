@@ -44,11 +44,15 @@
     void needsDownload
     void result
     void showActions
-    requestAnimationFrame(() => {
+    const id = requestAnimationFrame(() => {
+      if (!open) return // a dismiss tap may have landed before this frame
       const w = card?.offsetWidth ?? 300
       const h = card?.offsetHeight ?? 160
       pos = placeAnchored(ax, ay, ay, w, h, { gap: 16 })
     })
+    // Cancel a queued frame when the anchor/content changes again (rapid re-tap) or
+    // the popup closes, so stale frames don't pile up forcing extra layout reads.
+    return () => cancelAnimationFrame(id)
   })
 </script>
 

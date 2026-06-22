@@ -23,17 +23,22 @@
   }
 
   // Honour aria-modal: move focus into the sheet on open so VoiceOver / keyboard
-  // users land inside it, and restore focus to the trigger on close.
+  // users land inside it, and restore focus to the trigger on close. The capture is
+  // edge-gated on a real closed→open transition: the effect also re-runs when the
+  // `bind:this` sets `sheetEl` (a second pass while `open` is still true), and without
+  // the gate that pass would re-capture `document.activeElement` — now the sheet itself
+  // — clobbering the trigger we meant to restore to.
   let sheetEl = $state<HTMLElement>()
   let restoreFocus: HTMLElement | null = null
+  let wasOpen = false
   $effect(() => {
-    if (open) {
-      restoreFocus = (document.activeElement as HTMLElement) ?? null
-      sheetEl?.focus()
-    } else if (restoreFocus) {
+    if (open && !wasOpen) restoreFocus = (document.activeElement as HTMLElement) ?? null
+    if (open) sheetEl?.focus()
+    else if (wasOpen && restoreFocus) {
       restoreFocus.focus?.()
       restoreFocus = null
     }
+    wasOpen = open
   })
 </script>
 

@@ -180,7 +180,7 @@ it to remove them all at once, so re-loaded sections don't leak listeners).
 | `setHighlights` | `(cfis: string[]) => void` | Replaces the whole highlight set (book-open seeding) and re-seeds the `cfi→index` cache, then `reapplyHighlights()` (full sweep). |
 | `reapplyHighlights` | `(index?: number) => void` | `addAnnotation` for known CFIs (no-ops for unloaded sections). With an `index` (the `create-overlay` path) only redraws that section's highlights; with no index (the `setHighlights` seed) sweeps all. |
 | `clearSelection` | `() => void` | Best-effort `view.deselect()`. |
-| `destroy` | `() => void` | Removes the resize listener, clears the turn/nudge/resize/selection timers, **`#ac.abort()`** (removes every per-document tap/selection listener *and* any in-flight page-turn `transitionend` listener in one shot), best-effort `view.close()` **then `book.destroy()`** (revokes the EPUB's resource blob URLs), removes the element. |
+| `destroy` | `() => void` | Removes the resize listener, clears the nudge/resize timers, the page-turn slide fallback timer (`#slideTimer`), and **every** per-document selection-debounce timer (`#selTimers` map), nulls `#pendingDir`, then **`#ac.abort()`** (removes every per-document tap/selection listener *and* any in-flight page-turn `transitionend` listener in one shot), best-effort `view.close()` **then `book.destroy()`** (revokes the EPUB's resource blob URLs), removes the element. |
 
 ### `ReaderCallbacks` (reader.ts:60-70)
 
@@ -509,9 +509,13 @@ Every listener both attach points install is registered with the controller's si
 ### Swipe → page turn
 
 The `pointerup` handler (reader.ts:493-530) decides swipe-vs-tap. First it bails
-if the pointer is non-primary, was cancelled, or a non-empty Range selection is
+if the pointer is non-primary, was cancelled, a non-empty Range selection is
 active (`sel.type === 'Range' && sel.toString().length > 0` — that's the tail of
-a selection, left for the toolbar). Then, from the down→up delta `dx`/`dy`:
+a selection, left for the toolbar), **or the page is pinch-zoomed**
+(`visualViewport.scale > 1.01` — a second finger was/is down, so the coordinates
+are unreliable and a stray primary `pointerup` shouldn't turn the page or define;
+this mirrors the paginator's own pinch guard, §13). Then, from the down→up delta
+`dx`/`dy`:
 
 ```ts
 if (Math.abs(dx) >= SWIPE_MIN_DISTANCE && Math.abs(dx) > Math.abs(dy)) {
@@ -610,7 +614,11 @@ leave foliate's `animated` attribute **off** (§6), patch its own touch turn out
 The new page enters from the side the reader moved toward; the old page leaves the
 opposite edge, so it reads as one continuous horizontal push. Both phases are
 **`transitionend`-driven** (`#transition`, reader.ts:369, with a `TURN_PHASE_MS +
-120`ms fallback) so timer drift can't leave a blank-paper gap between them. A
+120`ms fallback if `transitionend` never fires) so timer drift can't leave a
+blank-paper gap between them. The fallback `setTimeout` handle is held on the
+instance (`#slideTimer`) so a `destroy()` mid-turn clears it — `#ac.abort()` removes
+the `transitionend` listener but can't cancel a bare timer, which would otherwise
+fire ~270ms after teardown still holding the view element. A
 `#turning` flag plus a single `#pendingDir` **coalesce rapid swipes** (the latest
 queued turn runs when the current finishes); `destroy()` clears `#pendingDir`.
 
@@ -659,7 +667,12 @@ navigation and a scrubber **seek** (§12) set `userInteracted` the same way.
 
 `#attachTaps` also installs a **250ms-debounced** `selectionchange` listener on
 the content doc (reader.ts:534-562; registered with the same `#ac` signal as the
-tap listeners). When the debounce fires and there is a non-empty Range:
+tap listeners). The debounce timer is held **per document** in `#selTimers`
+(a `Map<Document, number>`), not in one shared field, so a landscape **2-up spread
+that has two sections loaded** (two content docs, each with its own listener) can't
+have one doc's `selectionchange` clear and reschedule the other doc's pending
+callback. `destroy()` clears every timer in the map. When the debounce fires and
+there is a non-empty Range:
 
 ```ts
 const range = sel.getRangeAt(0)

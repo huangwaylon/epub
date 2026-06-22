@@ -83,43 +83,52 @@ export async function importEpub(file: File): Promise<BookMeta> {
   // allocating a second copy. makeBook likewise reads ranges from the same File.
   await putBook(id, file)
 
-  let title = file.name.replace(/\.epub$/i, '')
-  let author = ''
-  let language = ''
-  let dir: 'ltr' | 'rtl' = 'ltr'
-  let cover: Blob | undefined
-
+  // From here on the bytes are already persisted, so any failure must roll them back —
+  // otherwise a throw (most likely `putBookMeta` hitting quota on a near-full iPad)
+  // would orphan multi-MB OPFS bytes with no `books` row pointing at them: invisible to
+  // the shelf and to `removeBook` (which deletes by known id), leaking against quota.
   try {
-    const book: any = await makeBook(file)
-    const meta = book?.metadata ?? {}
-    title = flattenLangMap(meta.title) || title
-    if (Array.isArray(meta.author)) {
-      author = meta.author.map((a: any) => flattenLangMap(a?.name ?? a)).filter(Boolean).join('、')
-    } else {
-      author = flattenLangMap(meta.author)
-    }
-    language = (Array.isArray(meta.language) ? meta.language[0] : meta.language) ?? ''
-    dir = book?.dir === 'rtl' ? 'rtl' : 'ltr'
-    cover = await thumbnailCover((await book?.getCover?.()) ?? undefined)
-  } catch (err) {
-    console.warn('Could not parse EPUB metadata; using fallbacks.', err)
-  }
+    let title = file.name.replace(/\.epub$/i, '')
+    let author = ''
+    let language = ''
+    let dir: 'ltr' | 'rtl' = 'ltr'
+    let cover: Blob | undefined
 
-  const now = Date.now()
-  const meta: BookMeta = {
-    id,
-    title,
-    author,
-    language,
-    dir,
-    cover,
-    fileName: file.name,
-    fileSize: file.size,
-    addedAt: now,
-    lastOpenedAt: now,
+    try {
+      const book: any = await makeBook(file)
+      const meta = book?.metadata ?? {}
+      title = flattenLangMap(meta.title) || title
+      if (Array.isArray(meta.author)) {
+        author = meta.author.map((a: any) => flattenLangMap(a?.name ?? a)).filter(Boolean).join('、')
+      } else {
+        author = flattenLangMap(meta.author)
+      }
+      language = (Array.isArray(meta.language) ? meta.language[0] : meta.language) ?? ''
+      dir = book?.dir === 'rtl' ? 'rtl' : 'ltr'
+      cover = await thumbnailCover((await book?.getCover?.()) ?? undefined)
+    } catch (err) {
+      console.warn('Could not parse EPUB metadata; using fallbacks.', err)
+    }
+
+    const now = Date.now()
+    const meta: BookMeta = {
+      id,
+      title,
+      author,
+      language,
+      dir,
+      cover,
+      fileName: file.name,
+      fileSize: file.size,
+      addedAt: now,
+      lastOpenedAt: now,
+    }
+    await putBookMeta(meta)
+    return meta
+  } catch (err) {
+    await deleteBook(id).catch(() => {})
+    throw err
   }
-  await putBookMeta(meta)
-  return meta
 }
 
 /** Shelf listing, most-recently-opened first. */

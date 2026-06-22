@@ -241,8 +241,9 @@
   // A tap and foliate's highlight hit-test (click) both fire on the same gesture.
   // When highlights exist, briefly defer the tap action so a highlight tap can
   // cancel it (and open the edit toolbar) instead of also turning the page/defining.
-  // The window only needs to outlast the click→show-annotation hop (the lookup itself
-  // now runs in a worker, so this delay is purely for race-resolution, not work).
+  // The window must outlast the click→show-annotation hop, which on touch can trail
+  // the pointerup by several frames; 60ms is the documented, safer margin (the lookup
+  // itself runs in a worker, so this delay is purely for race-resolution, not work).
   let pendingTap: number | undefined
   function onTap(info: TapInfo) {
     if (hasHighlights) {
@@ -250,7 +251,7 @@
       pendingTap = window.setTimeout(() => {
         pendingTap = undefined
         handleTap(info)
-      }, 40)
+      }, 60)
     } else {
       handleTap(info)
     }

@@ -52,12 +52,17 @@
   button {
     font-weight: 650;
     color: var(--accent);
-    padding: 6px 10px;
+    min-height: 44px;
+    padding: 6px 14px;
     border-radius: 100px;
   }
   .dismiss {
     color: var(--ink-faint);
     font-weight: 400;
-    padding: 6px 8px;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
   }
 </style>

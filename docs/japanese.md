@@ -469,9 +469,16 @@ export function looksJapanese(s: string): boolean
    `el.tagName.toUpperCase()`** — EPUB content is XHTML, where `tagName` is lowercase
    (`"rt"`), unlike HTML (`"RT"`). See the gotcha in §10.
 5. **Tapped-char gate.** The tapped glyph is the character at `pos.offset`; if it is **not a
-   word char** (`WORD_CHAR = /[぀-ヿ㐀-鿿豈-﫿ー々]/` — kana, CJK ideographs, the long-vowel mark
-   `ー`, the iteration mark `々`), return `null` so a latin/punctuation tap falls through to the
-   chrome toggle. This subsumes the old `looksJapanese` pre-filter `Reader.svelte` used to apply.
+   word char** (`WORD_CHAR = /[぀-ヿ㐀-鿿豈-﫿ー々]/` — kana U+3040–30FF, CJK Ext-A + Unified
+   U+3400–9FFF, CJK Compatibility Ideographs **U+F900–FAFF**, the long-vowel mark `ー`, the
+   iteration mark `々`), return `null` so a latin/punctuation tap falls through to the chrome
+   toggle. This subsumes the old `looksJapanese` pre-filter `Reader.svelte` used to apply.
+   **Gotcha:** the compat-block endpoint glyph in the source is U+F900, which is *visually
+   identical* to the CJK-Unified U+8C48 — they must not be confused. Writing the range with
+   U+8C48 (as it once was) spans U+8C48–FAFF and silently swallows the UTF-16 **surrogate
+   range** U+D800–DFFF, so the gate then matches lone surrogate halves; the run is iterated per
+   UTF-16 unit, so astral CJK (Ext-B+) is out of scope either way. See the comment on the
+   constant in `extract.ts`.
 6. **Collect the run on both sides.** Using the ruby-skipping walker, gather the contiguous
    word-char run **forward** from the tap (`node.data.slice(pos.offset)` then successive text
    nodes, capped at `MAX_AFTER`, stopping at the first non-word char) and **backward** from the

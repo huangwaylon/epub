@@ -363,8 +363,9 @@ export class ReaderController {
     this.#resizeTimer = window.setTimeout(() => this.applyLayout(this.#settings), 150)
   }
   #resizeTimer: number | undefined
-  /** Debounce timer for the active document's selectionchange (cleared on destroy). */
-  #selTimer: number | undefined
+  /** Debounce timers for each loaded document's selectionchange, keyed by doc so a
+   *  2-up spread's two documents don't share (and clobber) one timer. Cleared on destroy. */
+  #selTimers = new Map<Document, number>()
 
   /**
    * Writing-mode changes must be re-detected from the content document, so we
@@ -474,11 +475,13 @@ export class ReaderController {
     const el = this.view
     return new Promise((resolve) => {
       let done = false
-      let timer: number | undefined
       const finish = () => {
         if (done) return
         done = true
-        if (timer) clearTimeout(timer)
+        if (this.#slideTimer) {
+          clearTimeout(this.#slideTimer)
+          this.#slideTimer = undefined
+        }
         el.removeEventListener('transitionend', onEnd)
         resolve()
       }
@@ -492,9 +495,14 @@ export class ReaderController {
       requestAnimationFrame(() => {
         el.style.transform = transform
       })
-      timer = window.setTimeout(finish, TURN_PHASE_MS + 120) // fallback if transitionend doesn't fire
+      // Fallback if transitionend doesn't fire. Tracked on the instance so a destroy()
+      // mid-turn clears it (the abort removes the transitionend listener but can't cancel
+      // a bare setTimeout), rather than firing ~270ms after teardown holding `el`.
+      this.#slideTimer = window.setTimeout(finish, TURN_PHASE_MS + 120)
     })
   }
+  /** Safety-timeout handle for the in-flight page-turn slide (cleared on destroy). */
+  #slideTimer: number | undefined
 
   goTo(target: string | number) {
     return this.view.goTo(target)
@@ -579,7 +587,9 @@ export class ReaderController {
     window.removeEventListener('resize', this.#onResize)
     if (this.#resizeTimer) clearTimeout(this.#resizeTimer)
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
-    if (this.#selTimer) clearTimeout(this.#selTimer)
+    if (this.#slideTimer) clearTimeout(this.#slideTimer)
+    for (const t of this.#selTimers.values()) clearTimeout(t)
+    this.#selTimers.clear()
     this.#pendingDir = null
     this.#ac.abort() // removes every per-document tap/selection listener at once
     const book = this.view.book
@@ -658,6 +668,13 @@ export class ReaderController {
         // the selection toolbar.
         if (opts.shouldIgnoreUp?.()) return
 
+        // While the page is pinch-zoomed (a second finger was/is down) the pointer
+        // coordinates are unreliable and a stray primary pointerup shouldn't turn the
+        // page or define. The paginator already blocks its own turn on pinch; mirror
+        // that here via the visual-viewport scale so an iPad pinch can't trigger a
+        // spurious page turn.
+        if ((globalThis.visualViewport?.scale ?? 1) > 1.01) return
+
         const dx = e.clientX - downX
         const dy = e.clientY - downY
 
@@ -716,30 +733,34 @@ export class ReaderController {
     doc.addEventListener(
       'selectionchange',
       () => {
-        if (this.#selTimer) clearTimeout(this.#selTimer)
-        this.#selTimer = window.setTimeout(() => {
-          this.#selTimer = undefined
-          const sel = doc.getSelection()
-          if (sel && sel.type === 'Range' && sel.toString().trim().length > 0) {
-            const range = sel.getRangeAt(0)
-            const r = range.getBoundingClientRect()
-            const frame = doc.defaultView?.frameElement as HTMLElement | null
-            const fr = frame?.getBoundingClientRect()
-            this.#cb.onSelection?.({
-              doc,
-              range,
-              text: sel.toString(),
-              rect: {
-                left: (fr?.left ?? 0) + r.left,
-                top: (fr?.top ?? 0) + r.top,
-                width: r.width,
-                height: r.height,
-              },
-            })
-          } else {
-            this.#cb.onSelectionCleared?.()
-          }
-        }, 250)
+        const prev = this.#selTimers.get(doc)
+        if (prev) clearTimeout(prev)
+        this.#selTimers.set(
+          doc,
+          window.setTimeout(() => {
+            this.#selTimers.delete(doc)
+            const sel = doc.getSelection()
+            if (sel && sel.type === 'Range' && sel.toString().trim().length > 0) {
+              const range = sel.getRangeAt(0)
+              const r = range.getBoundingClientRect()
+              const frame = doc.defaultView?.frameElement as HTMLElement | null
+              const fr = frame?.getBoundingClientRect()
+              this.#cb.onSelection?.({
+                doc,
+                range,
+                text: sel.toString(),
+                rect: {
+                  left: (fr?.left ?? 0) + r.left,
+                  top: (fr?.top ?? 0) + r.top,
+                  width: r.width,
+                  height: r.height,
+                },
+              })
+            } else {
+              this.#cb.onSelectionCleared?.()
+            }
+          }, 250),
+        )
       },
       { signal },
     )

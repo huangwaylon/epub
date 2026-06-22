@@ -52,6 +52,7 @@ export async function isDictReady(): Promise<boolean> {
 /** Kick off (or resume) the JMdict download for the given gloss language. */
 export function downloadDictionary(lang = 'en'): Promise<void> {
   dict.error = undefined
+  dict.progress = 0 // clear any stale percentage from a prior (completed/failed) run
   return new Promise<void>((resolve, reject) => {
     getDb()
       .then((d) => {

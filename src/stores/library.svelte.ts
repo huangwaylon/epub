@@ -8,11 +8,15 @@ export const library = $state<{
   progress: Record<string, ReadingProgress | undefined>
   loading: boolean
   importing: number // count of in-flight imports
+  /** Last import error, surfaced on the shelf (there's no visible console in a
+   *  standalone iOS PWA, so a silent failure would just look like "nothing happened"). */
+  importError: string | null
 }>({
   books: [],
   progress: {},
   loading: true,
   importing: 0,
+  importError: null,
 })
 
 /** Display-affecting fields only. Cover blobs are re-read from IDB on every refresh
@@ -67,13 +71,19 @@ export async function refreshLibrary(): Promise<void> {
 
 export async function importFiles(files: FileList | File[]): Promise<void> {
   const list = Array.from(files).filter((f) => /\.epub$/i.test(f.name) || f.type === 'application/epub+zip')
-  if (!list.length) return
+  if (!list.length) {
+    if (Array.from(files).length) library.importError = 'That file isn’t an EPUB.'
+    return
+  }
+  library.importError = null
   library.importing += list.length
+  let failures = 0
   try {
     for (const file of list) {
       try {
         await importEpub(file)
       } catch (err) {
+        failures += 1
         console.error('Import failed for', file.name, err)
       } finally {
         library.importing -= 1
@@ -81,6 +91,12 @@ export async function importFiles(files: FileList | File[]): Promise<void> {
     }
   } finally {
     if (library.importing < 0) library.importing = 0
+    if (failures > 0) {
+      library.importError =
+        failures === list.length
+          ? `Couldn’t import ${failures === 1 ? 'the book' : `${failures} books`} — the file may be corrupt or storage is full.`
+          : `Couldn’t import ${failures} of ${list.length} books.`
+    }
     await refreshLibrary()
   }
 }

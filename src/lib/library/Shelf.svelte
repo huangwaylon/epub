@@ -63,6 +63,14 @@
   {#if library.importing > 0}
     <div class="importing">Importing {library.importing} book{library.importing > 1 ? 's' : ''}…</div>
   {/if}
+  {#if library.importError}
+    <div class="import-error" role="alert">
+      <span>{library.importError}</span>
+      <button class="dismiss-err" onclick={() => (library.importError = null)} aria-label="Dismiss">
+        <Icon name="x" size={16} />
+      </button>
+    </div>
+  {/if}
 
   {#if library.loading}
     <div class="state"><div class="spinner"></div></div>
@@ -192,6 +200,33 @@
     color: var(--ink-soft);
     padding: 0 2px 14px;
   }
+  .import-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    padding: 10px 10px 10px 14px;
+    border-radius: var(--r-md);
+    font-size: 13px;
+    color: #c0392b;
+    background: color-mix(in srgb, #c0392b 10%, var(--paper-raised));
+    border: 1px solid color-mix(in srgb, #c0392b 28%, transparent);
+  }
+  :global([data-theme='dark']) .import-error {
+    color: #ff8a7d;
+  }
+  .import-error span {
+    flex: 1;
+  }
+  .dismiss-err {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    color: inherit;
+  }
 
   .grid {
     display: grid;
@@ -207,6 +242,7 @@
     .bar,
     .grid,
     .importing,
+    .import-error,
     .state {
       max-width: 1120px;
       margin-inline: auto;
