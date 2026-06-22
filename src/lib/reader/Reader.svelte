@@ -260,13 +260,20 @@
   }
 
   function handleTap(info: TapInfo) {
+    // A tap while the definition popup is open *only* dismisses it — anywhere on
+    // screen, including the top/bottom nav-bar band. The popup takes priority over
+    // both chrome-toggling and defining a new word, so a tap meant to clear the card
+    // never also flashes the bars (and forgiving glyph hit-slack, not re-anchoring,
+    // is what keeps tap-to-define reliable, so we don't re-look-up here either).
+    if (dictState.open) {
+      closeOverlays()
+      return
+    }
     // A tap in the top or bottom edge band (over the nav bars) toggles the chrome.
     // This is the way a tap *shows* the bars — a tap in the central reading area
-    // never reveals them, so reading taps don't flash the chrome. Toggling also
-    // clears any open popup so the two layers don't overlap.
+    // never reveals them, so reading taps don't flash the chrome.
     if (inChromeToggleBand(info.py)) {
       chromeVisible = !chromeVisible
-      closeOverlays()
       return
     }
     // While the chrome is visible, a tap anywhere in the reading area dismisses it
@@ -276,15 +283,9 @@
       chromeVisible = false
       return
     }
-    // Reading area, chrome hidden: a tap while a popup is open just dismisses it — it
-    // doesn't define a new word (forgiving glyph hit-slack, not re-anchoring, is what
-    // keeps tap-to-define reliable). Only a tap with no popup open looks a word up.
-    // Pagination is by swipe — never by tap; the glyph hit-test in extractTextAt makes
-    // tryDefine return false for blank space.
-    if (dictState.open) {
-      dictState.open = false
-      return
-    }
+    // Reading area, chrome hidden, no popup: look the tapped word up. Pagination is by
+    // swipe — never by tap; the glyph hit-test in extractTextAt makes tryDefine return
+    // false for blank space.
     if (settings.tapToDefine) tryDefine(info)
   }
 
