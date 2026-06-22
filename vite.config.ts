@@ -1,7 +1,21 @@
 import { defineConfig } from 'vite'
 import { fileURLToPath } from 'node:url'
+import { execSync } from 'node:child_process'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { VitePWA } from 'vite-plugin-pwa'
+
+// A human-readable build version (commit date + short SHA) baked in at config time
+// and exposed as the `__APP_VERSION__` global, so the Settings "About" section can
+// show which build is running. Falls back to "dev" outside a git checkout.
+function appVersion(): string {
+  try {
+    const sha = execSync('git rev-parse --short HEAD').toString().trim()
+    const date = execSync('git log -1 --format=%cs').toString().trim() // YYYY-MM-DD
+    return `${date} · ${sha}`
+  } catch {
+    return 'dev'
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => {
@@ -16,6 +30,9 @@ export default defineConfig(({ command }) => {
   const isLoader = (s: string) => /loader\/(?:Node|Browser)DictionaryLoader(?:\.js)?$/.test(s)
   return {
     base,
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion()),
+    },
     resolve: {
       // Applies during the production build (Rolldown).
       alias: [

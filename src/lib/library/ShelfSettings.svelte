@@ -92,6 +92,7 @@
       <a href="https://github.com/birchill/10ten-ja-reader" target="_blank" rel="noreferrer">10ten</a>
       project (JMdict / CC BY-SA).
     </p>
+    <p class="version">Version <span>{__APP_VERSION__}</span></p>
   </section>
 </div>
 
@@ -185,5 +186,15 @@
   }
   .about a {
     color: var(--accent);
+  }
+  .version {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--ink-faint);
+  }
+  .version span {
+    font-variant-numeric: tabular-nums;
+    font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    letter-spacing: 0.02em;
   }
 </style>

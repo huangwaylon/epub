@@ -551,31 +551,38 @@ a tap carries no notion of edge rails anymore.
    dismisses an open dictionary popup and is *consumed*.
 2. **Top/bottom band → toggle chrome.** If the tap's top-window `py` lands in the
    top or bottom edge band (`inChromeToggleBand`, sized `clamp(80, vh*0.12, 160)` ≈
-   the nav-bar height), toggle `chromeVisible` and `return`. This is the **only** way
-   a tap shows/hides the bars — a tap in the central reading area never toggles the
-   chrome, so reading taps don't flash the bars. It fires even on a glyph, and it's
-   how a margin/host tap in the band reveals the chrome.
-3. **Define + highlight a glyph.** Otherwise (a tap in the central reading area), if
-   `settings.tapToDefine` call `tryDefine(info)` — `tryDefine` first bails when
-   `info.doc` is null (a margin/host tap), then requires the tap to land on an actual
-   Japanese **glyph** per `extractTextAt`'s glyph + word-char gate (the `pointOnGlyph`
-   hit-test in extract.ts:42 rejects taps in margins / inter-column gaps; §10,
-   `docs/japanese.md`). A central tap on **blank space** therefore does **nothing** —
-   it does **not** toggle the chrome. On a real match the looked-up word is also
-   **auto-highlighted yellow** (a vocab record) — see §10.
+   the nav-bar height), toggle `chromeVisible` and `return`. This is how a tap
+   **shows** the bars — a tap in the central reading area never *reveals* them, so
+   reading taps don't flash the chrome. It fires even on a glyph, and it's how a
+   margin/host tap in the band reveals the chrome.
+3. **Chrome visible → dismiss.** Otherwise, if `chromeVisible`, set it `false` and
+   `return` — while the bars are up, a tap **anywhere** in the reading area hides
+   them (and is *consumed*, so it doesn't also define). This makes the chrome easy
+   to clear without reaching for the bars.
+4. **Define + highlight a glyph.** Otherwise (a tap in the central reading area with
+   the chrome already hidden), if `settings.tapToDefine` call `tryDefine(info)` —
+   `tryDefine` first bails when `info.doc` is null (a margin/host tap), then requires
+   the tap to land on an actual Japanese **glyph** per `extractTextAt`'s glyph +
+   word-char gate (the `pointOnGlyph` hit-test in extract.ts:42 rejects taps in
+   margins / inter-column gaps; §10, `docs/japanese.md`). A central tap on **blank
+   space** therefore does **nothing** — it does **not** toggle the chrome. On a real
+   match the looked-up word is also **auto-highlighted yellow** (a vocab record) —
+   see §10.
 
 There is **no pagination on tap** — turning the page is exclusively the swipe
-path above — and the central area no longer toggles the chrome on a blank tap.
+path above — and the central area only toggles the chrome to *dismiss* it (never to
+reveal it on a blank tap).
 
-**Hiding the chrome again.** Because the central area no longer toggles, once the
-bars are visible they cover the top/bottom toggle bands, so a band tap can't reach
-the reader's gesture detector behind them. Instead the bars hide themselves: the
+**Hiding the chrome again.** Two paths hide visible bars: (a) a tap in the reading
+area (step 3 above), and (b) tapping a bar's own empty area. For (b), once the bars
+are visible they cover the top/bottom toggle bands, so a band tap can't reach the
+reader's gesture detector behind them. Instead the bars hide themselves: the
 `<header>`/`<footer>` carry `role="presentation"` + `onclick={dismissChromeFromBar}`
 (Reader.svelte), which sets `chromeVisible = false` unless the tap landed on an
 actual control (`e.target.closest('button')`). So tapping a bar's empty area (title,
-progress) hides the chrome — the model stays "top/bottom toggles, middle never does"
-in both directions. (Bar taps are native `click`s and never reach the foliate-view
-gesture detector — the bars are sibling overlays — so there's no double-handling.)
+progress) hides the chrome too. (Bar taps are native `click`s and never reach the
+foliate-view gesture detector — the bars are sibling overlays — so there's no
+double-handling.)
 
 **Standalone reading-% readout.** While the chrome is **hidden**, a small
 `pointer-events:none` percentage pill (`.page-pct`, `{Math.round(fraction*100)}%`)

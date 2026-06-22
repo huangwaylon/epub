@@ -264,15 +264,22 @@
       return
     }
     // A tap in the top or bottom edge band (over the nav bars) toggles the chrome.
-    // This is the *only* way a tap shows/hides the bars — a tap in the central
-    // reading area never does, so reading taps don't flash the chrome.
+    // This is the way a tap *shows* the bars — a tap in the central reading area
+    // never reveals them, so reading taps don't flash the chrome.
     if (inChromeToggleBand(info.py)) {
       chromeVisible = !chromeVisible
       return
     }
-    // Otherwise (a tap in the central reading area): define a tapped Japanese word.
-    // The glyph hit-test in extractTextAt means taps on blank space simply do
-    // nothing rather than toggling the chrome.
+    // While the chrome is visible, a tap anywhere in the reading area dismisses it
+    // (and is consumed — it doesn't also define) so the bars are easy to clear
+    // without reaching for them, matching their own tap-to-hide behaviour.
+    if (chromeVisible) {
+      chromeVisible = false
+      return
+    }
+    // Otherwise (a tap in the central reading area, chrome hidden): define a tapped
+    // Japanese word. The glyph hit-test in extractTextAt means taps on blank space
+    // simply do nothing rather than toggling the chrome.
     if (settings.tapToDefine) tryDefine(info)
   }
 
