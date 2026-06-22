@@ -42,23 +42,27 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
   these **honor `book.dir` (rtl)**, so the swipe turns the correct way in LTR / RTL / 縦書き
   and always animates as a horizontal slide (fired via the `onTurn` callback). Otherwise a
   clean tap (move < 16px `TAP_MOVE_TOLERANCE`, < 400ms `TAP_MAX_MS`) routes through `onTap` →
-  `handleTap` in `Reader.svelte`, in order: (1) if a popup / highlight-edit toolbar is open,
-  dismiss it and consume the tap; (2) else if the tap's top-window `py` is in the top/bottom
-  edge band (`inChromeToggleBand`, ≈ nav-bar height) toggle chrome — a reliable target that
-  doesn't fight define; (3) else if the tap lands on an actual glyph (`pointOnGlyph` in
-  `extract.ts`, and `info.doc` non-null) and `tapToDefine`, define the word; (4) else toggle
-  chrome. Margin/host taps carry **`doc: null`** (nothing to define). There are **no edge
-  rails** and no `TapInfo.zone`.
+  `handleTap` in `Reader.svelte`, in order: (1) if the dictionary popup or selection toolbar
+  is open, dismiss it (`closeOverlays`) and consume the tap — highest priority, fires for a
+  tap anywhere on screen, so it never also toggles chrome or looks up a new word; (2) else if
+  the tap's top-window `py` is in the top/bottom edge band (`inChromeToggleBand`, ≈ nav-bar
+  height) toggle chrome — the only way a tap reveals the bars, and it no longer also closes
+  overlays (case 1 already returned); (3) else if chrome is visible, hide it and consume the
+  tap; (4) else if `tapToDefine` and the tap lands on an actual glyph (`pointOnGlyph` in
+  `extract.ts`, and `info.doc` non-null), define the word — a blank-centre tap does **nothing**
+  (never toggles chrome, never turns the page). Margin/host taps carry **`doc: null`** (nothing
+  to define). There are **no edge rails** and no `TapInfo.zone`.
 - **Don't edit `src/vendor/foliate-js/**`** unless it's a deliberate, documented patch. There
   are **two**: (1) `view.js` removed pdf.js + the PDF branch (`isPDF` remains as dead code);
   (2) `paginator.js` disables foliate's own touch page-turn (`TSUZURI PATCH`: `#onTouchMove`
   keeps `preventDefault` but drops `scrollBy`; `#onTouchEnd` drops the velocity `snap`) so our
   swipe detector owns pagination. Keep diffs minimal and note them in `docs/reader-engine.md`.
-- Highlights are CFI-anchored: `cfiForSelection(doc, range)` (uses the `#docIndex`
-  WeakMap + `view.getCFI`) → persist via the `annotations` store → draw via
-  `addHighlight(cfi, hex)`. `#highlightColors` is the source of truth; `create-overlay`
-  re-applies them when a section loads. Colours come from `HIGHLIGHT_HEX` in
-  `src/services/types.ts` (NOT the `--hl-*` CSS vars).
+- Highlights are CFI-anchored and a single yellow: `cfiForSelection(doc, range)` (uses
+  the `#docIndex` WeakMap + `view.getCFI`) → persist via the `annotations` store → draw
+  via `addHighlight(cfi)` (no colour arg). `#highlights` (a `Set<cfi>`) is the source of
+  truth — there is no per-highlight colour map; `create-overlay` re-applies a section's
+  highlights when it loads. The fill is the single `HIGHLIGHT_HEX` (yellow) from
+  `src/services/types.ts`, applied in the `draw-annotation` handler (NOT the `--hl-*` CSS vars).
 - If the reader shows dead space at the bottom of a vertical page, that's the old
   **column-fill quirk** — `applyLayout` now derives the vertical page-box caps from the
   viewport so the box fills on first paint (verified desktop Chrome); see

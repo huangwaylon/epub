@@ -332,10 +332,12 @@ the reader re-applies the right aspect — see **docs/development.md** and **doc
 - **Popup vs. toolbar are NOT sheets:** `DictionaryPopup` and `SelectionToolbar` are **floating**
   (`position:fixed`), positioned in a `$effect` via `requestAnimationFrame` using the shared
   `placeAnchored` util (prefer above the target, flip below if cramped, clamp to viewport + safe
-  area). They have no scrim and don't close on Escape; the **reader** owns their `open` state. The
-  dictionary popup is dismissed by the next in-content tap (the reader consumes that tap rather than
-  re-defining) or by a page turn (the reader's `onTurn` closes the overlays), and by its own ×
-  button.
+  area). They have no scrim and don't close on Escape; the **reader** owns their `open` state. While
+  the dictionary popup is open it is the highest-priority tap target: the **next tap anywhere on
+  screen dismisses it** (the reader consumes that tap rather than re-defining or toggling the chrome)
+  — including a tap on the top/bottom nav-bar edge band, which then only clears the popup and does
+  **not** toggle the chrome. It is also dismissed by a page turn (the reader's `onTurn` closes the
+  overlays) and by its own × button.
 - **Theme before first paint:** `main.ts` `await`s `initSettings()` (top-level await) before
   `mount(App, …)`, so `applyTheme()` has set `<html data-theme>` before the first frame — avoids a
   light→dark flash. `index.html` also ships static `theme-color` media metas as a pre-hydration

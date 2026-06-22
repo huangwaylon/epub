@@ -39,12 +39,14 @@ multi-page chapter — ideal for exercising pagination and the dictionary.
    - Tap a **Japanese word** (it must land on an actual glyph) → the dictionary popup
      defines it. Test a conjugated word, e.g. tap the start of 美しかった → expect
      **美しい / past / い-adjective**.
-   - Tap **blank space** → toggles the top/bottom chrome bars (a tap never turns the page).
+   - Tap the **top/bottom edge band** (≈nav-bar height) → toggles the chrome bars (a tap
+     on blank **centre** space does nothing — it never reveals the bars or turns the page).
    - **Swipe** horizontally (≥45px, more horizontal than vertical) → turns the page;
      direction-aware via foliate `goLeft`/`goRight` (vertical RTL: dragging **right**
      advances, dragging **left** goes back), always animated as a horizontal slide.
-   - With the popup open, **any tap dismisses it** (and is consumed); a real page turn also
-     auto-closes it.
+   - With the popup open, **any tap dismisses it** (and is consumed) — including a tap on
+     the top/bottom nav-bar band, which **only** dismisses the popup and does **not** also
+     toggle the chrome (worth verifying explicitly); a real page turn also auto-closes it.
 6. **Selection features:** `drag` from one character to another to select text → the
    toolbar appears → tap a colour (highlight draws + persists) or **Copy**. (Driving a swipe
    in the closed-shadow iframe: dispatch synthetic `PointerEvent`s on the content `doc` via
@@ -61,7 +63,8 @@ multi-page chapter — ideal for exercising pagination and the dictionary.
   turns (for a vertical RTL book, **swiping right** advances / next; **swiping left** goes
   back / prev), furigana above kanji.
 - Page turns animate as a **horizontal slide** (left/right, like Books on iPad), not a
-  vertical up/down slide. The moving page casts a soft shadow over the paper. foliate's
+  vertical up/down slide. There is **no** drop shadow on the moving page (the page-turn
+  shadow was removed). foliate's
   `animated` attribute is intentionally **off**; `ReaderController` does the slide
   (reader-engine.md §8a).
 - Sheets (Display/TOC/Notes) render as **centered modal cards**, not

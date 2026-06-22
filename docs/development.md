@@ -201,9 +201,10 @@ and a maskable full-bleed mark), rasterized with `sharp`. Outputs `icon-192.png`
    - Vertical **縦書き / RTL pagination** — a **horizontal swipe** turns the page
      (drag left → next, drag right → previous; foliate's own touch turn is patched
      out, see [§7](#7-coding-conventions)). Page turns animate as a horizontal slide.
-   - **Tap-to-define** — tap a Japanese glyph; the `DictionaryPopup` appears. A tap on
-     blank space toggles the reader chrome; a tap while a popup/toolbar is open just
-     dismisses it. **Tap never turns the page.**
+   - **Tap-to-define** — tap a Japanese glyph; the `DictionaryPopup` appears. A tap in
+     the top/bottom edge band toggles the reader chrome (a tap on blank centre space does
+     nothing); a tap while a popup is open just dismisses it — **anywhere on screen,
+     including the nav-bar band, without toggling the chrome**. **Tap never turns the page.**
    - **Drag-select** → the `SelectionToolbar` → **highlight**.
    - **Bookmark** toggle (and that it appears in the annotations panel).
 6. Check `list_console_messages`. The only expected message is the **benign foliate

@@ -548,34 +548,36 @@ a tap carries no notion of edge rails anymore.
 
 ### Tap routing in Reader.svelte
 
-`onTap` (Reader.svelte:223) and `handleTap` (Reader.svelte:235) do the routing.
+`onTap` (Reader.svelte:250) and `handleTap` (Reader.svelte:262) do the routing.
 `handleTap` runs in a fixed order:
 
-1. **Top/bottom band → toggle chrome.** If the tap's top-window `py` lands in the
-   top or bottom edge band (`inChromeToggleBand`, sized `clamp(80, vh*0.12, 160)` ≈
-   the nav-bar height), toggle `chromeVisible`, `closeOverlays()` (so the popup and
-   chrome don't overlap), and `return`. This is how a tap **shows** the bars — a tap
-   in the central reading area never *reveals* them, so reading taps don't flash the
-   chrome. It fires even on a glyph, and it's how a margin/host tap in the band
-   reveals the chrome.
-2. **Chrome visible → dismiss.** Otherwise, if `chromeVisible`, set it `false` and
+1. **Popup open → dismiss.** If a dictionary popup is open (`dictState.open`), call
+   `closeOverlays()` (which closes the dict popup **and** the selection toolbar) and
+   `return`. This fires for a tap **anywhere** on screen — including the top/bottom
+   nav-bar band. An open popup is the **highest-priority** tap target: a tap that
+   clears the card never also toggles the chrome and never looks up a new word. (The
+   popup's own × button and a page-turn also close it.) Tap-to-define stays reliable
+   through forgiving glyph hit-slack — `extractTextAt`'s line-aware `glyphSlack`,
+   §10 — not through re-anchoring on every tap.
+2. **Top/bottom band → toggle chrome.** Otherwise, if the tap's top-window `py` lands
+   in the top or bottom edge band (`inChromeToggleBand`, sized `clamp(80, vh*0.12, 160)`
+   ≈ the nav-bar height), toggle `chromeVisible` and `return`. This is the **only** way
+   a tap **shows** the bars — a tap in the central reading area never *reveals* them, so
+   reading taps don't flash the chrome. It fires even on a glyph, and it's how a
+   margin/host tap in the band reveals the chrome. This branch **no longer** calls
+   `closeOverlays()` — the popup case above already returned.
+3. **Chrome visible → dismiss.** Otherwise, if `chromeVisible`, set it `false` and
    `return` — while the bars are up, a tap **anywhere** in the reading area hides
    them (and is *consumed*, so it doesn't also define). This makes the chrome easy
    to clear without reaching for the bars.
-3. **Popup open → dismiss.** Otherwise (a tap in the central reading area with the
-   chrome already hidden), if a dictionary popup is open, set `dictState.open = false`
-   and `return`. A tap while a popup is showing just **dismisses** it — it never
-   defines a new word. (Tap-to-define stays reliable through forgiving glyph
-   hit-slack — `extractTextAt`'s line-aware `glyphSlack`, §10 — not through
-   re-anchoring on every tap.)
-4. **Define + highlight a glyph.** Otherwise (no popup open), if `settings.tapToDefine`
-   call `tryDefine(info)`. `tryDefine` first bails when `info.doc` is null (a
-   margin/host tap), then requires the tap to land on an actual Japanese **glyph** per
-   `extractTextAt`'s glyph + word-char gate (the `pointOnGlyph` hit-test in
-   extract.ts:42 rejects taps in margins / inter-column gaps; §10,
-   `docs/japanese.md`), returning `true` only if it started a lookup. On a real match
-   the looked-up word is also **auto-highlighted yellow** (a vocab record) — see §10.
-   (The popup's own × button and a page-turn also close it.)
+4. **Define + highlight a glyph.** Otherwise (no popup open, chrome hidden, tap
+   outside the band), if `settings.tapToDefine` call `tryDefine(info)`. `tryDefine`
+   first bails when `info.doc` is null (a margin/host tap), then requires the tap to
+   land on an actual Japanese **glyph** per `extractTextAt`'s glyph + word-char gate
+   (the `pointOnGlyph` hit-test in extract.ts:42 rejects taps in margins /
+   inter-column gaps; §10, `docs/japanese.md`), returning `true` only if it started a
+   lookup. On a real match the looked-up word is also **auto-highlighted yellow** (a
+   vocab record) — see §10. A tap on blank **centre** space does nothing.
 
 There is **no pagination on tap** — turning the page is exclusively the swipe
 path above — and the central area only toggles the chrome to *dismiss* it (never to
@@ -842,14 +844,16 @@ progress persistence — see below.
   > page 1 reports ~39%; on a real multi-hundred-page book page 1 ≈ 0–1%. That is
   > foliate's progress model, not a bug — the persistence gating is what prevents a
   > bogus *restore*.
-- `onTurn` (Reader.svelte:103-106) → sets `userInteracted = true` and
-  `closeOverlays()`. This is the page-turn signal that `relocate` can't give us:
-  a swipe (or any `goLeft`/`goRight`) fires it.
-- `onTap` → §8 routing (top/bottom band toggles chrome → chrome-visible dismiss →
-  else define the tapped glyph, **even over an open popup**, so each word is one tap;
-  a central blank tap dismisses an open popup, else does **nothing**), with the 60ms
-  defer when `hasHighlights`. (No pagination on tap; the central area never toggles
-  chrome — the bars hide via their own `dismissChromeFromBar` click.)
+- `onTurn` (Reader.svelte:120-123) → sets `userInteracted = true`, `chromeVisible =
+  false`, and `closeOverlays()`. This is the page-turn signal that `relocate` can't
+  give us: a swipe (or any `goLeft`/`goRight`) fires it.
+- `onTap` → §8 routing (open popup → `closeOverlays()` & return, **anywhere** incl.
+  the nav-bar band → top/bottom band toggles chrome → chrome-visible dismiss → else
+  define the tapped glyph; a tap on blank centre does **nothing**), with the 60ms
+  defer when `hasHighlights`. An open popup is dismissed by **any** tap (glyph, blank,
+  or band) and define fires only when no popup is open. (No pagination on tap; the
+  central area never *reveals* chrome — the bars hide via their own
+  `dismissChromeFromBar` click.)
 - `onSelection`/`onSelectionCleared` → drive the `SelectionToolbar`.
 - `onShowAnnotation` → clears `pendingTap`, then **reopens the `DictionaryPopup`**
   for the tapped highlight (definition + remove toggle) via `openDefine(existingCfi)`.
