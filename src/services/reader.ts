@@ -186,6 +186,11 @@ export class ReaderController {
     this.applyLayout(this.#settings)
     this.#attachHostGestures()
     window.addEventListener('resize', this.#onResize)
+    // iOS settles the standalone PWA viewport *after* launch (safe-area insets, chrome)
+    // and signals it via a visualViewport resize rather than a window resize — without
+    // this listener the cold-launch dead band only clears on rotation. Guarded against
+    // pinch-zoom in #onResize so a zoom gesture doesn't re-derive the page box.
+    globalThis.visualViewport?.addEventListener('resize', this.#onResize)
     await this.view.init({ lastLocation: lastCFI || undefined, showTextStart: true })
     this.#nudgeLayout()
   }
@@ -284,15 +289,23 @@ export class ReaderController {
    * `applyLayout` derives the vertical page box from the viewport, so the column
    * fills on the first paint (verified in desktop Chrome at iPad-landscape). The old
    * foliate under-measure quirk (docs §11) is unverified on real iOS, so we keep one
-   * cheap re-render after fonts/layout settle as a hedge; the resize listener is the
+   * cheap re-layout after fonts/layout settle as a hedge; the resize listeners are the
    * reliable backstop if a real device still under-measures.
+   *
+   * Crucially this **re-runs `applyLayout`** (not a bare `render()`): on a cold iOS PWA
+   * launch `window.innerHeight` is briefly under-reported before the standalone
+   * viewport / safe-area insets settle, so the first `applyLayout` derives a too-short
+   * vertical `max-inline-size` (the column height) and leaves a dead band under the
+   * nav bar — the very band that vanishes on rotation (which re-derives via `#onResize`).
+   * Re-deriving here picks up the settled viewport without needing a rotation. Setting
+   * `max-inline-size` to a new value forces foliate to re-render, so no separate render.
    */
   #nudgeLayout(): void {
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
     this.#nudgeTimer = window.setTimeout(() => {
       this.#nudgeTimer = undefined
       try {
-        this.view.renderer?.render?.()
+        this.applyLayout(this.#settings)
       } catch {
         /* ignore */
       }
@@ -357,8 +370,12 @@ export class ReaderController {
     }
   }
 
-  /** Re-tune geometry on rotation / window resize (e.g. iPad orientation change). */
+  /** Re-tune geometry on rotation / window resize / iOS viewport settle (e.g. iPad
+   *  orientation change, or the standalone PWA viewport finalising after a cold launch).
+   *  Skipped while pinch-zoomed (`scale > 1`) — visualViewport resize also fires during a
+   *  pinch, and re-deriving the page box mid-zoom would fight the gesture. */
   #onResize = () => {
+    if ((globalThis.visualViewport?.scale ?? 1) > 1.01) return
     if (this.#resizeTimer) clearTimeout(this.#resizeTimer)
     this.#resizeTimer = window.setTimeout(() => this.applyLayout(this.#settings), 150)
   }
@@ -583,6 +600,7 @@ export class ReaderController {
 
   destroy() {
     window.removeEventListener('resize', this.#onResize)
+    globalThis.visualViewport?.removeEventListener('resize', this.#onResize)
     if (this.#resizeTimer) clearTimeout(this.#resizeTimer)
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
     if (this.#slideTimer) clearTimeout(this.#slideTimer)

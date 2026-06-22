@@ -795,12 +795,19 @@ available height, so the box fits the screen instead of guessing.
 
 **Remaining hedges** (best-effort, idempotent):
 
-- `#nudgeLayout()` (reader.ts:216-224) schedules **a single** `renderer.render()`
-  at **250ms** after `init`, as a lightweight hedge in case a real device still
-  under-measures after fonts/layout settle. (Earlier iterations leaned on a heavier
-  multi-stage re-render; the viewport-derived layout above made that unnecessary in Chrome.)
-- The `#onResize` listener (§6) re-applies layout on any real viewport change and
-  is the reliable backstop.
+- `#nudgeLayout()` (reader.ts) schedules a single **re-run of `applyLayout`** at
+  **250ms** after `init`. This matters on iOS: on a **cold PWA launch**
+  `window.innerHeight` is briefly under-reported before the standalone viewport /
+  safe-area insets settle, so the *first* `applyLayout` derives a too-short vertical
+  column height and leaves a dead band under the nav bar — the band that previously
+  only cleared on rotation. Re-deriving from the now-settled viewport clears it
+  without a rotation. (Note it re-runs `applyLayout`, not a bare `renderer.render()`;
+  a render alone would reuse the stale `max-inline-size`.)
+- The `#onResize` listener (§6) re-applies layout on any real viewport change and is
+  the reliable backstop. It is wired to **both** `window` resize (orientation change)
+  **and** `visualViewport` resize — iOS signals the post-launch viewport settle via the
+  latter, not a window resize. It is skipped while pinch-zoomed (`visualViewport.scale
+  > 1`) so a zoom gesture can't fight the page box.
 
 > **NEEDS on-device iOS Safari verification.** The fill was verified only in
 > desktop Chrome devicetoolbar emulation. Whether real iOS Safari/PWA measures the
