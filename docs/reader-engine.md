@@ -376,6 +376,45 @@ writing-mode on `html`, and our injected override (§5) also targets `html`.
 A 150ms-debounced `resize` listener re-runs `applyLayout` (e.g. iPad rotation:
 `max-column-count` may switch between 1 and 2). Also part of the §11 mitigation.
 
+### 6a. Page-progression direction — RTL page order with horizontal LTR text
+
+Some EPUBs declare `page-progression-direction="rtl"` in the spine (so `book.dir
+=== 'rtl'`) while their content is **ordinary horizontal LTR** — no vertical
+writing mode, no `dir="rtl"` in the content CSS (a common shape for JP novels
+typeset 横書き but bound right-to-left; e.g. a `class="vrtl"` on `<html>` with no
+rule actually setting `writing-mode`). foliate's paginator derives the **column
+order** purely from the *content's own* CSS direction via `getDirection(doc)`
+(paginator.js:178 — reads `body.dir` / computed `direction` / `documentElement.dir`),
+**not** from `book.dir`. `book.dir` only feeds the direction-aware `goLeft`/`goRight`
+(view.js:515/518). So such a book paginates its 2-up landscape spread **left-to-right**
+(earlier page on the left) — wrong for an RTL book, where the earlier page must be on
+the **right**.
+
+`#applyPageProgression(doc, vertical)` (reader.ts, called from the `load` handler)
+fixes this by making the section behave like a **native RTL book**:
+
+- It sets `dir="rtl"` on **both** `documentElement` *and* `body`. `getDirection` then
+  reports RTL, so foliate's well-tested RTL path lays the columns right-to-left and
+  uses the matching negative-scroll math. **`dir="rtl"` on the multicolumn container
+  (`documentElement`) alone does _not_ flip the columns in this layout — the `body`
+  must be rtl too** (verified in Chrome: with `body` ltr the document-first content
+  stays in the left column; with `body` rtl it moves to the right column).
+- It then pins the inline **text** back to ltr with an injected
+  `p,div,h1..h6,li,blockquote,dd,dt,figcaption,td,th { direction: ltr }` rule (plus
+  `body { text-align: left }`), so the horizontal Japanese text still reads
+  left-to-right — only the page/column order is reversed.
+
+It runs **inside foliate's `afterLoad`** — our `load` listener fires synchronously
+from `afterLoad` (paginator.js:983 → view.js `#onLoad` → `#emit('load')`) **before**
+`getDirection` (paginator.js:262) — so the very first paint is already correct, no
+re-render flash. It's a **no-op** unless `book.dir === 'rtl'` and the section is
+horizontal (skipped when the writing mode is vertical, detected or forced via
+settings): vertical (縦書き) RTL books already stack their columns right-to-left from
+`writing-mode: vertical-rl`. This is entirely app-side — no vendor patch.
+
+> The progress *bar* fill (`width: fraction%`, Reader.svelte) still grows
+> left-to-right regardless of book direction; only the page/column order is reversed.
+
 ---
 
 ## 7. Pagination internals (paginator.js)
@@ -512,20 +551,36 @@ a tap carries no notion of edge rails anymore.
    toolbar and is *consumed*.
 2. **Top/bottom band → toggle chrome.** If the tap's top-window `py` lands in the
    top or bottom edge band (`inChromeToggleBand`, sized `clamp(80, vh*0.12, 160)` ≈
-   the nav-bar height), toggle `chromeVisible` and `return`. This is a **reliable**
-   target for showing/hiding the bars that doesn't fight tap-to-define in the dense
-   body text (where blank space is scarce) — it fires even on a glyph, and it's how a
-   margin/host tap in the band reveals the chrome.
-3. **Define a glyph.** If `settings.tapToDefine && tryDefine(info)` — `tryDefine`
-   first bails when `info.doc` is null (a margin/host tap), then requires the tap to
-   land on an actual Japanese **glyph** per `extractTextAt`'s glyph + word-char gate
-   (the `pointOnGlyph` hit-test in extract.ts:42 rejects taps in margins /
-   inter-column gaps; §10, `docs/japanese.md`); the lookup runs and routing stops.
-4. **Toggle chrome.** Otherwise toggle `chromeVisible` (so a tap on blank space, or a
-   margin/host tap outside the band, toggles the bars).
+   the nav-bar height), toggle `chromeVisible` and `return`. This is the **only** way
+   a tap shows/hides the bars — a tap in the central reading area never toggles the
+   chrome, so reading taps don't flash the bars. It fires even on a glyph, and it's
+   how a margin/host tap in the band reveals the chrome.
+3. **Define a glyph.** Otherwise (a tap in the central reading area), if
+   `settings.tapToDefine` call `tryDefine(info)` — `tryDefine` first bails when
+   `info.doc` is null (a margin/host tap), then requires the tap to land on an actual
+   Japanese **glyph** per `extractTextAt`'s glyph + word-char gate (the `pointOnGlyph`
+   hit-test in extract.ts:42 rejects taps in margins / inter-column gaps; §10,
+   `docs/japanese.md`). A central tap on **blank space** therefore does **nothing** —
+   it does **not** toggle the chrome.
 
 There is **no pagination on tap** — turning the page is exclusively the swipe
-path above.
+path above — and the central area no longer toggles the chrome on a blank tap.
+
+**Hiding the chrome again.** Because the central area no longer toggles, once the
+bars are visible they cover the top/bottom toggle bands, so a band tap can't reach
+the reader's gesture detector behind them. Instead the bars hide themselves: the
+`<header>`/`<footer>` carry `role="presentation"` + `onclick={dismissChromeFromBar}`
+(Reader.svelte), which sets `chromeVisible = false` unless the tap landed on an
+actual control (`e.target.closest('button')`). So tapping a bar's empty area (title,
+progress) hides the chrome — the model stays "top/bottom toggles, middle never does"
+in both directions. (Bar taps are native `click`s and never reach the foliate-view
+gesture detector — the bars are sibling overlays — so there's no double-handling.)
+
+**Standalone reading-% readout.** While the chrome is **hidden**, a small
+`pointer-events:none` percentage pill (`.page-pct`, `{Math.round(fraction*100)}%`)
+is shown centred at the bottom of the screen, so the reading position is always
+visible without the bars; it's hidden when the chrome is up (the bottom bar carries
+its own progress).
 
 ### 8a. Page-turn animation — horizontal slide (`#turn` / `#slide`)
 
@@ -741,9 +796,10 @@ progress persistence — see below.
 - `onTurn` (Reader.svelte:103-106) → sets `userInteracted = true` and
   `closeOverlays()`. This is the page-turn signal that `relocate` can't give us:
   a swipe (or any `goLeft`/`goRight`) fires it.
-- `onTap` → §8 routing (dismiss-first → top/bottom band toggles chrome → define a
-  glyph → toggle chrome), with the 60ms defer when `hasHighlights`. (No pagination on
-  tap.)
+- `onTap` → §8 routing (dismiss-first → top/bottom band toggles chrome → else define
+  a glyph; a central blank tap does **nothing**), with the 60ms defer when
+  `hasHighlights`. (No pagination on tap; the central area never toggles chrome — the
+  bars hide via their own `dismissChromeFromBar` click.)
 - `onSelection`/`onSelectionCleared` → drive the first `SelectionToolbar`.
 - `onShowAnnotation` → clears `pendingTap`, closes the dict popup, opens the
   highlight-edit toolbar.

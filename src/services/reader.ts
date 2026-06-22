@@ -188,15 +188,17 @@ export class ReaderController {
       this.#docIndex.set(doc, index)
       // Detect the writing mode from the rendered document so we can pick a
       // measure that suits it (vertical wants tall columns; horizontal a short line).
+      let vertical = false
       try {
         const wm = doc.defaultView.getComputedStyle(doc.documentElement).writingMode || ''
-        const vertical = wm.startsWith('vertical')
-        if (vertical !== this.#vertical) {
-          this.#vertical = vertical
-          this.applyLayout(this.#settings)
-        }
+        vertical = wm.startsWith('vertical')
       } catch {
         /* ignore */
+      }
+      this.#applyPageProgression(doc, vertical)
+      if (vertical !== this.#vertical) {
+        this.#vertical = vertical
+        this.applyLayout(this.#settings)
       }
       this.#attachTaps(doc)
       this.#cb.onLoad?.(doc, index)
@@ -218,6 +220,43 @@ export class ReaderController {
     window.addEventListener('resize', this.#onResize)
     await this.view.init({ lastLocation: lastCFI || undefined, showTextStart: true })
     this.#nudgeLayout()
+  }
+
+  /**
+   * Honour the book's page-progression direction for the *column* layout, not just
+   * navigation. A spine declared `page-progression-direction="rtl"` (right-to-left
+   * page order) whose text is ordinary horizontal LTR — no vertical writing mode, no
+   * `dir="rtl"` in its CSS — would otherwise paginate its 2-up spread left-to-right:
+   * foliate derives the column order from the *content's own* CSS direction (ltr),
+   * ignoring the rtl progression (`book.dir` only feeds the direction-aware
+   * `goLeft`/`goRight`).
+   *
+   * The fix makes the section behave like a native RTL book — `dir="rtl"` on **both**
+   * `documentElement` and `body` — so foliate's `getDirection` reports RTL and its
+   * well-tested RTL path lays the columns right-to-left (the earlier page on the right)
+   * with the matching negative-scroll math. `dir="rtl"` on the multicolumn container
+   * (`documentElement`) alone does *not* flip the columns in this layout; the `body`
+   * also has to be rtl. We then pin the inline **text** back to ltr with a `direction:
+   * ltr` rule on the block elements, so the horizontal Japanese text itself still reads
+   * left-to-right — only the page/column order is reversed.
+   *
+   * Runs inside foliate's `afterLoad` (the `load` event fires synchronously from it,
+   * before `getDirection`), so the very first paint is already correct — no re-render
+   * flash. Vertical (縦書き) books are left untouched: their right-to-left column
+   * stacking already follows from `writing-mode: vertical-rl`.
+   */
+  #applyPageProgression(doc: Document, vertical: boolean): void {
+    if (this.bookDir !== 'rtl' || vertical || this.#settings.writingMode === 'vertical') return
+    if (doc.documentElement.dir === 'rtl') return
+    doc.documentElement.dir = 'rtl'
+    doc.body.dir = 'rtl'
+    // Keep the horizontal text left-to-right; only the column/page order is rtl.
+    const style = doc.createElement('style')
+    style.dataset.tsuzuri = 'ltr-text'
+    style.textContent =
+      'body{text-align:left;}' +
+      'p,div,h1,h2,h3,h4,h5,h6,li,blockquote,dd,dt,figcaption,td,th{direction:ltr;}'
+    doc.head?.appendChild(style)
   }
 
   /**

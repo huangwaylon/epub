@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
-  import { fly } from 'svelte/transition'
+  import { fly, fade } from 'svelte/transition'
   import { openShelf } from '../../stores/nav.svelte'
   import { settings } from '../../stores/settings.svelte'
   import { getBookFile } from '../../services/library'
@@ -244,18 +244,17 @@
       hlEdit.open = false
       return
     }
-    // A tap in the top or bottom edge band toggles the chrome. This gives a reliable
-    // target for showing/hiding the nav bars that doesn't fight tap-to-define in the
-    // dense body text (where blank space is scarce).
+    // A tap in the top or bottom edge band (over the nav bars) toggles the chrome.
+    // This is the *only* way a tap shows/hides the bars — a tap in the central
+    // reading area never does, so reading taps don't flash the chrome.
     if (inChromeToggleBand(info.py)) {
       chromeVisible = !chromeVisible
       return
     }
-    // Otherwise: define a tapped Japanese word, or toggle the reader chrome. The
-    // glyph hit-test in extractTextAt means taps on blank space reliably fall
-    // through to the chrome toggle instead of defining.
-    if (settings.tapToDefine && tryDefine(info)) return
-    chromeVisible = !chromeVisible
+    // Otherwise (a tap in the central reading area): define a tapped Japanese word.
+    // The glyph hit-test in extractTextAt means taps on blank space simply do
+    // nothing rather than toggling the chrome.
+    if (settings.tapToDefine) tryDefine(info)
   }
 
   /**
@@ -266,6 +265,17 @@
     const vh = window.innerHeight
     const band = Math.min(160, Math.max(80, vh * 0.12))
     return py <= band || py >= vh - band
+  }
+
+  /**
+   * Tapping a nav bar's own empty area hides the chrome. When the chrome is visible
+   * the bars cover the top/bottom toggle bands, so this is how a top/bottom tap hides
+   * them again (taps on the bars never reach the reader's gesture detector behind
+   * them). Guarded so it doesn't fire when an actual control was tapped.
+   */
+  function dismissChromeFromBar(e: MouseEvent) {
+    if ((e.target as HTMLElement).closest('button')) return
+    chromeVisible = false
   }
 
   /** Returns true if the tap landed on Japanese text and a lookup was started. */
@@ -388,7 +398,7 @@
   {/if}
 
   {#if status === 'ready' && chromeVisible}
-    <header class="bar top" transition:fly={{ y: -20, duration: 200 }}>
+    <header class="bar top" role="presentation" onclick={dismissChromeFromBar} transition:fly={{ y: -20, duration: 200 }}>
       <button class="cbtn" onclick={openShelf} aria-label="Library">
         <Icon name="arrow-left" size={22} />
       </button>
@@ -401,7 +411,7 @@
       </button>
     </header>
 
-    <footer class="bar bottom" transition:fly={{ y: 20, duration: 200 }}>
+    <footer class="bar bottom" role="presentation" onclick={dismissChromeFromBar} transition:fly={{ y: 20, duration: 200 }}>
       <button class="cbtn" onclick={() => (tocOpen = true)} aria-label="Contents">
         <Icon name="list" size={22} />
       </button>
@@ -421,6 +431,15 @@
         <Icon name="bookmark" size={22} fill={isBookmarked} />
       </button>
     </footer>
+  {/if}
+
+  <!-- Persistent reading-position readout at the bottom centre, shown while the
+       chrome is hidden (the bottom bar carries its own progress when visible).
+       pointer-events:none so it never intercepts taps/swipes. -->
+  {#if status === 'ready' && !chromeVisible}
+    <div class="page-pct" aria-hidden="true" transition:fade={{ duration: 150 }}>
+      {Math.round(fraction * 100)}%
+    </div>
   {/if}
 </div>
 
@@ -500,7 +519,10 @@
   }
   .bar.bottom {
     bottom: 0;
-    padding-bottom: calc(var(--safe-bottom) + 8px);
+    /* Just enough bottom padding to clear the home indicator — no extra, so the
+       control row hugs the bottom instead of floating with a translucent strip
+       (read as a "gap") beneath it. The bar background still fills to the edge. */
+    padding-bottom: max(var(--safe-bottom), 10px);
     border-top: 1px solid var(--line);
   }
   .cbtn {
@@ -562,6 +584,25 @@
   }
   .pct {
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Standalone reading-% readout, centred at the very bottom of the screen. */
+  .page-pct {
+    position: absolute;
+    left: 50%;
+    bottom: calc(var(--safe-bottom) + 8px);
+    transform: translateX(-50%);
+    z-index: 15;
+    pointer-events: none;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.03em;
+    color: var(--ink-faint);
+    background: color-mix(in srgb, var(--paper-raised) 70%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
   }
 
   /* iPad / wide screens: don't stretch the bar controls edge-to-edge. */
