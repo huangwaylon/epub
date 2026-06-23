@@ -334,7 +334,7 @@ VitePWA({
     runtimeCaching: [{                                    // ~19 MB IPADIC dict, fetched on first use
       urlPattern: /\/kuromoji\/dict\/.*\.dat\.gz$/,
       handler: 'CacheFirst',
-      options: { cacheName: 'kuromoji-ipadic', expiration: { maxEntries: 16, maxAgeSeconds: 180*24*3600 },
+      options: { cacheName: 'kuromoji-ipadic', expiration: { maxEntries: 16 },  // NO maxAgeSeconds — immutable, build-versioned
                  cacheableResponse: { statuses: [0, 200] } },
     }],
   },
@@ -356,9 +356,16 @@ Key points:
   from under themselves.
 - **`clientsClaim: true`** → on first install the freshly-activated SW takes control of the
   already-loaded page immediately. This is what lets the IPADIC dict the lookup worker fetches
-  *in that first session* (right after the dictionary download → `warmupLookup`) be runtime-cached
-  while still online; without it the SW wouldn't control the page until a reload, and the first
-  offline tap would fail to fetch the dict and silently degrade to greedy segmentation.
+  *in that first session* (right after the dictionary download → `await warmupLookup()`) be
+  runtime-cached while still online; without it the SW wouldn't control the page until a reload,
+  and the first offline tap would fail to fetch the dict and silently degrade to greedy
+  segmentation. The download handlers **await** the warm (it resolves once the ~19 MB fetch
+  completes) and show a *"Caching dictionary for offline use…"* state until then, so the app never
+  reports offline-readiness before the dict is genuinely cached.
+- **The dict cache has no `maxAgeSeconds`.** The IPADIC `*.dat.gz` are build-versioned immutable
+  data, so an age-based purge would silently evict them from a long-lived offline install and
+  degrade tap-to-define with no way to refetch. `cleanupOutdatedCaches` already drops stale caches
+  across deploys, so a `CacheFirst` with `maxEntries` only is the correct policy.
 - The **apple-touch icon (180)** is in `includeAssets` (it is not part of the web manifest
   `icons` array, which iOS largely ignores — iOS uses the `<link rel="apple-touch-icon">`).
 - **Precache is the app shell only.** Books live in OPFS and the JP dictionary lives in
@@ -443,7 +450,7 @@ are the app's stated assumption, not independently confirmed in-source** — fla
 | Capability | Status on iOS Safari | How the app accommodates |
 | --- | --- | --- |
 | **OPFS** (`navigator.storage.getDirectory`, `createWritable`) | Supported **iOS Safari 16.4+** | Primary store for EPUB bytes (`blobs.ts`). `canUseOpfs()` write-probes before trusting it; falls back to the `bookBlobs` IndexedDB store otherwise. |
-| **Storage eviction** | **Installed (Add-to-Home-Screen / standalone) PWAs are EXEMPT** from WebKit's 7-day script-writable-storage eviction → durable. | Books survive across sessions when installed. The app installs under the production scope `https://huangwaylon.github.io/epub/`; storage is keyed to that origin (eviction-exempt for the whole origin once installed). App *also* calls `navigator.storage.persist()` (`requestPersistence` in `main.ts`) as belt-and-braces. |
+| **Storage eviction** | **Installed (Add-to-Home-Screen / standalone) PWAs are EXEMPT** from WebKit's 7-day script-writable-storage eviction → durable. | Books survive across sessions when installed. The app installs under the production scope `https://huangwaylon.github.io/epub/`; storage is keyed to that origin (eviction-exempt for the whole origin once installed). App *also* calls `navigator.storage.persist()` (`requestPersistence` in `main.ts`) as belt-and-braces. If a *non-installed* Safari tab is evicted, a `books` meta row can outlive its OPFS bytes; opening such a book (`getBookFile` → `null` with meta present) now surfaces a specific *"this book's file is no longer on this device — please re-import"* message rather than a generic "not found". |
 | **Storage quota** | **GB-scale** (≈10 GB observed in testing) — **not** the old 50 MB myth. | `storageStatus()` reads the real `estimate()` quota and surfaces it in ShelfSettings; no artificial cap in app code. |
 | **File System Access API** (`showOpenFilePicker`) | **Not available on iOS.** | Import uses a plain `<input type="file" accept=".epub,application/epub+zip" multiple hidden>` in `Shelf.svelte`, programmatically `.click()`ed. Works in standalone. |
 | **Web Share Target / file-handler registration** | **Not available on iOS.** | No "Open in Tsuzuri" share-sheet / Files "Open with" entry. Import is `<input>`-only; users pick the EPUB from inside the app (Files, iCloud Drive, etc.). Documented limitation — there is no manifest `share_target` or `file_handlers`. |

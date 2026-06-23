@@ -713,6 +713,8 @@ Run with `npm test`.
   Lifecycle (all in `lookupClient.ts`):
   - **One lazy singleton worker** for the whole app, created on first `lookupAt`/`warmupLookup`.
   - **Warmed on book open** (`warmupLookup`, when the dict is present) so the first tap is fast.
+    On book open the warm is fire-and-forget (pure performance); the download handlers instead
+    **`await` it** (see below).
   - **Disposed on reader exit** (`disposeLookup` from `Reader.svelte` `onDestroy`): the worker is
     `terminate()`d so its resident kuromoji trie (tens of MB) isn't pinned while no book is open —
     important under iPad-PWA memory pressure. It rebuilds lazily (and re-warms) on the next open
@@ -725,10 +727,20 @@ Run with `npm test`.
     (`kuromojiLoader.cjs`) is required — see the note in §4 and `docs/development.md`.
 - **Offline depends on warming kuromoji *before* going offline.** The 12 IPADIC `*.dat.gz` files
   are only fetched (and thus SW-runtime-cached) when the worker builds. So the dictionary-download
-  handlers (`ShelfSettings.getDict`, `Reader.downloadDict`) call `warmupLookup()` right after
-  `downloadDictionary` resolves, ensuring the trie is cached while still online. Without that, a
-  user who downloaded JMdict but never tapped online would hit failed fetches offline and silently
-  fall back to greedy segmentation.
+  handlers (`ShelfSettings.getDict`, `Reader.downloadDict`) **`await warmupLookup()`** right after
+  `downloadDictionary` resolves, ensuring the trie is cached while still online. `warmupLookup()`
+  is **awaitable** — it returns `Promise<boolean>`; the worker replies (via the same `{ id, result }`
+  message channel as a lookup) once `ensureSegmenter()` resolves, i.e. once the dict has actually
+  been fetched. While the await is pending the UI shows *"Caching dictionary for offline use…"*
+  (`dict.warming`) and only reports full offline-readiness afterwards. Without awaiting, a user who
+  downloaded JMdict and went offline (or closed the tab) before the ~19 MB fetch finished would hit
+  failed fetches offline and silently fall back to greedy segmentation.
+- **`extractTextAt` is allocation-bounded.** Building the lookup window around a tap caps every
+  forward/backward scan at `MAX_AFTER` (16) / `MAX_BEFORE` (12) cells, so a tap near the start of a
+  long single-`Text`-node paragraph never allocates a `CharPosition` per paragraph char just to have
+  `leadingRun`/`trailingRun` discard all but ~28 of them. The per-tap query cache (`makeQueryCache`)
+  also catches a rejected `getWords` to `[]`, so one flaky IndexedDB read degrades to "no match for
+  that candidate" rather than aborting the whole tap's lookup.
 
 ---
 

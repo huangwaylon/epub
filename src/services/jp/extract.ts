@@ -200,26 +200,32 @@ export function extractTextAt(doc: Document, x: number, y: number): Extracted | 
   })
 
   // Forward run, starting at (and including) the tapped char. Track each char's
-  // DOM location so the caller can map a matched span back to a Range.
+  // DOM location so the caller can map a matched span back to a Range. Every loop is
+  // capped at MAX_AFTER: leadingRun keeps at most that many anyway, so scanning a whole
+  // long paragraph's Text node would just allocate thousands of cells to discard them.
   let afterCells: CharPosition[] = []
-  for (let k = pos.offset; k < tapNode.data.length; k++) afterCells.push({ node: tapNode, offset: k })
+  for (let k = pos.offset; k < tapNode.data.length && afterCells.length < MAX_AFTER; k++)
+    afterCells.push({ node: tapNode, offset: k })
   walker.currentNode = tapNode
   while (afterCells.length < MAX_AFTER) {
     const n = walker.nextNode() as Text | null
     if (!n) break
-    for (let k = 0; k < n.data.length; k++) afterCells.push({ node: n, offset: k })
+    for (let k = 0; k < n.data.length && afterCells.length < MAX_AFTER; k++) afterCells.push({ node: n, offset: k })
   }
   afterCells = leadingRun(afterCells, MAX_AFTER)
 
-  // Backward run, the word-chars immediately before the tap.
+  // Backward run, the word-chars immediately before the tap — at most MAX_BEFORE of them,
+  // so only ever keep the last MAX_BEFORE chars of each preceding node (trailingRun keeps
+  // just the suffix run regardless).
   let beforeCells: CharPosition[] = []
-  for (let k = 0; k < pos.offset; k++) beforeCells.push({ node: tapNode, offset: k })
+  for (let k = Math.max(0, pos.offset - MAX_BEFORE); k < pos.offset; k++) beforeCells.push({ node: tapNode, offset: k })
   walker.currentNode = tapNode
   while (beforeCells.length < MAX_BEFORE) {
     const n = walker.previousNode() as Text | null
     if (!n) break
+    const need = MAX_BEFORE - beforeCells.length
     const pre: CharPosition[] = []
-    for (let k = 0; k < n.data.length; k++) pre.push({ node: n, offset: k })
+    for (let k = Math.max(0, n.data.length - need); k < n.data.length; k++) pre.push({ node: n, offset: k })
     beforeCells = pre.concat(beforeCells)
   }
   beforeCells = trailingRun(beforeCells, MAX_BEFORE)

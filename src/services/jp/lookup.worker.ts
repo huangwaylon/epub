@@ -13,13 +13,16 @@
 import { lookupAt, warmup } from './lookup'
 
 type Incoming =
-  | { type: 'warmup' }
+  | { type: 'warmup'; id: number }
   | { type: 'lookup'; id: number; text: string; tapOffset: number }
 
 self.onmessage = async (e: MessageEvent<Incoming>) => {
   const msg = e.data
   if (msg.type === 'warmup') {
-    warmup()
+    // Build kuromoji (fetching + SW-caching the IPADIC dict) and report back whether it
+    // succeeded, so the main thread can gate its "offline-ready" state on it.
+    const ready = await warmup()
+    ;(self as unknown as Worker).postMessage({ id: msg.id, result: ready })
     return
   }
   if (msg.type === 'lookup') {

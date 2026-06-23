@@ -18,7 +18,10 @@ export type { Sense, DictEntry, LookupResult } from './lookupTypes'
 
 let worker: Worker | null = null
 let seq = 0
-const pending = new Map<number, (r: LookupResult | null) => void>()
+// Resolvers for in-flight requests, keyed by id. Lookups resolve with a LookupResult
+// (or null); warmup resolves with a boolean "ready" flag — both flow back through the
+// worker's `{ id, result }` message, so a single map serves both.
+const pending = new Map<number, (r: any) => void>()
 
 /** Consecutive Worker *construction* failures. A single runtime worker error
  *  (e.g. an OOM-killed worker under iOS memory pressure) is NOT latched — the
@@ -46,7 +49,7 @@ function getWorker(): Worker | null {
   try {
     worker = new Worker(new URL('./lookup.worker.ts', import.meta.url), { type: 'module' })
     constructFailures = 0
-    worker.onmessage = (e: MessageEvent<{ id: number; result: LookupResult | null }>) => {
+    worker.onmessage = (e: MessageEvent<{ id: number; result: LookupResult | boolean | null }>) => {
       const resolve = pending.get(e.data.id)
       if (resolve) {
         pending.delete(e.data.id)
@@ -65,17 +68,25 @@ function getWorker(): Worker | null {
   return worker
 }
 
-/** Eagerly spin up the worker and start building kuromoji (e.g. on book open) so the
- *  first tap-to-define hits the fast morphological path. No-op if the dictionary
- *  isn't downloaded yet (the worker's build just waits on the dict files). */
-export function warmupLookup(): void {
+/** Eagerly spin up the worker and build kuromoji (e.g. on book open, or right after the
+ *  dictionary download) so the first tap-to-define hits the fast morphological path — and
+ *  so the ~19 MB IPADIC dict is fetched and SW-runtime-cached *while still online*.
+ *  Resolves `true` once the build (and thus the dict fetch) completes, `false` if the
+ *  worker is unavailable or the build failed. Callers that report an "offline-ready"
+ *  state should `await` this; a plain perf warm can ignore the result. */
+export function warmupLookup(): Promise<boolean> {
   const w = getWorker()
-  if (!w) return
-  try {
-    w.postMessage({ type: 'warmup' })
-  } catch {
-    /* worker unavailable — first tap will build kuromoji instead */
-  }
+  if (!w) return Promise.resolve(false)
+  return new Promise<boolean>((resolve) => {
+    const id = ++seq
+    pending.set(id, (r) => resolve(r === true))
+    try {
+      w.postMessage({ type: 'warmup', id })
+    } catch {
+      pending.delete(id)
+      resolve(false)
+    }
+  })
 }
 
 /**

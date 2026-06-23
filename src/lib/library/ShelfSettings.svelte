@@ -17,9 +17,16 @@
   async function getDict() {
     try {
       await downloadDictionary('en')
-      // Warm kuromoji while online so the SW runtime-caches the IPADIC dict files;
-      // this is what makes tap-to-define segmentation work offline afterwards.
-      warmupLookup()
+      // Warm kuromoji while online so the SW runtime-caches the IPADIC dict files; this
+      // is what makes tap-to-define segmentation work offline afterwards. Await it (and
+      // surface a "caching" state) so we don't report full offline-readiness before the
+      // ~19 MB dict has actually been fetched and cached.
+      dict.warming = true
+      try {
+        await warmupLookup()
+      } finally {
+        dict.warming = false
+      }
     } catch {
       /* error shown via store */
     }
@@ -48,6 +55,8 @@
       <div class="dict-status">
         {#if dict.updating}
           Downloading… {Math.round(dict.progress * 100)}%
+        {:else if dict.warming}
+          Caching dictionary for offline use…
         {:else if dict.state === 'ok'}
           <span class="ok">Installed</span> · tap any word to look it up
         {:else}

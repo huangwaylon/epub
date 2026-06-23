@@ -9,6 +9,7 @@
   import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
   import { lookupAt, warmupLookup, disposeLookup, type LookupResult } from '../../services/jp/lookupClient'
   import { isDictReady, downloadDictionary } from '../../services/jp/dictdb'
+  import { dict } from '../../stores/dict.svelte'
   import {
     annotations,
     loadAnnotations,
@@ -127,6 +128,12 @@
   function closeOverlays() {
     dictState.open = false
     sel.open = false
+    // Release the content Document + Text-node refs held for auto-highlighting the last
+    // tapped word. They're consumed synchronously inside runLookup/autoHighlight, so once
+    // the popup is closed they're dead — clearing them lets a detached (navigated-away)
+    // section's DOM be collected instead of being pinned until the next tap.
+    defineDoc = null
+    definePositions = []
   }
 
   // ── Selection → highlight / copy ──────────────────────────────────────────
@@ -410,8 +417,14 @@
       await downloadDictionary('en')
       // Build kuromoji now (while online) so the service worker runtime-caches the
       // ~19 MB IPADIC dict files; otherwise the first offline tap would fail to fetch
-      // them and silently fall back to degraded segmentation.
-      warmupLookup()
+      // them and silently fall back to degraded segmentation. Await it so the dict is
+      // actually cached (and the segmenter ready) before we run the pending lookup.
+      dict.warming = true
+      try {
+        await warmupLookup()
+      } finally {
+        dict.warming = false
+      }
       dictState.needsDownload = false
       dictState.loading = true
       await runLookup(dictState.text, dictState.tapOffset, dictState.lastKey)
@@ -448,7 +461,15 @@
         getBookFile(bookId),
         getProgress(bookId),
       ])
-      if (!file) throw new Error('Book file not found in storage.')
+      // A meta row with no bytes means the OPFS/IDB blob was evicted (e.g. WebKit's
+      // 7-day eviction of a non-installed PWA) — tell the user to re-import rather than
+      // showing a cryptic "not found".
+      if (!file)
+        throw new Error(
+          m
+            ? 'This book’s file is no longer on this device — its data may have been cleared. Please re-import the EPUB.'
+            : 'Book file not found in storage.',
+        )
       meta = m ?? null
       bookFile = file
       // Seed the displayed progress from the saved position so the bar is correct
@@ -479,7 +500,7 @@
       // the ~19 MB trie build on the tap itself.
       if (settings.tapToDefine) {
         void isDictReady().then((ok) => {
-          if (ok) warmupLookup()
+          if (ok) void warmupLookup()
         })
       }
     } catch (err) {
@@ -497,6 +518,10 @@
     // the next open from the SW-cached dict — no network).
     disposeLookup()
     clearAnnotations()
+    // Drop any retained content Document / Text-node refs so the closed book's last
+    // section can't be pinned past unmount.
+    defineDoc = null
+    definePositions = []
   })
 </script>
 

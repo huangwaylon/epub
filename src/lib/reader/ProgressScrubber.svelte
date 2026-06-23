@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
   /**
    * The bottom-bar reading-progress control. At rest it's a calm hairline track
    * with the section label + percentage. Press-and-drag turns it into a scrubber
@@ -87,6 +88,13 @@
     armed = false
     scrubbing = false
   }
+
+  // The thumb-flash timer can outlive the component: hiding the chrome unmounts this
+  // scrubber, and a clean tap right before that leaves a pending 650ms timer. Clear it
+  // so it can't fire into a destroyed component (and so its closure is released).
+  onDestroy(() => {
+    if (flashTimer) clearTimeout(flashTimer)
+  })
 
   // Keyboard a11y: arrow keys nudge (±1%, ±5% with shift); Home/End jump.
   function onKeyDown(e: KeyboardEvent) {

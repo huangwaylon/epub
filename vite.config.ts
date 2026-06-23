@@ -107,13 +107,17 @@ export default defineConfig(({ command }) => {
           cleanupOutdatedCaches: true,
           // The kuromoji IPADIC dictionary (*.dat.gz under /kuromoji/dict/) is fetched
           // on first tap-to-define; cache it so word segmentation works offline after.
+          // It's build-versioned immutable data, so there's deliberately NO age expiry:
+          // an age-based purge would, for a long-lived offline install, silently evict the
+          // dict and degrade tap-to-define to greedy segmentation with no way to refetch.
+          // `cleanupOutdatedCaches` already drops stale caches across deploys.
           runtimeCaching: [
             {
               urlPattern: /\/kuromoji\/dict\/.*\.dat\.gz$/,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'kuromoji-ipadic',
-                expiration: { maxEntries: 16, maxAgeSeconds: 60 * 60 * 24 * 180 },
+                expiration: { maxEntries: 16 },
                 cacheableResponse: { statuses: [0, 200] },
               },
             },

@@ -120,8 +120,9 @@ The artifact is `dist/`: the app shell (JS/CSS/HTML), the PWA manifest, the serv
 worker, the icons, **and the kuromoji IPADIC dictionary** (`dist/kuromoji/dict/*.dat.gz`,
 ~19 MB). Workbox precaches `**/*.{js,css,html,svg,png,woff2}` (ignoring `**/pdfjs/**`
 and `**/kuromoji/**`), capped at 6 MB/file — so the dict is **not** in the install
-precache; it is **runtime-cached** (CacheFirst) on first tap-to-define so word
-segmentation works offline thereafter.
+precache; it is **runtime-cached** (CacheFirst, `maxEntries` only — no age expiry, since
+the dict is immutable build-versioned data) on first tap-to-define / dictionary download so
+word segmentation works offline thereafter.
 
 The kuromoji dict is staged into `public/kuromoji/dict/` from `node_modules` by
 `scripts/copy-kuromoji-dict.mjs`, which runs automatically via the `predev` / `prebuild`
