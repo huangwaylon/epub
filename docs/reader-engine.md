@@ -687,15 +687,19 @@ deterministically to the available height.
   pinch-zoomed. Idempotency means the resize burst during a rotation no longer
   repaints once per event.
 
-**App-shell `--app-height`** (`src/services/viewport.ts`). Independently of the
-reader, a fresh standalone launch lays out `position:fixed; inset:0` / `100dvh`
-against an under-reported layout viewport, so a bottom-anchored bar showed a gap
-that only cleared on rotation. `initViewport()` (called from `main.ts`) publishes
-the reliable **visual** viewport height as `--app-height` on `:root` —
-rAF-coalesced, deduped (`lastH`), and re-asserted after the cold-launch settle (on
-`load`, or immediately if already loaded, plus a 300ms backstop). `.reader` (and
-the app shell) size off `var(--app-height, 100dvh)`, and `viewportSize()` reads the
-same source, keeping page box and container consistent.
+**`--app-height`** (`src/services/viewport.ts`). A fresh standalone launch lays out
+`position:fixed; inset:0` / `100dvh` against an under-reported layout viewport, so a
+bottom-anchored bar showed a gap that only cleared on rotation. `initViewport()`
+(called from `main.ts`) publishes the reliable **visual** viewport height as
+`--app-height` on `:root` — rAF-coalesced, gated by a 2px threshold, and re-asserted
+after the cold-launch settle (on `load`, or immediately if already loaded, plus a 300ms
+backstop). **Only the fixed `.reader` overlay sizes off `var(--app-height, 100dvh)`** —
+the in-flow shell (`html`/`body`/`#app`) stays on `100dvh`, because applying the var to
+in-flow elements changed the document layout, which made iOS re-report a different visual
+viewport height: a resize→rewrite feedback loop that oscillated the bottom bar between
+the gapped and pinned positions. A fixed, out-of-flow element can't feed back into the
+layout viewport. `viewportSize()` (§6) reads the same source, keeping page box and
+container consistent.
 
 ---
 

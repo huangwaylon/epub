@@ -304,10 +304,12 @@ observed behaviour that can shift between WebKit versions.
 
 `viewportSize()` prefers `visualViewport` (reliable even at cold launch) but falls back to the
 layout viewport while pinch-zoomed (where `visualViewport` reports the shrunken zoomed box).
-Writes are rAF-coalesced and deduped, and re-asserted on `load` + a 300 ms timeout to cover the
-settle window. The full-screen shell and reader containers consume `var(--app-height, 100dvh)`
-— the **consumer side and reader layout are documented in
-[`docs/reader-engine.md`](./reader-engine.md)** (§11 / the app-shell viewport section).
+Writes are rAF-coalesced, gated by a 2px threshold, and re-asserted on `load` + a 300 ms timeout
+to cover the settle window. **Only the fixed `.reader` overlay consumes `var(--app-height, 100dvh)`**;
+the in-flow shell (`html`/`body`/`#app`) stays on `100dvh`, because feeding the var into in-flow
+layout made iOS re-report a different visual viewport height — a resize→rewrite loop that
+oscillated the bottom bar. The **consumer side and reader layout are documented in
+[`docs/reader-engine.md`](./reader-engine.md)** (§11).
 
 ---
 

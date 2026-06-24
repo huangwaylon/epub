@@ -619,8 +619,13 @@
     right: 0;
     /* Size to the real (visual) viewport, not `inset: 0` — on a cold iOS PWA launch
        the fixed containing block is briefly too short, which left the bottom bar
-       sitting above the screen edge until a rotation. --app-height (set from the
-       visual viewport) tracks the true screen; 100dvh is the pre-JS fallback. */
+       sitting above the screen edge until a rotation. --app-height (from the visual
+       viewport) tracks the true screen; 100dvh is the pre-JS fallback.
+       Only this *fixed* (out-of-flow) overlay consumes --app-height: applying it to
+       in-flow elements (html/body/#app) changed the document layout, which made iOS
+       re-report a different visualViewport height → a resize→rewrite feedback loop
+       that oscillated the bar between the gapped and pinned positions. A fixed element
+       can't feed back into the layout viewport. */
     height: var(--app-height, 100dvh);
     background: var(--paper);
     overflow: hidden;

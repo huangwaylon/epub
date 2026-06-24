@@ -130,9 +130,11 @@ book always matches the chrome. That injection pipeline lives in
 ## 3. Base & reset (`app.css`)
 
 - `* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }` — no blue tap flash.
-- `html, body`: `margin:0`, `height:100%` then **`height: var(--app-height, 100dvh)`**; `#app` is the
-  same. `--app-height` is published from the visual viewport by `services/viewport.ts` to fix the iOS
-  cold-launch / rotation gap; `100dvh` is the pre-JS fallback (mechanism: **[reader-engine.md](reader-engine.md)**).
+- `html, body`: `margin:0`, `height:100%` then `height:100dvh`; `#app` is the same. These stay
+  on `100dvh` (in-flow): only the **fixed** `.reader` overlay uses `var(--app-height, 100dvh)`,
+  published from the visual viewport by `services/viewport.ts` to fix the iOS cold-launch gap —
+  applying it to in-flow elements fed back into the viewport and oscillated the bar (mechanism:
+  **[reader-engine.md](reader-engine.md)**).
   Also `overflow:hidden` + **`overscroll-behavior:none`** (kills rubber-band / pull-to-refresh).
 - Default `font-family: var(--font-ui)`, `-webkit-font-smoothing: antialiased`,
   `text-rendering: optimizeLegibility`.

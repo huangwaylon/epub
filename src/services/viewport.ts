@@ -13,18 +13,21 @@
  *    settled visual viewport.
  *
  * The compositor-reported `visualViewport` size is reliable even at cold launch, so we
- * publish its height as `--app-height` on `:root`. Full-screen shells size off that var
- * (with a `100dvh` fallback for the first frame before JS runs), so they track the real
- * screen without waiting for a rotation. Writes are coalesced to one per frame and
- * deduped, so a settled viewport stops producing work — and a relayout can't feed back
- * into another write.
+ * publish its height as `--app-height` on `:root`. **Only the fixed, out-of-flow reader
+ * overlay (`.reader`) consumes it** (with a `100dvh` fallback for the first frame before
+ * JS runs) — applying it to in-flow elements (html/body/#app) changed the document
+ * layout, which made iOS re-report a different `visualViewport` height and oscillate the
+ * value (a resize→rewrite feedback loop that flickered the bottom bar). A fixed element
+ * can't feed back into the layout viewport. Writes are coalesced to one per frame and
+ * gated by a small px threshold, so a settled (or sub-pixel-jittering) viewport stops
+ * producing work.
  */
 
 /**
  * The current viewport size. Prefers the visual viewport (the reliable source on iOS,
  * including at cold launch), but falls back to the layout viewport while pinch-zoomed —
  * there `visualViewport` reports the *zoomed* (shrunken) box, which must not drive the
- * full-screen shell or the reader page geometry.
+ * reader page geometry.
  */
 export function viewportSize(): { w: number; h: number } {
   const vv = globalThis.visualViewport
@@ -38,7 +41,9 @@ let lastH = -1
 function apply(): void {
   raf = 0
   const h = Math.round(viewportSize().h)
-  if (h === lastH) return // settled — no write, no relayout feedback
+  // Ignore sub-pixel / tiny jitter: only a real change moves the bar. (The feedback loop
+  // is already broken by keeping --app-height off in-flow elements; this is insurance.)
+  if (Math.abs(h - lastH) < 2) return
   lastH = h
   document.documentElement.style.setProperty('--app-height', `${h}px`)
 }
