@@ -302,37 +302,55 @@ repeatedly is cheap and reflows in place — no reload.
 
 ## 6. Layout & measure tuning — `applyLayout`
 
-`applyLayout(s)` (reader.ts:247-279) maps device size + settings onto the
+`applyLayout(s)` maps device size + settings onto the
 paginator's attributes. It runs once during `open()` and again on every resize /
 writing-mode flip. It **branches on `this.#vertical`**, because the two axes swap
 meaning between writing modes (§7) and vertical 縦書き needs the page box derived
 from the viewport (the fix for the §11 quirk):
 
 ```ts
-const vw = window.innerWidth, vh = window.innerHeight
+const { w: vw, h: vh } = viewportSize()  // visual viewport (stable on iOS); see §11
 const minDim = Math.min(vw, vh)
 const margin = Math.round(Math.max(28, Math.min(80, minDim * 0.075)) * s.marginScale)
 // Two-page spread only in true landscape on a wide screen (mirrors foliate's
 // orientation container-query, §7).
 const cols = vw > vh && vw >= 820 ? 2 : 1
 
+// Derive per-mode caps (block/inline), then a single set of setAttribute calls.
 // NB: we deliberately do NOT set the `animated` attribute — foliate's own page-turn
 // animation slides on the *vertical* axis for 縦書き (it stacks pages vertically).
-// `ReaderController` animates page turns itself as a horizontal slide (§8a), so
-// foliate is left to jump instantly.
+// `ReaderController` animates page turns itself as a horizontal slide (§8a).
+let block: number, inline: number
+if (this.#vertical) {
+  inline = Math.round(Math.max(320, vh - margin * 2))  // → max-inline-size (column HEIGHT)
+  block  = Math.round(vw - margin * 2)                 // → max-block-size  (across-page WIDTH)
+} else {
+  block = 880; inline = 640
+}
+
+// Idempotency guard (the rotation-flicker fix): setting an observed attribute re-fires
+// foliate's attributeChangedCallback → render() (a full iframe relayout+repaint) *even
+// when the value is unchanged*. iOS fires a burst of resize/visualViewport events while
+// the viewport settles after a rotation, so without this guard each one repainted the
+// page → continuous flicker. Bail when the derived {vertical,cols,margin,block,inline}
+// equals the last applied; a rotation that returns to the same size then does no work.
+if (sameAsLastLayout) return
+this.#lastLayout = { vertical: this.#vertical, cols, margin, block, inline }
+
 r.setAttribute('margin', `${margin}px`)
 r.setAttribute('gap', '6%')
 r.setAttribute('max-column-count', `${cols}`)
-if (this.#vertical) {
-  const colHeight = Math.max(320, vh - margin * 2)        // → max-inline-size (column HEIGHT)
-  const bandWidth = vw - margin * 2                       // → max-block-size  (across-page WIDTH)
-  r.setAttribute('max-block-size',  `${Math.round(bandWidth)}px`)
-  r.setAttribute('max-inline-size', `${Math.round(colHeight)}px`)  // set LAST: its setter forces render()
-} else {
-  r.setAttribute('max-block-size', '880px')
-  r.setAttribute('max-inline-size', '640px')              // set LAST: its setter forces render()
-}
+r.setAttribute('max-block-size', `${block}px`)
+r.setAttribute('max-inline-size', `${inline}px`)  // set LAST: its setter forces render()
 ```
+
+`viewportSize()` (`src/services/viewport.ts`) returns the **visual** viewport
+dimensions (the reliable source on iOS, including at cold launch), falling back to
+`window.innerWidth/innerHeight` only while pinch-zoomed (`scale > 1.01`), where the
+visual viewport reports the zoomed box. The same helper backs the app-shell
+`--app-height` manager (§11), so the foliate page box and the `.reader` container are
+sized from one consistent source. **`reopenForWritingMode` clears `#lastLayout`** before
+re-applying, because the fresh paginator starts with foliate's default attributes.
 
 | Attribute | Horizontal value / meaning | Vertical (縦書き) value / meaning |
 | --- | --- | --- |
@@ -344,7 +362,7 @@ if (this.#vertical) {
 
 The inline/block axes **swap** between modes (see paginator's `#beforeRender`,
 §7); that's why `max-inline-size` reads as "line length" horizontally but
-"column height" vertically. **Attribute order matters in both branches:**
+"column height" vertically. **Attribute order matters:**
 `max-inline-size` is set *last* because its `attributeChangedCallback` forces a
 foliate `render()` (paginator.js:628), so `margin`/`gap`/`max-column-count`/
 `max-block-size` must already be in place when it fires. `margin` *must* be `px`
@@ -796,18 +814,32 @@ available height, so the box fits the screen instead of guessing.
 **Remaining hedges** (best-effort, idempotent):
 
 - `#nudgeLayout()` (reader.ts) schedules a single **re-run of `applyLayout`** at
-  **250ms** after `init`. This matters on iOS: on a **cold PWA launch**
-  `window.innerHeight` is briefly under-reported before the standalone viewport /
-  safe-area insets settle, so the *first* `applyLayout` derives a too-short vertical
-  column height and leaves a dead band under the nav bar — the band that previously
-  only cleared on rotation. Re-deriving from the now-settled viewport clears it
-  without a rotation. (Note it re-runs `applyLayout`, not a bare `renderer.render()`;
-  a render alone would reuse the stale `max-inline-size`.)
+  **250ms** after `init`. This matters on iOS: on a **cold PWA launch** the viewport /
+  safe-area insets settle slightly after first paint, so the *first* `applyLayout` can
+  derive a too-short vertical column height and leave a dead band under the nav bar — the
+  band that previously only cleared on rotation. Re-deriving from the now-settled
+  viewport clears it without a rotation. (Note it re-runs `applyLayout`, not a bare
+  `renderer.render()`; a render alone would reuse the stale `max-inline-size`. And
+  `applyLayout` is now **idempotent** — if the first measure was already right, the
+  re-run computes the same geometry and does nothing, §6.)
 - The `#onResize` listener (§6) re-applies layout on any real viewport change and is
   the reliable backstop. It is wired to **both** `window` resize (orientation change)
   **and** `visualViewport` resize — iOS signals the post-launch viewport settle via the
   latter, not a window resize. It is skipped while pinch-zoomed (`visualViewport.scale
-  > 1`) so a zoom gesture can't fight the page box.
+  > 1`) so a zoom gesture can't fight the page box. Because `applyLayout` is idempotent,
+  the **burst** of resize/visualViewport events iOS fires while a rotation settles no
+  longer repaints the page once per event (the old **continuous rotation flicker**) —
+  only a genuine geometry change re-renders.
+
+**App-shell viewport (`--app-height`, `src/services/viewport.ts`).** Independently of the
+reader, a fresh standalone launch lays out `position:fixed; inset:0` / `100dvh` against an
+under-reported layout viewport, so a bottom-anchored bar showed a gap that only cleared on
+rotation. `initViewport()` (called from `main.ts`) publishes the reliable **visual**
+viewport height as `--app-height` on `:root` — rAF-coalesced, deduped, and re-asserted
+after the cold-launch settle (on `load`, or immediately if already loaded, plus a 300ms
+backstop). `html`/`body`/`#app` and `.reader` size off `var(--app-height, 100dvh)`, so the
+shell tracks the true screen without a rotation. The reader's `viewportSize()` (§6) reads
+from the same source, keeping the page box and the container consistent.
 
 > **NEEDS on-device iOS Safari verification.** The fill was verified only in
 > desktop Chrome devicetoolbar emulation. Whether real iOS Safari/PWA measures the
