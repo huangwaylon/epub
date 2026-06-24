@@ -20,11 +20,14 @@
   $effect(() => {
     if (!open) return
     const r = rect
-    requestAnimationFrame(() => {
+    // Cancel on re-trigger / close so a stale frame can't reposition a toolbar that's
+    // already gone (mirrors DictionaryPopup).
+    const id = requestAnimationFrame(() => {
       const w = bar?.offsetWidth ?? 200
       const h = bar?.offsetHeight ?? 48
       pos = placeAnchored(r.left + r.width / 2, r.top, r.top + r.height, w, h)
     })
+    return () => cancelAnimationFrame(id)
   })
 </script>
 

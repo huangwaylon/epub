@@ -21,13 +21,15 @@ function readInsets() {
     right: inset('--safe-right'),
   }
 }
+// Insets only change on rotation / resize, so drop the cache then and re-read lazily.
+// These listeners are registered exactly once for the app lifetime: the previous code
+// re-added a fresh pair inside `safeInsets` every time the cache was rebuilt, so each
+// rotation leaked two more listeners that accumulated unboundedly across a session.
+const invalidateInsets = () => (insetCache = null)
+window.addEventListener('resize', invalidateInsets)
+window.addEventListener('orientationchange', invalidateInsets)
 function safeInsets() {
-  if (!insetCache) {
-    insetCache = readInsets()
-    const invalidate = () => (insetCache = null)
-    window.addEventListener('resize', invalidate)
-    window.addEventListener('orientationchange', invalidate)
-  }
+  if (!insetCache) insetCache = readInsets()
   return insetCache
 }
 

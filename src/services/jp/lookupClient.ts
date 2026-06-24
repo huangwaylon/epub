@@ -30,6 +30,11 @@ const pending = new Map<number, (r: any) => void>()
 let constructFailures = 0
 const MAX_CONSTRUCT_FAILURES = 3
 
+/** A tap-to-define round-trip (kuromoji segmentation + jpdict-idb lookup) is sub-100ms
+ *  warm; this generous ceiling only fires when the worker is effectively gone (see
+ *  `lookupAt`), never on a slow-but-alive lookup. */
+const LOOKUP_TIMEOUT_MS = 8000
+
 /** Drop the current worker, failing anything in flight (resolve null, no crash). */
 function dropWorker(): void {
   const w = worker
@@ -99,6 +104,7 @@ export function warmupLookup(): Promise<boolean> {
 export function disposeLookup(): void {
   dropWorker()
   constructFailures = 0
+  seq = 0
 }
 
 export function lookupAt(text: string, tapOffset: number): Promise<LookupResult | null> {
@@ -106,12 +112,30 @@ export function lookupAt(text: string, tapOffset: number): Promise<LookupResult 
   if (!w) return Promise.resolve(null)
   return new Promise<LookupResult | null>((resolve) => {
     const id = ++seq
-    pending.set(id, resolve)
+    // iOS can reclaim a backgrounded/under-pressure worker *without* firing `onerror`;
+    // the request would then never get a reply and this promise would hang, leaving the
+    // popup spinning forever and the resolver pinned in `pending`. Guard every lookup
+    // with a timeout that bails to null and drops the (presumed dead) worker, so the
+    // next tap lazily rebuilds a fresh one.
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      if (pending.delete(id)) {
+        dropWorker()
+        resolve(null)
+      }
+    }, LOOKUP_TIMEOUT_MS)
+    const settle = (r: LookupResult | null) => {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      resolve(r)
+    }
+    pending.set(id, settle)
     try {
       w.postMessage({ type: 'lookup', id, text, tapOffset })
     } catch {
       pending.delete(id)
-      resolve(null)
+      settle(null)
     }
   })
 }
