@@ -35,6 +35,14 @@ const MAX_CONSTRUCT_FAILURES = 3
  *  `lookupAt`), never on a slow-but-alive lookup. */
 const LOOKUP_TIMEOUT_MS = 8000
 
+/** The cold kuromoji trie build reads the ~19 MB IPADIC dict and can run several
+ *  seconds over a slow network on first download, so it gets a far more generous ceiling
+ *  than a lookup. It exists only so a *dead* worker (OOM-killed mid-build without firing
+ *  `onerror` — the documented iOS failure mode) can't hang the warmup promise forever:
+ *  that would pin the dictionary-download "Caching…" UI and leave a dead worker that
+ *  never self-heals (no later `lookupAt` timeout would fire if nothing taps). */
+const WARMUP_TIMEOUT_MS = 30000
+
 /** Drop the current worker, failing anything in flight (resolve null, no crash). */
 function dropWorker(): void {
   const w = worker
@@ -84,12 +92,30 @@ export function warmupLookup(): Promise<boolean> {
   if (!w) return Promise.resolve(false)
   return new Promise<boolean>((resolve) => {
     const id = ++seq
-    pending.set(id, (r) => resolve(r === true))
+    // iOS can reclaim a backgrounded/under-pressure worker *without* firing `onerror` —
+    // and the trie build is the longest, most memory-hungry op, so the likeliest to be
+    // OOM-killed. Without a guard the warmup promise (and its `await`ers — the "Caching…"
+    // state) would hang and the dead worker would never be replaced. Bail to false and
+    // drop the worker so the next call rebuilds a fresh one, mirroring `lookupAt`.
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      if (pending.delete(id)) {
+        dropWorker()
+        resolve(false)
+      }
+    }, WARMUP_TIMEOUT_MS)
+    const settle = (r: any) => {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      resolve(r === true)
+    }
+    pending.set(id, settle)
     try {
       w.postMessage({ type: 'warmup', id })
     } catch {
       pending.delete(id)
-      resolve(false)
+      settle(false)
     }
   })
 }

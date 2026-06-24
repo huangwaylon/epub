@@ -454,6 +454,23 @@
     else if (kind === 'writingmode' && bookFile) void controller.reopenForWritingMode(bookFile)
   }
 
+  // While a book is open, shed the lookup worker (and the ~tens-of-MB resident kuromoji
+  // trie it holds) whenever the PWA is backgrounded. iOS aggressively reclaims memory
+  // from hidden web content; holding that trie resident across a backgrounding raises the
+  // odds the whole tab is killed — losing the reading position — rather than just the
+  // worker. On return to the foreground re-warm from the SW-cached dict (no network) so
+  // the first tap-to-define is still fast. The worker is a lazy singleton, so the
+  // dispose→rebuild cycle is cheap and self-contained.
+  function onVisibility() {
+    if (document.hidden) {
+      disposeLookup()
+    } else if (settings.tapToDefine) {
+      void isDictReady().then((ok) => {
+        if (ok) void warmupLookup()
+      })
+    }
+  }
+
   onMount(async () => {
     try {
       const [m, file, progress] = await Promise.all([
@@ -495,6 +512,10 @@
       controller.setHighlights(annotations.items.filter((a) => a.kind === 'highlight').map((a) => a.cfi))
       status = 'ready'
 
+      // Shed / re-warm the lookup worker as the PWA is backgrounded / foregrounded
+      // (see onVisibility) so its resident trie isn't pinned while another app is in use.
+      document.addEventListener('visibilitychange', onVisibility)
+
       // If the dictionary is already downloaded, warm the lookup worker (and its
       // kuromoji build) now so the first tap-to-define is fast rather than paying
       // the ~19 MB trie build on the tap itself.
@@ -512,6 +533,7 @@
 
   onDestroy(() => {
     if (pendingTap) clearTimeout(pendingTap)
+    document.removeEventListener('visibilitychange', onVisibility)
     saveProgress.cancel()
     controller?.destroy()
     // Free the worker's resident kuromoji trie while no book is open (re-warmed on

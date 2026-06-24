@@ -57,7 +57,6 @@ export default defineConfig(({ command }) => {
       svelte(),
       VitePWA({
         registerType: 'prompt',
-        includeAssets: ['favicon.svg', 'icons/apple-touch-icon-180.png'],
         manifest: {
           name: 'Tsuzuri — Japanese Reader',
           short_name: 'Tsuzuri',
@@ -87,7 +86,9 @@ export default defineConfig(({ command }) => {
           clientsClaim: true,
           // Precache the app shell. Books live in OPFS and the JMdict data lives in
           // jpdict's own IndexedDB, so neither is fetched through the service worker.
-          globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+          // (No web fonts are bundled — the app uses the system JP stack — so there's
+          // nothing to glob beyond JS/CSS/HTML and the favicon/icon images.)
+          globPatterns: ['**/*.{js,css,html,svg,png}'],
           // PDF.js and the ~19 MB kuromoji IPADIC dict are large; keep them out of the
           // install-time precache (the dict is runtime-cached on first use, below).
           // Also drop foliate's format loaders this app can never reach — it opens
@@ -107,17 +108,18 @@ export default defineConfig(({ command }) => {
           cleanupOutdatedCaches: true,
           // The kuromoji IPADIC dictionary (*.dat.gz under /kuromoji/dict/) is fetched
           // on first tap-to-define; cache it so word segmentation works offline after.
-          // It's build-versioned immutable data, so there's deliberately NO age expiry:
-          // an age-based purge would, for a long-lived offline install, silently evict the
-          // dict and degrade tap-to-define to greedy segmentation with no way to refetch.
-          // `cleanupOutdatedCaches` already drops stale caches across deploys.
+          // It's build-versioned immutable data, so there's deliberately NO expiry — by
+          // age *or* entry count. The dict is an all-or-nothing set of ~12 files; an LRU
+          // `maxEntries` cap would, once crossed (e.g. a future kuromoji bump adding
+          // files), silently evict one shard and leave a *partial* dict, which makes the
+          // trie build fail and degrades tap-to-define to greedy segmentation with no way
+          // to refetch. `cleanupOutdatedCaches` already drops stale caches across deploys.
           runtimeCaching: [
             {
               urlPattern: /\/kuromoji\/dict\/.*\.dat\.gz$/,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'kuromoji-ipadic',
-                expiration: { maxEntries: 16 },
                 cacheableResponse: { statuses: [0, 200] },
               },
             },

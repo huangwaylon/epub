@@ -595,10 +595,17 @@ export class ReaderController {
   setHighlights(cfis: string[]): void {
     this.#highlights.clear()
     this.#highlightIndex.clear()
-    for (const cfi of cfis) {
-      this.#highlights.add(cfi)
-      this.#indexForCFI(cfi)
-    }
+    for (const cfi of cfis) this.#highlights.add(cfi)
+    // Draw whatever lives in the already-loaded section now: the opening section's
+    // `create-overlay` fires during `view.init` — *before* this seed runs — so the
+    // per-section redraw path won't cover it on its own. addAnnotation no-ops for the
+    // (as-yet unloaded) sections, which later draw via their own `create-overlay`.
+    //
+    // We deliberately do NOT pre-resolve every CFI's spine index here. Doing so parsed
+    // every highlight CFI synchronously on the book-open critical path (then addAnnotation
+    // parsed each again) — ~2× the CFI parsing right when the first page should paint,
+    // and it grows with every auto-highlighted vocab word. `#highlightIndex` is instead
+    // filled lazily by `reapplyHighlights(index)` as each section loads.
     void this.reapplyHighlights()
   }
 
