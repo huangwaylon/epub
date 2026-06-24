@@ -25,7 +25,8 @@ reflow. The app is fully client-side — no backend.
   **kuromoji** (MeCab-style IPADIC) segments the sentence to find word boundaries, then
   offline JMdict (`@birchill/jpdict-idb`) + 10ten's deinflection engine supply the entry;
   ruby/furigana is skipped from the lookup.
-- 🖍 **Highlights & bookmarks** (CFI-anchored, four colours, notes panel).
+- 🖍 **Highlights & bookmarks** — CFI-anchored so they survive reflow; a notes panel
+  lists them. Highlights are a single yellow (tap-to-define auto-highlights the word).
 - 🎨 Light / Sepia / Dark themes, adjustable font, size, spacing, margins.
 - 📲 Installable PWA with an offline app shell; books in OPFS, data in IndexedDB.
 
