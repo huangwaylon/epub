@@ -3,6 +3,7 @@ import '../vendor/foliate-js/view.js'
 // @ts-ignore — vendored JS module, no type declarations
 import { Overlayer } from '../vendor/foliate-js/overlayer.js'
 import { HIGHLIGHT_HEX, type ReaderSettings } from './types'
+import { viewportSize } from './viewport'
 
 /** What we read off foliate's `relocate` event. */
 export interface RelocateDetail {
@@ -293,12 +294,12 @@ export class ReaderController {
    * reliable backstop if a real device still under-measures.
    *
    * Crucially this **re-runs `applyLayout`** (not a bare `render()`): on a cold iOS PWA
-   * launch `window.innerHeight` is briefly under-reported before the standalone
-   * viewport / safe-area insets settle, so the first `applyLayout` derives a too-short
-   * vertical `max-inline-size` (the column height) and leaves a dead band under the
-   * nav bar — the very band that vanishes on rotation (which re-derives via `#onResize`).
-   * Re-deriving here picks up the settled viewport without needing a rotation. Setting
-   * `max-inline-size` to a new value forces foliate to re-render, so no separate render.
+   * launch the viewport / safe-area insets settle slightly after first paint, so the
+   * first `applyLayout` can derive a too-short vertical `max-inline-size` (the column
+   * height) and leave a dead band under the nav bar — the band that vanishes on
+   * rotation. Re-deriving here picks up the settled viewport without needing a rotation;
+   * applyLayout no-ops if the geometry is in fact unchanged (so this costs nothing when
+   * the first measure was already right).
    */
   #nudgeLayout(): void {
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
@@ -338,37 +339,57 @@ export class ReaderController {
     this.#settings = s
     const r = this.view.renderer
     if (!r) return
-    const vw = window.innerWidth
-    const vh = window.innerHeight
+    const { w: vw, h: vh } = viewportSize()
     const minDim = Math.min(vw, vh)
     const margin = Math.round(Math.max(28, Math.min(80, minDim * 0.075)) * s.marginScale)
     // A two-page spread only applies in landscape on wide screens — this mirrors
     // foliate's orientation container-query, which collapses the spread in portrait.
     const cols = vw > vh && vw >= 820 ? 2 : 1
 
+    let block: number
+    let inline: number
+    if (this.#vertical) {
+      // Vertical 縦書き: `max-block-size` is the across-page *width*, `max-inline-size`
+      // the column *height*. Derive both from the viewport so the box fits the screen
+      // and the column fills it (a hard-coded inline size let the first paint settle
+      // ~2× too tall, leaving a dead band — docs §11). Fill the width (only the margin
+      // frames it) and the full height minus the margin band.
+      inline = Math.round(Math.max(320, vh - margin * 2))
+      block = Math.round(vw - margin * 2)
+    } else {
+      block = 880
+      inline = 640
+    }
+
+    // Skip redundant work: setting an observed attribute re-fires foliate's
+    // attributeChangedCallback → render() (a full iframe relayout + repaint) *even when
+    // the value is unchanged*. iOS emits a burst of resize/visualViewport events during
+    // a rotation (and `window.inner*` lags the settled viewport), so without this guard
+    // each event repaints the page — the continuous flicker. Bail once the derived
+    // geometry is stable; a rotation that returns to the same size then does no work.
+    const last = this.#lastLayout
+    if (
+      last &&
+      last.vertical === this.#vertical &&
+      last.cols === cols &&
+      last.margin === margin &&
+      last.block === block &&
+      last.inline === inline
+    )
+      return
+    this.#lastLayout = { vertical: this.#vertical, cols, margin, block, inline }
+
     r.setAttribute('margin', `${margin}px`)
     r.setAttribute('gap', '6%')
     r.setAttribute('max-column-count', `${cols}`)
-    if (this.#vertical) {
-      // Vertical 縦書き: `max-block-size` is the across-page *width*; `max-inline-size`
-      // is the column *height*. Fill the available width (only the margin frames it)
-      // and the full height minus the margin band, so the reading surface uses the
-      // whole screen rather than floating in dead space. Foliate clamps the height to
-      // what's available and, in landscape, its spread is 1, so we set the height
-      // directly (the old hard-coded 1100 happened to clamp the same, but a too-large
-      // value relative to the spread is what let the box settle mis-sized; deriving it
-      // is deterministic).
-      const colHeight = Math.max(320, vh - margin * 2)
-      const bandWidth = vw - margin * 2
-      r.setAttribute('max-block-size', `${Math.round(bandWidth)}px`)
-      r.setAttribute('max-inline-size', `${Math.round(colHeight)}px`)
-    } else {
-      r.setAttribute('max-block-size', '880px')
-      // Set last: changing max-inline-size forces foliate to re-render, so the other
-      // attributes above are already in place when it does.
-      r.setAttribute('max-inline-size', '640px')
-    }
+    r.setAttribute('max-block-size', `${block}px`)
+    // Set last: changing max-inline-size forces a foliate render(), so the other
+    // attributes above are already in place when it does.
+    r.setAttribute('max-inline-size', `${inline}px`)
   }
+
+  /** Last geometry applied to the renderer; lets applyLayout skip redundant renders. */
+  #lastLayout: { vertical: boolean; cols: number; margin: number; block: number; inline: number } | undefined
 
   /** Re-tune geometry on rotation / window resize / iOS viewport settle (e.g. iPad
    *  orientation change, or the standalone PWA viewport finalising after a cold launch).
@@ -414,6 +435,10 @@ export class ReaderController {
       /* ignore */
     }
     await this.view.open(file)
+    // The fresh paginator starts with foliate's default geometry attributes, so the
+    // idempotency cache from the old renderer no longer reflects reality — clear it
+    // so applyLayout actually re-applies our attributes to the new renderer.
+    this.#lastLayout = undefined
     this.applyAppearance(this.#settings)
     this.applyLayout(this.#settings)
     await this.view.init({ lastLocation: at || undefined, showTextStart: true })

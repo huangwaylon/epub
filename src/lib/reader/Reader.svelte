@@ -614,7 +614,14 @@
 <style>
   .reader {
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    /* Size to the real (visual) viewport, not `inset: 0` — on a cold iOS PWA launch
+       the fixed containing block is briefly too short, which left the bottom bar
+       sitting above the screen edge until a rotation. --app-height (set from the
+       visual viewport) tracks the true screen; 100dvh is the pre-JS fallback. */
+    height: var(--app-height, 100dvh);
     background: var(--paper);
     overflow: hidden;
   }
