@@ -9,8 +9,9 @@ import {
   putBookMeta,
 } from './storage/db'
 
-/** EPUB title/author come back as either a plain string or a `{lang: value}` map. */
-function flattenLangMap(x: unknown): string {
+/** EPUB title/author come back as either a plain string or a `{lang: value}` map.
+ *  Prefer Japanese (`ja`/`ja_JP`), else the first value. Exported for unit tests. */
+export function flattenLangMap(x: unknown): string {
   if (!x) return ''
   if (typeof x === 'string') return x
   if (typeof x === 'object') {

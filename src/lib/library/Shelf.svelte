@@ -208,12 +208,9 @@
     padding: 10px 10px 10px 14px;
     border-radius: var(--r-md);
     font-size: 13px;
-    color: #c0392b;
-    background: color-mix(in srgb, #c0392b 10%, var(--paper-raised));
-    border: 1px solid color-mix(in srgb, #c0392b 28%, transparent);
-  }
-  :global([data-theme='dark']) .import-error {
-    color: #ff8a7d;
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, var(--paper-raised));
+    border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
   }
   .import-error span {
     flex: 1;
@@ -384,9 +381,6 @@
     border-bottom: 0;
   }
   .row.danger {
-    color: #c0392b;
-  }
-  :global([data-theme='dark']) .row.danger {
-    color: #ff6b5b;
+    color: var(--danger);
   }
 </style>

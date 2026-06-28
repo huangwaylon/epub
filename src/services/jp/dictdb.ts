@@ -1,5 +1,6 @@
 import { JpdictIdb, updateWithRetry, cancelUpdateWithRetry } from '@birchill/jpdict-idb'
 import { dict } from '../../stores/dict.svelte'
+import { warmupLookup } from './lookupClient'
 
 /**
  * Owns the single shared jpdict-idb instance. Dictionary data (JMdict) is
@@ -81,6 +82,23 @@ export async function ensureDictionary(lang = 'en'): Promise<void> {
   const d = await getDb()
   if (d.words.state === 'ok') return
   await downloadDictionary(lang)
+}
+
+/**
+ * Download the JMdict data, then warm the kuromoji segmenter **while still online**
+ * so the service worker runtime-caches the ~19 MB IPADIC dict — the step that makes
+ * tap-to-define segmentation work offline afterwards. `dict.warming` drives the
+ * "Caching…" UI until the trie is cached. Shared by the shelf settings and the
+ * in-reader download prompt so this online-warm invariant lives in one place.
+ */
+export async function downloadAndWarmDictionary(lang = 'en'): Promise<void> {
+  await downloadDictionary(lang)
+  dict.warming = true
+  try {
+    await warmupLookup()
+  } finally {
+    dict.warming = false
+  }
 }
 
 export async function cancelDownload(): Promise<void> {

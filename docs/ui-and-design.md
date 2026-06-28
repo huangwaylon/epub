@@ -102,6 +102,7 @@ below. Brand identity is the **vermilion `--accent`** ("like a hanko seal").
 | `--line-strong` | borders, grip, tracks | `rgba(ink,0.16)` | `rgba(ink,0.20)` | `rgba(ink,0.18)` |
 | `--accent` | **vermilion** brand | `#b5552e` | `#a8521f` | `#e0855c` |
 | `--accent-soft` | tinted fills (segmented bg, chips, active states) | `rgba(accent,0.12)` | `0.14` | `0.16` |
+| `--danger` | error text (download failures, destructive rows) | `#c0392b` | `#b23a26` | `#f0897a` |
 | `--hl-yellow` | theme-aware UI highlight tint | `#ffe79a` | `#f2d98a` | `#6b5a1f` |
 | `--scrim` | modal backdrop | `rgba(ink,0.32)` | `rgba(.,0.34)` | `rgba(0,0,0,0.5)` |
 

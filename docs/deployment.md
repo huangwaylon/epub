@@ -96,11 +96,11 @@ The `dist/` artifact contains the app shell (JS/CSS/HTML), the PWA manifest, the
 service worker, the icons, **and the kuromoji IPADIC dictionary**
 (`kuromoji/dict/*.dat.gz`, ~19 MB).
 
-Workbox precaches `**/*.{js,css,html,svg,png,woff2}`, capped at 6 MB/file, with
+Workbox precaches `**/*.{js,css,html,svg,png}`, capped at 6 MB/file, with
 `globIgnores` excluding PDF.js (`**/pdfjs/**`), kuromoji (`**/kuromoji/**`), and
 unreachable foliate format loaders (`mobi-*`, `fb2-*`, `comic-book-*`, `tts-*`,
 `search-*`). So the dict is **not** in the install precache; it is **runtime-cached**
-(CacheFirst, `maxEntries: 16`, no age expiry — immutable build-versioned data) on
+(CacheFirst, no expiry — immutable build-versioned data) on
 first dictionary download / tap-to-define, so segmentation works offline thereafter.
 Details: [`storage-pwa-ios.md`](./storage-pwa-ios.md) §6.
 

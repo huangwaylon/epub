@@ -45,6 +45,7 @@
   --line-strong: rgba(33, 29, 23, 0.16);
   --accent: #b5552e; /* vermilion, like a hanko seal */
   --accent-soft: rgba(181, 85, 46, 0.12);
+  --danger: #c0392b;
   --hl-yellow: #ffe79a;
   --scrim: rgba(33, 29, 23, 0.32);
 }
@@ -60,6 +61,7 @@
   --line-strong: rgba(74, 58, 41, 0.2);
   --accent: #a8521f;
   --accent-soft: rgba(168, 82, 31, 0.14);
+  --danger: #b23a26;
   --hl-yellow: #f2d98a;
   --scrim: rgba(57, 43, 28, 0.34);
 }
@@ -75,6 +77,7 @@
   --line-strong: rgba(231, 225, 211, 0.18);
   --accent: #e0855c;
   --accent-soft: rgba(224, 133, 92, 0.16);
+  --danger: #f0897a;
   --hl-yellow: #6b5a1f;
   --scrim: rgba(0, 0, 0, 0.5);
 }

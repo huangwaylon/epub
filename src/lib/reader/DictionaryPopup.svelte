@@ -116,7 +116,11 @@
                 {#if !entry.kanaOnly && entry.reading}
                   <span class="reading" lang="ja">{entry.reading}</span>
                 {/if}
-                {#if entry.pitch !== undefined}<span class="pitch">[{entry.pitch}]</span>{/if}
+                {#if entry.pitch !== undefined}
+                  <span class="pitch" title="Pitch accent (downstep position)" aria-label="pitch accent {entry.pitch}">
+                    <span class="pitch-tag" aria-hidden="true">アクセント</span>{entry.pitch}
+                  </span>
+                {/if}
               </div>
               <ol class="senses">
                 {#each entry.senses as sense}
@@ -249,9 +253,21 @@
     color: var(--accent);
   }
   .pitch {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-size: 12px;
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     font-variant-numeric: tabular-nums;
+  }
+  .pitch-tag {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink-faint);
+    background: var(--line);
+    padding: 1px 5px;
+    border-radius: 100px;
   }
   .senses {
     margin: 6px 0 0;
@@ -359,7 +375,7 @@
     transition: width 0.2s;
   }
   .err {
-    color: #c0392b;
+    color: var(--danger);
     font-size: 12px;
     margin: 0;
   }

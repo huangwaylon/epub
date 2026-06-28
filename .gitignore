@@ -26,3 +26,4 @@ public/kuromoji/
 *.njsproj
 *.sln
 *.sw?
+.test-books-tmp/

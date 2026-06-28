@@ -3,8 +3,7 @@
   import { settings, updateSettings } from '../../stores/settings.svelte'
   import { storageStatus, formatBytes, type StorageStatus } from '../../services/storage/persist'
   import { dict } from '../../stores/dict.svelte'
-  import { getDb, downloadDictionary } from '../../services/jp/dictdb'
-  import { warmupLookup } from '../../services/jp/lookupClient'
+  import { getDb, downloadAndWarmDictionary } from '../../services/jp/dictdb'
   import Segmented from '../components/Segmented.svelte'
   import type { ThemeName } from '../../services/types'
 
@@ -16,17 +15,7 @@
 
   async function getDict() {
     try {
-      await downloadDictionary('en')
-      // Warm kuromoji while online so the SW runtime-caches the IPADIC dict files; this
-      // is what makes tap-to-define segmentation work offline afterwards. Await it (and
-      // surface a "caching" state) so we don't report full offline-readiness before the
-      // ~19 MB dict has actually been fetched and cached.
-      dict.warming = true
-      try {
-        await warmupLookup()
-      } finally {
-        dict.warming = false
-      }
+      await downloadAndWarmDictionary('en')
     } catch {
       /* error shown via store */
     }
@@ -131,7 +120,7 @@
     color: var(--ink-faint);
   }
   .err {
-    color: #c0392b;
+    color: var(--danger);
   }
   .dict-row {
     display: flex;

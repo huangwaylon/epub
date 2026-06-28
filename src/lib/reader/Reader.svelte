@@ -8,8 +8,7 @@
   import { ReaderController, type RelocateDetail, type TapInfo, type SelectionInfo, type TocItem } from '../../services/reader'
   import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
   import { lookupAt, warmupLookup, disposeLookup, type LookupResult } from '../../services/jp/lookupClient'
-  import { isDictReady, downloadDictionary } from '../../services/jp/dictdb'
-  import { dict } from '../../stores/dict.svelte'
+  import { isDictReady, downloadAndWarmDictionary } from '../../services/jp/dictdb'
   import {
     annotations,
     loadAnnotations,
@@ -19,6 +18,8 @@
     newId,
   } from '../../stores/annotations.svelte'
   import { debounce } from '../util/debounce'
+  import { inChromeToggleBand } from '../util/chromeBand'
+  import { viewportSize } from '../../services/viewport'
   import type { BookMeta, Annotation } from '../../services/types'
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
@@ -126,6 +127,13 @@
 
   /** Close every transient overlay (dict popup, selection toolbar). */
   function closeOverlays() {
+    // A page turn or overlay-close invalidates any tap deferred for highlight-hit
+    // resolution (see onTap) — drop it so it can't fire a lookup against a page that
+    // has since turned away.
+    if (pendingTap) {
+      clearTimeout(pendingTap)
+      pendingTap = undefined
+    }
     dictState.open = false
     sel.open = false
     // Release the content Document + Text-node refs held for auto-highlighting the last
@@ -288,7 +296,7 @@
     // A tap in the top or bottom edge band (over the nav bars) toggles the chrome.
     // This is the way a tap *shows* the bars — a tap in the central reading area
     // never reveals them, so reading taps don't flash the chrome.
-    if (inChromeToggleBand(info.py)) {
+    if (inChromeToggleBand(info.py, viewportSize().h)) {
       chromeVisible = !chromeVisible
       return
     }
@@ -303,16 +311,6 @@
     // swipe — never by tap; the glyph hit-test in extractTextAt makes tryDefine return
     // false for blank space.
     if (settings.tapToDefine) tryDefine(info)
-  }
-
-  /**
-   * Whether a tap (in top-window coords) landed in the top/bottom edge band that
-   * toggles the chrome — sized to roughly cover the nav bars / their reveal zone.
-   */
-  function inChromeToggleBand(py: number): boolean {
-    const vh = window.innerHeight
-    const band = Math.min(160, Math.max(80, vh * 0.12))
-    return py <= band || py >= vh - band
   }
 
   /**
@@ -423,17 +421,10 @@
 
   async function downloadDict() {
     try {
-      await downloadDictionary('en')
-      // Build kuromoji now (while online) so the service worker runtime-caches the
-      // ~19 MB IPADIC dict files; otherwise the first offline tap would fail to fetch
-      // them and silently fall back to degraded segmentation. Await it so the dict is
-      // actually cached (and the segmenter ready) before we run the pending lookup.
-      dict.warming = true
-      try {
-        await warmupLookup()
-      } finally {
-        dict.warming = false
-      }
+      // Download JMdict + warm kuromoji (while online) so the service worker
+      // runtime-caches the ~19 MB IPADIC dict before the first offline tap. Shared
+      // with the shelf settings so the online-warm invariant lives in one place.
+      await downloadAndWarmDictionary('en')
       dictState.needsDownload = false
       dictState.loading = true
       await runLookup(dictState.text, dictState.tapOffset, dictState.lastKey)

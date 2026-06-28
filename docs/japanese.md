@@ -25,10 +25,15 @@ Two engines combine so tapping *any* character of a word resolves the whole word
 | Deinflect | `deinflect.ts` | worker | Pure string → candidate base forms (GPL; see §2). |
 | DB lifecycle | `dictdb.ts` | main | Owns the shared `JpdictIdb`, drives download, syncs the `dict` store. |
 
-Starting `matchAt` at kuromoji's boundary means tapping 決 or 心 in 決心 both resolve 決心,
-and a JMdict compound *longer* than the IPADIC token is still found. While kuromoji loads (or if
-it splits a word JMdict lemmatizes differently), lookup falls back to **greedy
-leftmost-covering** matching.
+**The resolution contract** (the authoritative statement; §4 details it): `lookupAt(text,
+tapOffset)` first asks kuromoji for the **start of the token containing the tap**
+(`tokenStartAt`), then runs `matchAt` from that start — so tapping 決 or 心 in 決心 both resolve
+決心, and a JMdict compound *longer* than the IPADIC token is still found. While kuromoji loads
+(or if it split a word JMdict lemmatizes differently), it falls back to **greedy
+leftmost-covering**: scan candidate starts left-to-right from 0 to `tapOffset` and take the
+**first** (leftmost) whose match span covers the tap. At a single start, `matchAt` is
+**longest-first** (greedy longest-match). So the two tie-breaks differ: *within* one start,
+longest wins; *across* the greedy fallback's starts, leftmost wins.
 
 The heavy pipeline runs in a **Web Worker** (`lookup.worker.ts`, fronted by `lookupClient.ts`)
 so a tap never janks a page-turn; only the DOM parts (`extractTextAt`/`rangeForSpan`) stay on
@@ -76,6 +81,10 @@ connection to the same `jpdict` IndexedDB.
   the hot path), else falls back to `getDb()` and checks `d.words.state === 'ok'`.
 - **`downloadDictionary(lang = 'en')`** — clears `dict.error`/`dict.progress`, then wraps
   `updateWithRetry({ db, lang, series: 'words', onUpdateComplete, onUpdateError })` in a promise.
+- **`downloadAndWarmDictionary(lang = 'en')`** — the shared entry point both download UIs call:
+  `await downloadDictionary(lang)`, then sets `dict.warming = true` and `await warmupLookup()`
+  (`finally` clears `warming`) so the IPADIC dict is SW-cached **while still online** (§4, §7). The
+  online-warm invariant lives here, once.
 - **`ensureDictionary(lang = 'en')`** — download only if `words.state !== 'ok'`.
 - **`cancelDownload()`** — `cancelUpdateWithRetry({ db, series: 'words' })` **only if `db` is
   non-null** (no-op before `getDb()` has run), then sets `dict.updating = false`.
@@ -220,8 +229,8 @@ kuromoji. The workbox config (`vite.config.ts`):
 - `globIgnores` excludes `**/kuromoji/**` from the install precache (it's too large; runtime-cached
   instead).
 
-Because of this, the download handlers **`await warmupLookup()`** while still online (§7). See
-[deployment.md](deployment.md).
+Because of this, the dict is SW-cached only on the kuromoji build, so the download flow warms it
+while still online via `downloadAndWarmDictionary` (§3, §7). See [deployment.md](deployment.md).
 
 ### `candidateMatches` — the POS heuristic
 
@@ -389,11 +398,12 @@ Lifecycle:
   consecutive *construction* failures** (`MAX_CONSTRUCT_FAILURES`) disable the feature, so a
   transient hiccup self-heals.
 
-**Offline depends on warming kuromoji *before* going offline** (§4). So the download handlers
-(`ShelfSettings.getDict`, `Reader.downloadDict`) **`await warmupLookup()`** right after
-`downloadDictionary` resolves, setting `dict.warming = true` (UI shows "Caching dictionary for
-offline use…") until it clears. Without this, a user who downloaded JMdict and went offline before
-the IPADIC fetch finished would hit failed fetches and silently fall back to greedy segmentation.
+**Offline depends on warming kuromoji *before* going offline** (§4): the IPADIC dict is only
+SW-cached when the worker builds kuromoji, so the download handlers warm it while still online via
+`downloadAndWarmDictionary` (§3), which sets `dict.warming = true` ("Caching dictionary for offline
+use…") until `warmupLookup()` resolves. Without this, a user who downloaded JMdict and went offline
+before the IPADIC fetch finished would hit failed fetches and silently fall back to greedy
+segmentation.
 
 ---
 
@@ -405,13 +415,18 @@ the page (pagination is by horizontal **swipe** — see [reader-engine.md](reade
 
 ```ts
 function handleTap(info) {
-  if (dictState.open) { dictState.open = false; return }       // open popup swallows the tap
-  if (inChromeToggleBand(info.py)) { chromeVisible = !chromeVisible; return }
-  if (settings.tapToDefine) tryDefine(info)                     // central area: define
+  if (dictState.open) { closeOverlays(); return }                  // open popup swallows the tap
+  if (inChromeToggleBand(info.py, viewportSize().h)) {             // top/bottom band → chrome
+    chromeVisible = !chromeVisible; return
+  }
+  if (chromeVisible) { chromeVisible = false; return }             // visible chrome → dismiss
+  if (settings.tapToDefine) tryDefine(info)                        // central area: define
 }
 ```
 
-The glyph hit-test in `extractTextAt` (§6) is what lets a blank-space central tap fall through
+`inChromeToggleBand(py, vh)` (`src/lib/util/chromeBand.ts`) takes the **visual** viewport height
+(`viewportSize().h`, not `window.innerHeight`); see [reader-engine.md](reader-engine.md) §8. The
+glyph hit-test in `extractTextAt` (§6) is what lets a blank-space central tap fall through
 `tryDefine` and do nothing.
 
 - **`tryDefine(info)`** — `extractTextAt(info.doc, info.ix, info.iy)`; `null` ⇒ blank/non-word tap.
@@ -434,9 +449,9 @@ The glyph hit-test in `extractTextAt` (§6) is what lets a blank-space central t
   tap superseded it. **`autoHighlight`** builds the word range from the extract positions +
   `matchStart`/`matchLength`, CFIs it, re-checks the guard, then `saveAnnotation` +
   `controller.addHighlight` (see [reader-engine.md](reader-engine.md)).
-- **`downloadDict()`** (popup's `ondownload`) — `await downloadDictionary('en')`, then
-  `dict.warming = true` / `await warmupLookup()` / `dict.warming = false`, clears `needsDownload`,
-  re-runs `runLookup` for the originally-tapped word.
+- **`downloadDict()`** (popup's `ondownload`) — `await downloadAndWarmDictionary('en')` (§3:
+  download JMdict, then warm kuromoji while online so the IPADIC dict is SW-cached), clears
+  `needsDownload`, re-runs `runLookup` for the originally-tapped word.
 
 ### `DictionaryPopup.svelte`
 
@@ -456,9 +471,9 @@ A sticky `.actions` footer (shown only when `result` has entries) holds one **hi
 
 Also reachable from **Shelf Settings** (`ShelfSettings.svelte`), "Japanese dictionary" section
 showing `dict.state`/`dict.progress`/`dict.warming` and a **Download** button → `getDict()`
-(`downloadDictionary('en')` + `await warmupLookup()`, both wrapped in try/catch surfacing
-`dict.error`). It calls `getDb()` on mount to init the status readout. English glosses are the
-only language, so `downloadDictionary` is always called with `'en'`.
+(`downloadAndWarmDictionary('en')` wrapped in try/catch surfacing `dict.error`). It calls `getDb()`
+on mount to init the status readout. English glosses are the only language, so download is always
+`'en'`.
 
 ---
 

@@ -215,14 +215,13 @@ would just read as "the book never appeared." `Shelf.svelte` triggers import fro
 | --- | --- |
 | `registerType` | `'prompt'` — SW does **not** auto-activate an update; the app surfaces a refresh prompt. No `skipWaiting`, so a reading user is never reloaded out from under. |
 | `manifest` | `name: 'Tsuzuri — Japanese Reader'`, `short_name: 'Tsuzuri'`, `display: 'standalone'`, `orientation: 'any'`, `background_color`/`theme_color: '#f6f3ec'`. `start_url`/`scope` = `base`. Icons: `icon-192`, `icon-512` (`any`), `maskable-512` (`maskable`). |
-| `includeAssets` | `favicon.svg`, `icons/apple-touch-icon-180.png` (iOS uses `<link rel="apple-touch-icon">`, not the manifest `icons`). |
 | `workbox.clientsClaim` | `true` — a freshly-installed SW takes control of the already-loaded page immediately, so the IPADIC dict fetched *in that first session* (right after download → `warmupLookup`) is runtime-cached while still online. |
-| `workbox.globPatterns` | `**/*.{js,css,html,svg,png,woff2}` — **app shell only**. |
+| `workbox.globPatterns` | `**/*.{js,css,html,svg,png}` — **app shell only** (no web fonts are bundled; the app uses the system JP stack). |
 | `workbox.globIgnores` | `**/pdfjs/**`, `**/kuromoji/**`, and dead foliate format loaders (`mobi-*`, `fb2-*`, `comic-book-*`, `tts-*`, `search-*`) — keeps the ~19 MB IPADIC dict and ~17 KB of unreachable chunks out of the install-time precache. (`**/pdfjs/**` is a vestigial safety glob: PDF.js was removed from the foliate fork, so it now matches nothing — see [`docs/reader-engine.md`](./reader-engine.md) §1.) |
 | `workbox.maximumFileSizeToCacheInBytes` | `6 * 1024 * 1024`. |
 | `workbox.navigateFallback` | `${base}index.html` — SPA works offline for any in-scope route. |
 | `workbox.cleanupOutdatedCaches` | `true` — drops stale caches across deploys. |
-| `workbox.runtimeCaching` | The ~19 MB IPADIC `*.dat.gz` under `/kuromoji/dict/`: `CacheFirst`, `cacheName: 'kuromoji-ipadic'`, `expiration: { maxEntries: 16 }`, `cacheableResponse.statuses: [0, 200]`. **No `maxAgeSeconds`** — the dict is build-versioned immutable data; an age purge would silently evict it from a long-lived offline install with no way to refetch. |
+| `workbox.runtimeCaching` | The ~19 MB IPADIC `*.dat.gz` under `/kuromoji/dict/`: `CacheFirst`, `cacheName: 'kuromoji-ipadic'`, `cacheableResponse.statuses: [0, 200]`. **No `expiration`** — neither `maxAgeSeconds` *nor* `maxEntries`. The dict is build-versioned immutable data and an all-or-nothing set of ~12 shards; any LRU/age purge could evict one shard and leave a partial dict (a failed trie build, with no way to refetch offline). `cleanupOutdatedCaches` handles cross-deploy staleness instead. |
 | `devOptions` | `{ enabled: true, type: 'module' }` — SW runs under `vite dev` (with `server.host: true` exposing the dev server on the LAN) so install/offline can be tested on-device. |
 
 The `base` is `'/epub/'` for `vite build` (GitHub Pages project site) and `'/'` for

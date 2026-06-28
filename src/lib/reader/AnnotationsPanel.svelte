@@ -143,6 +143,6 @@
     color: var(--ink-faint);
   }
   .del:active {
-    color: #c0392b;
+    color: var(--danger);
   }
 </style>
