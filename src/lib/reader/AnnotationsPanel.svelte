@@ -6,11 +6,17 @@
 
   let tab = $state<'highlights' | 'bookmarks'>('highlights')
 
+  // Newest first, with a stable id tiebreaker so items sharing a createdAt ms
+  // (rapid/batch highlights) keep a deterministic order across re-renders.
   const highlights = $derived(
-    annotations.items.filter((a) => a.kind === 'highlight').sort((a, b) => b.createdAt - a.createdAt),
+    annotations.items
+      .filter((a) => a.kind === 'highlight')
+      .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)),
   )
   const bookmarks = $derived(
-    annotations.items.filter((a) => a.kind === 'bookmark').sort((a, b) => b.createdAt - a.createdAt),
+    annotations.items
+      .filter((a) => a.kind === 'bookmark')
+      .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)),
   )
   const list = $derived(tab === 'highlights' ? highlights : bookmarks)
 </script>

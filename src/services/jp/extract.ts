@@ -46,14 +46,24 @@ const WORD_CHAR = /[぀-ヿ㐀-鿿豈-﫿ー々]/
 function caretPosition(doc: Document, x: number, y: number): { node: Node; offset: number } | null {
   const anyDoc = doc as any
   // WebKit implements caretRangeFromPoint; the standard caretPositionFromPoint is
-  // the fallback for engines that prefer it. Try the WebKit one first.
-  if (anyDoc.caretRangeFromPoint) {
-    const r: Range | null = anyDoc.caretRangeFromPoint(x, y)
-    if (r) return { node: r.startContainer, offset: r.startOffset }
+  // the fallback for engines that prefer it. Try the WebKit one first. Both are
+  // wrapped defensively — a hostile coordinate or detached doc should fall through
+  // to the next strategy (or to "no hit"), never throw out of the tap handler.
+  try {
+    if (anyDoc.caretRangeFromPoint) {
+      const r: Range | null = anyDoc.caretRangeFromPoint(x, y)
+      if (r) return { node: r.startContainer, offset: r.startOffset }
+    }
+  } catch {
+    /* fall through to caretPositionFromPoint */
   }
-  if (anyDoc.caretPositionFromPoint) {
-    const p = anyDoc.caretPositionFromPoint(x, y)
-    if (p) return { node: p.offsetNode, offset: p.offset }
+  try {
+    if (anyDoc.caretPositionFromPoint) {
+      const p = anyDoc.caretPositionFromPoint(x, y)
+      if (p) return { node: p.offsetNode, offset: p.offset }
+    }
+  } catch {
+    /* no caret at point */
   }
   return null
 }

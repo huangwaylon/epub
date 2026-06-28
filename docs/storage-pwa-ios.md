@@ -19,6 +19,10 @@ they survive reflow, font-size, and writing-mode changes.
 
 Single source of truth for every persisted shape.
 
+A **CFI** (EPUB Canonical Fragment Identifier) is an opaque EPUB anchor for a
+position or range, stable across reflow/font/writing-mode changes — see
+[`docs/reader-engine.md`](./reader-engine.md) §10.
+
 | Export | Kind | Value / store |
 | --- | --- | --- |
 | `WritingModePref` | type | `'auto' \| 'horizontal' \| 'vertical'` — reader override on top of the EPUB's declared mode. |
@@ -214,7 +218,7 @@ would just read as "the book never appeared." `Shelf.svelte` triggers import fro
 | `includeAssets` | `favicon.svg`, `icons/apple-touch-icon-180.png` (iOS uses `<link rel="apple-touch-icon">`, not the manifest `icons`). |
 | `workbox.clientsClaim` | `true` — a freshly-installed SW takes control of the already-loaded page immediately, so the IPADIC dict fetched *in that first session* (right after download → `warmupLookup`) is runtime-cached while still online. |
 | `workbox.globPatterns` | `**/*.{js,css,html,svg,png,woff2}` — **app shell only**. |
-| `workbox.globIgnores` | `**/pdfjs/**`, `**/kuromoji/**`, and dead foliate format loaders (`mobi-*`, `fb2-*`, `comic-book-*`, `tts-*`, `search-*`) — keeps the large PDF.js bundle, the ~19 MB IPADIC dict, and ~17 KB of unreachable chunks out of the install-time precache. |
+| `workbox.globIgnores` | `**/pdfjs/**`, `**/kuromoji/**`, and dead foliate format loaders (`mobi-*`, `fb2-*`, `comic-book-*`, `tts-*`, `search-*`) — keeps the ~19 MB IPADIC dict and ~17 KB of unreachable chunks out of the install-time precache. (`**/pdfjs/**` is a vestigial safety glob: PDF.js was removed from the foliate fork, so it now matches nothing — see [`docs/reader-engine.md`](./reader-engine.md) §1.) |
 | `workbox.maximumFileSizeToCacheInBytes` | `6 * 1024 * 1024`. |
 | `workbox.navigateFallback` | `${base}index.html` — SPA works offline for any in-scope route. |
 | `workbox.cleanupOutdatedCaches` | `true` — drops stale caches across deploys. |

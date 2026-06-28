@@ -244,7 +244,16 @@
   function navAnnotation(cfi: string) {
     annotationsOpen = false
     userInteracted = true
-    controller?.goTo(cfi)
+    // A corrupt/stale CFI (e.g. a section that no longer resolves) must not throw or
+    // reject unhandled out of a tap — degrade to a logged no-op.
+    try {
+      const r = controller?.goTo(cfi) as unknown
+      if (r && typeof (r as Promise<unknown>).catch === 'function') {
+        ;(r as Promise<unknown>).catch((err) => console.warn('Could not navigate to annotation', err))
+      }
+    } catch (err) {
+      console.warn('Could not navigate to annotation', err)
+    }
   }
 
   // A tap and foliate's highlight hit-test (click) both fire on the same gesture.

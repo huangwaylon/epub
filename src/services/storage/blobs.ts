@@ -9,9 +9,6 @@ import { deleteBlobFallback, getBlobFallback, putBlobFallback } from './db'
 
 const BOOKS_DIR = 'books'
 
-let opfsChecked = false
-let opfsUsable = false
-
 async function getBooksDir(): Promise<FileSystemDirectoryHandle | null> {
   if (!('storage' in navigator) || !navigator.storage?.getDirectory) return null
   try {
@@ -22,26 +19,31 @@ async function getBooksDir(): Promise<FileSystemDirectoryHandle | null> {
   }
 }
 
-/** Detect once whether we can both create and write OPFS files in this engine. */
-async function canUseOpfs(): Promise<boolean> {
-  if (opfsChecked) return opfsUsable
-  opfsChecked = true
-  const dir = await getBooksDir()
-  if (!dir) return (opfsUsable = false)
-  try {
-    const probe = await dir.getFileHandle('.probe', { create: true })
-    if (typeof (probe as any).createWritable !== 'function') {
+/**
+ * Detect once whether we can both create and write OPFS files in this engine.
+ * Memoised as a single in-flight promise so concurrent callers share one probe
+ * (rather than racing the boolean and one of them observing a stale result).
+ */
+let opfsProbe: Promise<boolean> | undefined
+function canUseOpfs(): Promise<boolean> {
+  return (opfsProbe ??= (async () => {
+    const dir = await getBooksDir()
+    if (!dir) return false
+    try {
+      const probe = await dir.getFileHandle('.probe', { create: true })
+      if (typeof (probe as any).createWritable !== 'function') return false
+      const w = await probe.createWritable()
+      await w.write(new Blob([new Uint8Array([1])]))
+      await w.close()
+      return true
+    } catch {
+      return false
+    } finally {
+      // Remove the probe on every exit (success, no-createWritable, or throw) so we
+      // never orphan a stray 1-byte file in OPFS.
       await dir.removeEntry('.probe').catch(() => {})
-      return (opfsUsable = false)
     }
-    const w = await probe.createWritable()
-    await w.write(new Blob([new Uint8Array([1])]))
-    await w.close()
-    await dir.removeEntry('.probe').catch(() => {})
-    return (opfsUsable = true)
-  } catch {
-    return (opfsUsable = false)
-  }
+  })())
 }
 
 function fileName(id: string): string {
@@ -50,14 +52,23 @@ function fileName(id: string): string {
 
 export async function putBook(id: string, data: Blob | ArrayBuffer): Promise<void> {
   const blob = data instanceof Blob ? data : new Blob([data])
-  if (await canUseOpfs()) {
-    const dir = await getBooksDir()
-    const fh = await dir!.getFileHandle(fileName(id), { create: true })
+  const dir = (await canUseOpfs()) ? await getBooksDir() : null
+  if (!dir) {
+    // OPFS unavailable, or its directory handle went away (revoked/transient).
+    await putBlobFallback(id, blob)
+    return
+  }
+  const fh = await dir.getFileHandle(fileName(id), { create: true })
+  try {
     const w = await fh.createWritable()
     await w.write(blob)
     await w.close()
-  } else {
-    await putBlobFallback(id, blob)
+  } catch (err) {
+    // getFileHandle({create:true}) already created a zero-length file; a failed
+    // write/close (e.g. quota) would otherwise leave that partial .epub behind —
+    // invisible to the shelf yet still counting against OPFS quota. Remove it.
+    await dir.removeEntry(fileName(id)).catch(() => {})
+    throw err
   }
 }
 

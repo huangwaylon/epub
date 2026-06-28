@@ -54,9 +54,11 @@ export function placeAnchored(
   let left = centerX - w / 2
   left = Math.max(mLeft, Math.min(vw - w - mRight, left))
 
-  // Prefer above the anchor; flip below if it would collide with the top margin.
+  // Prefer above the anchor; flip below when there isn't room for the popup's full
+  // height above it (compared against `h`, not a magic constant). The clamp below is
+  // the real safe-area backstop; this just picks the side with room.
   let top = anchorTop - h - gap
-  if (top < mTop + 40) top = anchorBottom + gap
+  if (anchorTop - mTop - gap < h) top = anchorBottom + gap
   top = Math.max(mTop, Math.min(vh - h - mBottom, top))
 
   return { left, top }

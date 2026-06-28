@@ -77,7 +77,19 @@ npm run build    # production build → dist/
 - **Vertical (縦書き) column-fill quirk:** foliate can under-measure vertical column height on first paint (dead space at the bottom). Fixed by deriving the vertical caps from the live viewport in `applyLayout`, which is also **idempotent** — it skips redundant renders, killing a rotation-flicker loop; `#nudgeLayout` + the resize listeners are hedges. See [reader-engine.md](docs/reader-engine.md) §11.
 - **iOS viewport / `--app-height`:** a cold standalone launch under-reports `100dvh` / `inset:0`, leaving a gap below the bottom bar until rotation. `src/services/viewport.ts` (`initViewport`) publishes the reliable visual-viewport height as `--app-height`, which **only the fixed `.reader` overlay** consumes — applying it to in-flow `html`/`body` fed back into the viewport and oscillated the bar. See [storage-pwa-ios.md](docs/storage-pwa-ios.md).
 - **iOS specifics:** EPUB import is `<input type="file">`-only (no Share Target / file handlers); OPFS for blobs (IndexedDB fallback); installed PWAs are exempt from the 7-day storage eviction. Details in [storage-pwa-ios.md](docs/storage-pwa-ios.md).
-- **On-device iOS verification is still pending.** Everything has been verified only in desktop Chrome (chrome-devtools MCP). Unconfirmed on real iOS: the swipe/tap gesture feel, `caretRangeFromPoint` in vertical-rl iframes, the viewport-derived vertical fill + `--app-height`, and Add-to-Home-Screen durability. The gesture model: a horizontal swipe turns the page (correct direction in every writing mode); a tap on a Japanese word defines it; a tap in the top/bottom edge band toggles the chrome; a blank-centre tap does nothing; no edge-rails.
+- **On-device iOS status — partially verified (iPad Safari, iOS 26.5, 2026-06-28).**
+  Confirmed working on real iOS: EPUB import (the `<input type=file>` picker), pagination +
+  vertical 縦書き RTL + furigana, the horizontal-swipe page turn (both directions), the
+  nav-bar edge-band chrome toggle, **tap-to-define** (`caretRangeFromPoint` *does* resolve
+  words in the vertical-rl closed-shadow iframe — the earlier doubt was unfounded; a
+  defensive `try/catch` now wraps both caret APIs in `extract.ts`), tap-a-word → yellow
+  highlight → **Notes** panel, bookmarks, and reading-position persistence across relaunch.
+  Still **unconfirmed** on real iOS: the vertical column-fill in **landscape** (portrait
+  shows a residual bottom dead band — a known open issue, deferred pending in-iframe
+  measurement), `--app-height` cold-launch durability, and Add-to-Home-Screen storage
+  durability. The gesture model: a horizontal swipe turns the page (correct direction in
+  every writing mode); a tap on a Japanese word defines it; a tap in the top/bottom edge
+  band toggles the chrome; a blank-centre tap does nothing; no edge-rails.
 
 ## Skills (task procedures, in `.claude/skills/`)
 - **tsuzuri-reader** — changing the reader / foliate integration (pagination, vertical text, taps, selection, highlights/CFI, reading margins).

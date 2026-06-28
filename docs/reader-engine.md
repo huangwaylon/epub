@@ -8,11 +8,18 @@ vertical 縦書き layout. Read this before touching `src/vendor/foliate-js/`,
 Audience: engineers/LLM agents extending the reader. Signatures and paths were
 verified against source; references are by symbol/file, not line number.
 
-> **On-device caveat (stated once).** Everything here was verified only in
-> desktop Chrome via the chrome-devtools MCP (iPad-landscape emulation, mostly
-> 1194×834). The swipe-to-turn feel, `caretRangeFromPoint` in vertical-rl
-> iframes, and the viewport-derived vertical fill are **not yet confirmed on
-> real iOS**. Re-test on a physical device if you change those areas.
+> **On-device status (iPad Safari, iOS 26.5, 2026-06-28).** Most of this was
+> first validated in desktop Chrome via the chrome-devtools MCP (iPad-landscape
+> emulation, mostly 1194×834) and is now **confirmed on real iOS**: import,
+> vertical RTL pagination + furigana, horizontal-swipe page turns (both
+> directions), the edge-band chrome toggle, highlight → Notes panel, bookmarks,
+> and reading-position persistence. Tap-to-define **works** — `caretRangeFromPoint`
+> resolves words in the vertical-rl closed-shadow iframe (a defensive try/catch
+> now wraps both caret APIs in `src/services/jp/extract.ts`). Still **unverified
+> on real iOS**: vertical column-fill in **landscape** (portrait shows a residual
+> bottom dead band — a known open issue, deferred pending in-iframe measurement),
+> `--app-height` cold-launch durability, and Add-to-Home-Screen storage
+> durability. Re-test on a physical device if you change those areas.
 
 | File | Role |
 | --- | --- |
@@ -427,22 +434,29 @@ The renderer is `<foliate-paginator>` (class `Paginator`). What to know:
 
 ## 8. Taps & gestures
 
-Model: **swipe turns the page; tap defines or toggles chrome.** Pagination is by
-horizontal swipe only — there are no tap edge-rails (the old `EDGE_RAIL_FRACTION`
-constant and `TapInfo.zone` are gone), and foliate's own touch turn is patched out
-(§1/§7).
+Gesture model and the app-side rationale: see [architecture.md](architecture.md).
+**Swipe turns the page; tap defines or toggles chrome.** Pagination is by
+horizontal swipe only — no tap edge-rails (the old `EDGE_RAIL_FRACTION` and
+`TapInfo.zone` are gone), and foliate's own touch turn is patched out (§1/§7).
 
 The shared `#trackGestures` state machine drives **two** attach points (both
 register every listener with `#ac`'s signal):
 
-- **`#attachTaps(doc)`** — per loaded content doc (on `load`); handles the **text
-  column** (the iframe), emits `TapInfo` with `doc` + coords. Also installs the
-  `selectionchange` listener (§9).
-- **`#attachHostGestures()`** — once in `open()`, on the **host**
-  (`<foliate-view>`). The iframe only covers the text column, so margin taps never
-  reach the per-doc listeners; the margins bubble out of foliate's shadow DOM to the
-  host (iframe-internal events don't cross the browsing-context boundary, so no
-  double-handling). A margin tap emits `doc: null` → routes straight to chrome.
+- **`#attachTaps(doc)`** — per loaded content doc (on `load`); the **text column**
+  (iframe), emits `TapInfo` with `doc` + coords. Also installs `selectionchange` (§9).
+- **`#attachHostGestures()`** — once in `open()`, on the **host** (`<foliate-view>`).
+  The iframe covers only the text column, so margin taps bubble out of foliate's
+  shadow DOM to the host (iframe-internal events don't cross the browsing-context
+  boundary → no double-handling). A margin tap emits `doc: null` → routes to chrome.
+
+### Constants
+
+| Constant | Value | Role |
+| --- | --- | --- |
+| `TAP_MOVE_TOLERANCE` | 16px | max down→up travel for a gesture to still be a tap |
+| `TAP_MAX_MS` | 400ms | max tap duration |
+| `SWIPE_MIN_DISTANCE` | 45px | min horizontal travel for a page-turn swipe |
+| `TURN_PHASE_MS` | 150ms | one phase (out / in) of the slide (§8a) |
 
 ### `pointerup` swipe-vs-tap decision
 
@@ -463,22 +477,15 @@ opts.onTap(e)
 ```
 
 A drag of at least `SWIPE_MIN_DISTANCE` that is **more horizontal than vertical**
-turns the page — "the page follows the finger". `goLeft`/`goRight` are
-**direction-aware**, so the swipe turns the correct way in LTR, RTL, and vertical
-books (e.g. in an RTL 縦書き book, dragging **right** advances), always animating as
-the horizontal slide (§8a). A swipe `return`s before the tap branch. A tap is a
-gesture with movement `< TAP_MOVE_TOLERANCE` (tracked on `pointermove`) and duration
-`< TAP_MAX_MS`; a `pointercancel` marks the interaction moved/inactive so a stray
-follow-up `pointerup` can't fire a tap. On a real tap it emits
-`onTap({doc, ix, iy, px, py})` — `ix/iy` (iframe-local) feed `caretRangeFromPoint`;
-`px/py` (top-window, via `frameElement.getBoundingClientRect()`) place the popup.
-
-| Constant | Value | Role |
-| --- | --- | --- |
-| `TAP_MOVE_TOLERANCE` | 16px | max down→up travel for a gesture to still be a tap |
-| `TAP_MAX_MS` | 400ms | max tap duration |
-| `SWIPE_MIN_DISTANCE` | 45px | min horizontal travel for a page-turn swipe |
-| `TURN_PHASE_MS` | 150ms | one phase (out / in) of the slide (§8a) |
+turns the page. `goLeft`/`goRight` are **direction-aware**, so the swipe turns the
+correct way in LTR, RTL, and vertical books (e.g. in an RTL 縦書き book, dragging
+**right** advances), always animating as the horizontal slide (§8a). A swipe
+`return`s before the tap branch. A tap requires movement `< TAP_MOVE_TOLERANCE`
+(tracked on `pointermove`) and duration `< TAP_MAX_MS`; a `pointercancel` marks the
+interaction moved/inactive so a stray follow-up `pointerup` can't fire a tap. On a
+real tap it emits `onTap({doc, ix, iy, px, py})` — `ix/iy` (iframe-local) feed
+`caretRangeFromPoint`; `px/py` (top-window, via
+`frameElement.getBoundingClientRect()`) place the popup.
 
 ### Tap routing in Reader.svelte
 
@@ -503,9 +510,6 @@ follow-up `pointerup` can't fire a tap. On a real tap it emits
    margins / inter-column gaps; §10, [japanese.md](japanese.md)). On a real match
    the word is also auto-highlighted yellow (§10). A blank-**centre** tap does
    nothing.
-
-There is **no pagination on tap**, and the central area only toggles chrome to
-*dismiss* it.
 
 **Hiding the chrome again.** Once the bars are visible they cover the edge bands,
 so a band tap can't reach the reader's gesture detector behind them. The bars hide
@@ -559,11 +563,10 @@ defining-and-re-highlighting. With no highlights, the tap runs immediately.
 
 ### Overlays close on a turn
 
-Because `relocate` carries no `reason` (§3), overlay-close on a turn is driven from
-the **gesture** side: `goLeft`/`goRight` fire `onTurn` → `Reader.svelte` sets
-`userInteracted = true`, `chromeVisible = false`, and `closeOverlays()` (closes the
-dict popup and selection toolbar). TOC/annotation nav and a scrubber **seek** (§12)
-set `userInteracted` the same way.
+Because `relocate` carries no `reason` (§3), overlay-close is driven from the
+**gesture** side: `goLeft`/`goRight` fire `onTurn`; TOC/annotation nav and a
+scrubber seek do the equivalent. The `Reader.svelte` handler (sets
+`userInteracted`, hides chrome, `closeOverlays()`) is detailed in §12.
 
 ---
 
@@ -687,19 +690,16 @@ deterministically to the available height.
   pinch-zoomed. Idempotency means the resize burst during a rotation no longer
   repaints once per event.
 
-**`--app-height`** (`src/services/viewport.ts`). A fresh standalone launch lays out
-`position:fixed; inset:0` / `100dvh` against an under-reported layout viewport, so a
-bottom-anchored bar showed a gap that only cleared on rotation. `initViewport()`
-(called from `main.ts`) publishes the reliable **visual** viewport height as
-`--app-height` on `:root` — rAF-coalesced, gated by a 2px threshold, and re-asserted
-after the cold-launch settle (on `load`, or immediately if already loaded, plus a 300ms
-backstop). **Only the fixed `.reader` overlay sizes off `var(--app-height, 100dvh)`** —
-the in-flow shell (`html`/`body`/`#app`) stays on `100dvh`, because applying the var to
-in-flow elements changed the document layout, which made iOS re-report a different visual
-viewport height: a resize→rewrite feedback loop that oscillated the bottom bar between
-the gapped and pinned positions. A fixed, out-of-flow element can't feed back into the
-layout viewport. `viewportSize()` (§6) reads the same source, keeping page box and
-container consistent.
+**`--app-height` (consumer contract).** The fixed `.reader` overlay sizes off
+`var(--app-height, 100dvh)` rather than `100dvh` directly, because a fresh
+standalone launch lays out `position:fixed; inset:0` / `100dvh` against an
+under-reported layout viewport, leaving a gap below a bottom-anchored bar that
+otherwise only clears on rotation. `viewportSize()` (§6) reads the same source
+that publishes `--app-height`, so the foliate page box and the `.reader`
+container stay consistent. The **publisher** mechanics — `initViewport`,
+`viewportSize`, the rAF/2px/load+300ms write gating, and why only this fixed
+out-of-flow element (never the in-flow shell) may consume the var — live in
+[storage-pwa-ios.md](storage-pwa-ios.md) §7.
 
 ---
 

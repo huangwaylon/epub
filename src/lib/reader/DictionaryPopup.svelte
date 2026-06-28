@@ -29,6 +29,25 @@
 
   let card = $state<HTMLDivElement>()
 
+  // Move focus into the popup on open (so VoiceOver / keyboard users land inside it)
+  // and restore it to the trigger on close. Edge-gated on a real closed→open
+  // transition: the effect also re-runs when `bind:this` sets `card` while `open` is
+  // still true, and without the gate that pass would re-capture the now-focused popup
+  // as the restore target. Mirrors Sheet.svelte. (No aria-modal: this is a
+  // tap-anywhere-to-dismiss popover with no inert backdrop, so it must not advertise
+  // background inertness it doesn't implement.)
+  let restoreFocus: HTMLElement | null = null
+  let wasOpen = false
+  $effect(() => {
+    if (open && !wasOpen) restoreFocus = (document.activeElement as HTMLElement) ?? null
+    if (open) card?.focus()
+    else if (wasOpen && restoreFocus) {
+      restoreFocus.focus?.()
+      restoreFocus = null
+    }
+    wasOpen = open
+  })
+
   // The highlight toggle only makes sense once we have a real match to anchor it to.
   const showActions = $derived(!loading && !needsDownload && !!result?.entries.length)
 
@@ -63,6 +82,7 @@
     style="left:{pos.left}px; top:{pos.top}px"
     role="dialog"
     aria-label="Dictionary"
+    tabindex="-1"
   >
     <button class="close" aria-label="Close" onclick={() => (open = false)}>
       <Icon name="x" size={16} />
@@ -127,13 +147,15 @@
   </div>
 {/if}
 
+<svelte:window onkeydown={(e) => open && e.key === 'Escape' && (open = false)} />
+
 <style>
   .popup {
     position: fixed;
     z-index: 50;
     display: flex;
     flex-direction: column;
-    width: min(340px, calc(100vw - 20px));
+    width: min(340px, calc(100vw - 40px - var(--safe-left, 0px) - var(--safe-right, 0px)));
     max-height: 46dvh;
     background: var(--paper-raised);
     border: 1px solid var(--line);
@@ -149,10 +171,12 @@
   }
   .close {
     position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 36px;
-    height: 36px;
+    /* 44×44 hit target (Apple HIG min); top:0/right:0 keeps the 16px icon's centre at
+       the same spot the old 36px@4px button had it, so nothing shifts visually. */
+    top: 0;
+    right: 0;
+    width: 44px;
+    height: 44px;
     display: grid;
     place-items: center;
     border-radius: 50%;
