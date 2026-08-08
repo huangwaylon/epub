@@ -390,9 +390,10 @@ half of every glyph, and along the reading axis the error reads as *one characte
 rightwards in 横書き, downwards in 縦書き — which is why aiming further back (left / up) used
 to feel more accurate.
 
-**Measured** in the real book (また、同じ夢を見ていた) at iPad landscape 1194×834, 1800 probe
-points over 120 visible glyphs, both writing modes, driving taps through the DEV hook
-([development.md](development.md) §6):
+**Measured** — in **desktop Chrome** (2026-08-08) at iPad-landscape 1194×834, against a real
+novel (また、同じ夢を見ていた): 1800 probe points over 120 visible glyphs, both writing modes,
+driven through the DEV hook ([development.md](development.md) §6). Not yet re-measured on real
+iOS — see [reader-engine.md](reader-engine.md)'s status block for what that leaves open.
 
 | | Caret offset taken as the glyph | Geometric resolution |
 | --- | --- | --- |

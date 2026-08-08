@@ -17,7 +17,10 @@ signatures, and extension recipes. This skill is the quick procedure.
 
 ## Pipeline (tap → entry)
 1. **Extract** — `extractTextAt(doc, x, y)` in `src/services/jp/extract.ts`: caret via
-   `caretRangeFromPoint` (WebKit) → glyph hit-test (`pointOnGlyph`, blank taps return null) →
+   `caretRangeFromPoint` (WebKit) used only as a **seed** → `resolveGlyph` picks the character
+   whose measured box actually contains the point (the caret APIs return a *boundary*, so
+   trusting their offset mis-resolves the far half of every glyph; blank taps return null, and
+   a tap on furigana redirects to the ruby base) →
    gathers the contiguous word-char run on **both sides** of the tap (`MAX_BEFORE`/`MAX_AFTER`,
    **skipping `<rt>/<rp>` furigana**, clause-bounded) and the tap's offset. Returns
    `{text, tapOffset}` (or null for blank/non-word taps).

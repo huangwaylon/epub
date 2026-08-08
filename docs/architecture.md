@@ -225,8 +225,10 @@ touch page-turn is patched out (`paginator.js`), so all navigation is ours.
      `settings.tapToDefine`.
 
   **A tap never turns the page, and a blank-centre tap does nothing** (there are no
-  tap edge-rails). When highlights exist, the tap action is deferred ~60ms so a
-  highlight hit-test (`show-annotation`) can cancel it.
+  tap edge-rails). A tap that lands on a glyph **defines it in preference to every piece
+  of chrome** — including inside the edge band and with a card already open; blank taps are
+  what drive the chrome. Taps run immediately (no defer); a highlight hit-test
+  (`show-annotation`) arriving on the same gesture stands down instead.
 
 `tryDefine`: `extract.extractTextAt(doc, ix, iy)` returns `{text, tapOffset}` (null on
 a blank/non-word tap, so blank taps fall through to no-op). Opens `DictionaryPopup`

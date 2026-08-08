@@ -207,9 +207,10 @@ pipeline (`lookupAt`). Recipe:
    itself**, not on the surrounding `.view-host` div — that is where
    `#attachHostGestures` listens.
 5. For an accuracy sweep, walk every character's client rects inside `doc`, probe a grid of
-   points per glyph, and compare `extractTextAt`'s resolved character against the expected
-   one. Note that a probe landing on furigana is *expected* to resolve the ruby **base**
-   ([`japanese.md`](./japanese.md) §6).
+   points per glyph, and compare the resolved character — `ex.text[ex.tapOffset]` from
+   `extractTextAt` — against the expected one. Note that a probe landing on furigana is
+   *expected* to resolve the ruby **base** ([`japanese.md`](./japanese.md) §6), and that
+   `null` means the point resolved to no glyph at all (a would-be dead tap).
 
 ### On-device (iOS Safari)
 

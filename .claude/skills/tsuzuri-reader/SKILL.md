@@ -45,11 +45,12 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
   `handleTap` in `Reader.svelte`, in order: (1) if the dictionary popup or selection toolbar
   is open, dismiss it (`closeOverlays`) and consume the tap — highest priority, fires for a
   tap anywhere on screen, so it never also toggles chrome or looks up a new word; (2) else if
-  the tap's top-window `py` is in the top/bottom edge band (`inChromeToggleBand`, ≈ nav-bar
-  height) toggle chrome — the only way a tap reveals the bars, and it no longer also closes
-  overlays (case 1 already returned); (3) else if chrome is visible, hide it and consume the
-  tap; (4) else if `tapToDefine` and the tap lands on an actual glyph (`pointOnGlyph` in
-  `extract.ts`, and `info.doc` non-null), define the word — a blank-centre tap does **nothing**
+  the tap lands on an actual glyph (`resolveGlyph` in `extract.ts`, and `info.doc` non-null)
+  define the word — **first**, ahead of all chrome, so it works inside the edge band and
+  re-targets an open card; (2) else if a card is open, dismiss it; (3) else if the tap's
+  top-window `py` is in the top/bottom edge band (`inChromeToggleBand`, ≈ nav-bar height)
+  toggle chrome — the only way a tap reveals the bars; (4) else if chrome is visible, hide it
+  and consume the tap — a blank-centre tap does **nothing**
   (never toggles chrome, never turns the page). Margin/host taps carry **`doc: null`** (nothing
   to define). There are **no edge rails** and no `TapInfo.zone`.
 - **Don't edit `src/vendor/foliate-js/**`** unless it's a deliberate, documented patch. There
@@ -87,9 +88,10 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
 - **Tune swipe / tap behavior** → shared `#trackGestures` (controller; `SWIPE_MIN_DISTANCE`,
   `TAP_MOVE_TOLERANCE`, `TAP_MAX_MS`), wired by `#attachTaps` (content) + `#attachHostGestures`
   (margins) + `onTap`/`handleTap` routing in `Reader.svelte` (note the top/bottom
-  `inChromeToggleBand` step, and the 60ms defer when highlights exist, so a highlight hit-test
-  can cancel the tap action via `onShowAnnotation`). foliate's native touch turn is patched out
-  in `paginator.js` (`TSUZURI PATCH`) — re-enabling it would double-turn against our swipe.
+  `inChromeToggleBand` step runs *after* the define attempt, and `tapDefinedAt`, which makes a
+  same-gesture `onShowAnnotation` stand down rather than delaying every tap). foliate's native
+  touch turn — and its unconditional 100ms per-turn debounce — are patched out in `paginator.js`
+  (`TSUZURI PATCH`); re-enabling the touch turn would double-turn against our swipe.
 
 ## Verify after changes
 Run `npm run check`, then use the **tsuzuri-verify** skill (chrome-devtools at
