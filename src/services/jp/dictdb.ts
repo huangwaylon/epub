@@ -35,7 +35,15 @@ export async function getDb(): Promise<JpdictIdb> {
       db = d
       syncState()
       return d
-    })()
+    })().catch((err) => {
+      // Memoise the *success* only. A rejected init — a `versionchange` from another tab,
+      // or IndexedDB refusing to open under iOS storage pressure — would otherwise be
+      // cached for the rest of the session, so every later `isDictReady()` (and hence
+      // every tap) would reject on that same stale promise and the popup would spin
+      // forever. Clearing it lets the next call retry a transient failure.
+      initPromise = null
+      throw err
+    })
   }
   return initPromise
 }
@@ -46,8 +54,15 @@ export async function isDictReady(): Promise<boolean> {
   // once the dictionary is ready every subsequent tap skips the IndexedDB round-trip
   // that `getDb()` would otherwise await on the hot lookup path.
   if (dict.state === 'ok') return true
-  const d = await getDb()
-  return d.words.state === 'ok'
+  try {
+    const d = await getDb()
+    return d.words.state === 'ok'
+  } catch {
+    // This is awaited on the tap hot path, where a throw would leave the popup stuck in
+    // its loading state. "The dictionary isn't usable" is the honest answer, and the
+    // caller already handles it (it offers the download); `getDb()` will retry next tap.
+    return false
+  }
 }
 
 /** Kick off (or resume) the JMdict download for the given gloss language. */

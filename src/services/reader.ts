@@ -2,6 +2,8 @@
 import '../vendor/foliate-js/view.js'
 // @ts-ignore — vendored JS module, no type declarations
 import { Overlayer } from '../vendor/foliate-js/overlayer.js'
+// @ts-ignore — vendored JS module, no type declarations
+import { compare as compareCFI } from '../vendor/foliate-js/epubcfi.js'
 import { HIGHLIGHT_HEX, type ReaderSettings } from './types'
 import { viewportSize } from './viewport'
 
@@ -78,11 +80,21 @@ export interface ReaderCallbacks {
 }
 
 const TAP_MOVE_TOLERANCE = 16
-const TAP_MAX_MS = 400
+/**
+ * Longest a stationary press can last and still count as a tap. Generous on purpose:
+ * tap-to-define invites a *deliberate, aimed* press at a single 16px glyph (and a user
+ * who just missed aims more carefully, i.e. slower), so a tight window silently drops
+ * exactly the taps that matter most. Nothing else competes for a stationary press —
+ * pagination needs `SWIPE_MIN_DISTANCE` of travel — and a real long-press hands off to
+ * WebKit's selection, which `shouldIgnoreUp` catches.
+ */
+const TAP_MAX_MS = 700
 /** Minimum horizontal travel (px) for a drag to count as a page-turn swipe. */
 const SWIPE_MIN_DISTANCE = 45
 /** One phase (out / in) of the horizontal page-turn slide. */
 const TURN_PHASE_MS = 150
+/** How many highlights to (re)draw per task when a section's overlays are seeded. */
+const HIGHLIGHT_DRAW_CHUNK = 24
 
 /**
  * Builds the stylesheet foliate injects into each content document. Reads the
@@ -125,6 +137,13 @@ function appearanceCSS(s: ReaderSettings): string {
       font-family: ${family};
       /* Use our own selection toolbar instead of the native iOS callout menu. */
       -webkit-touch-callout: none;
+      /* Kill double-tap-to-zoom. iOS ignores maximum-scale/user-scalable, so a stray
+         double tap while aiming at a word could leave the page zoomed — and both our tap
+         detector and foliate's own page turn bail out while the visual viewport is scaled,
+         so every tap and swipe would silently stop working until the reader pinched back
+         out. The 'manipulation' value keeps pinch-zoom (accessibility) and drops only the
+         double-tap gesture, which the reader has no use for. */
+      touch-action: manipulation;
     }
     p, li, blockquote, dd {
       line-height: ${s.lineHeight};
@@ -166,6 +185,9 @@ export class ReaderController {
   #vertical = false
   /** Aborts every per-document listener we attach, in one shot, on destroy. */
   #ac = new AbortController()
+  /** Per-content-document listener controllers, so a section's listeners (and its
+   *  reference to that document) die when the paginator swaps the document out. */
+  #docACs = new Map<Document, AbortController>()
   /** Guards the page-turn slide so re-entrant taps don't overlap animations. */
   #turning = false
   #pendingDir: 'left' | 'right' | null = null
@@ -218,6 +240,10 @@ export class ReaderController {
     this.view.addEventListener('load', (e: any) => {
       const { doc, index } = e.detail
       this.#docIndex.set(doc, index)
+      // A book may *intend* 縦書き without saying so in CSS — see #applyIntendedWritingMode.
+      // Runs before the writing mode is read below (and before foliate's own getDirection),
+      // so the very first paint is already vertical.
+      this.#applyIntendedWritingMode(doc)
       // Detect the writing mode from the rendered document so we can pick a
       // measure that suits it (vertical wants tall columns; horizontal a short line).
       let vertical = false
@@ -247,6 +273,38 @@ export class ReaderController {
       const { draw } = e.detail
       draw(Overlayer.highlight, { color: HIGHLIGHT_HEX })
     }, { signal })
+  }
+
+  /**
+   * Honour a book's *intended* vertical writing mode when its CSS never states one.
+   *
+   * Japanese novels converted by calibre are the common case: the OPF carries
+   * `<meta name="primary-writing-mode" content="vertical-rl">` and every section's `<html>`
+   * gets `class="vrtl"`, but **no stylesheet rule ever sets `writing-mode`** — calibre's
+   * own viewer applies it from that metadata. foliate reads only the standard `rendition:*`
+   * metadata, so such a book renders 横書き, and the reader has to know to flip the Writing
+   * direction setting by hand for every book.
+   *
+   * With `writingMode: 'auto'` we therefore take the class as the declaration it was meant
+   * to be. `vrtl` is the JP-EPUB idiom for "this book is 縦書き" (properly typeset ones pair
+   * it with `.vrtl { -epub-writing-mode: vertical-rl }` — prefixed, which is why grepping
+   * for the unprefixed property is not a reliable test of intent), so keying on it is
+   * specific: no guessing from `lang` or the rtl spine direction, which would wrongly flip
+   * the genuinely-horizontal RTL-bound books that `#applyPageProgression` exists to
+   * support. The rule is **prepended** so a book that does declare its own writing-mode
+   * still wins, and an explicit 横書き/縦書き setting overrides both (`appearanceCSS`
+   * injects those with `!important`).
+   */
+  #applyIntendedWritingMode(doc: Document): void {
+    if (this.#settings.writingMode !== 'auto') return
+    const root = doc.documentElement
+    if (!root?.classList.contains('vrtl')) return
+    if (doc.querySelector('style[data-tsuzuri="intended-wm"]')) return
+    const style = doc.createElement('style')
+    style.dataset.tsuzuri = 'intended-wm'
+    style.textContent = 'html{writing-mode:vertical-rl;}'
+    // Prepend so the book's own stylesheets (and our appearance sheet) can still override.
+    doc.head?.insertBefore(style, doc.head.firstChild)
   }
 
   /**
@@ -614,13 +672,51 @@ export class ReaderController {
    * `index` is given (the `create-overlay` path) only that section's highlights are
    * redrawn — so a page-turn into a new section costs O(highlights-in-that-section),
    * not O(all-highlights-in-the-book). With no index (the initial seed) it sweeps all.
+   *
+   * Because tap-to-define highlights **every** looked-up word, that per-section set grows
+   * without bound over a book, and each draw is real work (parse the CFI, re-anchor it to
+   * a Range over the live document, measure its client rects, build an SVG node). Painting
+   * them in one loop froze the main thread on every section change once a reader had a few
+   * hundred words. So: sort by distance from the current position and paint in small
+   * chunks, yielding between them. The page the reader is actually looking at fills in on
+   * the first chunk; the rest of the section trickles in without ever blocking a swipe.
+   * A generation counter makes a newer sweep abandon the one in flight.
    */
   reapplyHighlights(index?: number): void {
+    const gen = ++this.#redrawGen
+    const cfis: string[] = []
     for (const cfi of this.#highlights) {
       if (index !== undefined && this.#indexForCFI(cfi) !== index) continue
-      void this.view.addAnnotation({ value: cfi }).catch(() => {})
+      cfis.push(cfi)
     }
+    if (!cfis.length) return
+    const here = this.lastCFI
+    if (here && cfis.length > HIGHLIGHT_DRAW_CHUNK) {
+      const dist = new Map<string, number>()
+      for (const cfi of cfis) {
+        let d = 0
+        try {
+          d = Math.abs(compareCFI(cfi, here))
+        } catch {
+          d = Number.MAX_SAFE_INTEGER
+        }
+        dist.set(cfi, d)
+      }
+      cfis.sort((a, b) => (dist.get(a) ?? 0) - (dist.get(b) ?? 0))
+    }
+    const drawChunk = (from: number) => {
+      if (gen !== this.#redrawGen) return
+      const to = Math.min(from + HIGHLIGHT_DRAW_CHUNK, cfis.length)
+      for (let i = from; i < to; i++) void this.view.addAnnotation({ value: cfis[i] }).catch(() => {})
+      if (to < cfis.length) this.#redrawTimer = window.setTimeout(() => drawChunk(to), 0)
+      else this.#redrawTimer = undefined
+    }
+    if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
+    drawChunk(0)
   }
+  /** Invalidates an in-flight chunked highlight sweep. */
+  #redrawGen = 0
+  #redrawTimer: number | undefined
 
   clearSelection(): void {
     try {
@@ -636,10 +732,14 @@ export class ReaderController {
     if (this.#resizeTimer) clearTimeout(this.#resizeTimer)
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
     if (this.#slideTimer) clearTimeout(this.#slideTimer)
+    if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
+    this.#redrawGen++
     for (const t of this.#selTimers.values()) clearTimeout(t)
     this.#selTimers.clear()
     this.#pendingDir = null
-    this.#ac.abort() // removes every per-document tap/selection listener at once
+    for (const ac of this.#docACs.values()) ac.abort()
+    this.#docACs.clear()
+    this.#ac.abort() // removes every host gesture + foliate-view listener at once
     const book = this.view.book
     try {
       this.view.close()
@@ -660,14 +760,15 @@ export class ReaderController {
    * Shared pointer → gesture state machine, attached to either a content document
    * (the text column) or the host element (the surrounding margins). A horizontal
    * drag of `SWIPE_MIN_DISTANCE` turns the page; a clean, quick tap calls `onTap`.
-   * Every listener is registered with the controller's `#ac` signal so `destroy()`'s
-   * single abort removes them all.
+   * Listeners are registered with `signal` — the controller-wide `#ac` for the host, or a
+   * per-document controller for content documents (see `#attachTaps`) — so teardown is a
+   * single abort either way.
    */
   #trackGestures(
     target: Document | HTMLElement,
-    opts: { shouldIgnoreUp?: () => boolean; onTap: (e: PointerEvent) => void },
+    opts: { shouldIgnoreUp?: (e: PointerEvent) => boolean; onTap: (e: PointerEvent) => void },
+    signal: AbortSignal = this.#ac.signal,
   ) {
-    const signal = this.#ac.signal
     let downX = 0
     let downY = 0
     let downT = 0
@@ -691,6 +792,11 @@ export class ReaderController {
       'pointermove',
       (ev: Event) => {
         const e = ev as PointerEvent
+        // Only the primary pointer's travel can disqualify the tap. Without this a
+        // second contact anywhere on the glass (a thumb resting on the bezel, a palm
+        // graze) is measured against the *first* finger's down point, so its distant
+        // coordinates instantly mark the gesture as "moved" and the tap is dropped.
+        if (!e.isPrimary) return
         if (active && Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE_TOLERANCE) moved = true
       },
       { passive: true, signal },
@@ -699,7 +805,8 @@ export class ReaderController {
     // never a tap — make sure a stray follow-up pointerup can't fire one.
     target.addEventListener(
       'pointercancel',
-      () => {
+      (ev: Event) => {
+        if (!(ev as PointerEvent).isPrimary) return
         active = false
         moved = true
       },
@@ -709,12 +816,15 @@ export class ReaderController {
       'pointerup',
       (ev: Event) => {
         const e = ev as PointerEvent
+        // Test `isPrimary` *before* consuming `active`: a non-primary pointerup (the
+        // second finger lifting) must leave the in-flight primary gesture intact,
+        // otherwise the real finger's own pointerup is discarded by `!active`.
+        if (!e.isPrimary) return
         if (!active) return
         active = false
-        if (!e.isPrimary) return
         // The end of a text selection is neither a tap nor a swipe — leave it for
         // the selection toolbar.
-        if (opts.shouldIgnoreUp?.()) return
+        if (opts.shouldIgnoreUp?.(e)) return
 
         // While the page is pinch-zoomed (a second finger was/is down) the pointer
         // coordinates are unreliable and a stray primary pointerup shouldn't turn the
@@ -762,22 +872,61 @@ export class ReaderController {
 
   /** Attach our own tap + swipe detector to a freshly loaded content document. */
   #attachTaps(doc: Document) {
-    this.#trackGestures(doc, {
-      shouldIgnoreUp: () => {
-        const sel = doc.getSelection()
-        return !!(sel && sel.type === 'Range' && sel.toString().length > 0)
+    // The paginator swaps in a fresh document per section. Registering every one of those
+    // documents' listeners on the book-long `#ac` kept each *detached* document reachable
+    // (an addEventListener signal registers an abort algorithm that holds the target), so
+    // a long session pinned every section's DOM it had ever visited. Give each document its
+    // own controller and abort it once its browsing context is gone (`defaultView` null).
+    for (const [d, ac] of this.#docACs) {
+      if (d === doc || !d.defaultView) {
+        ac.abort()
+        this.#docACs.delete(d)
+        const t = this.#selTimers.get(d)
+        if (t) {
+          clearTimeout(t)
+          this.#selTimers.delete(d)
+        }
+      }
+    }
+    const docAC = new AbortController()
+    this.#docACs.set(doc, docAC)
+    const signal = docAC.signal
+
+    this.#trackGestures(
+      doc,
+      {
+        // A live selection means this pointer sequence probably *ended* a drag-select, which
+        // is the selection toolbar's business, not a tap. But a plain tap outside the
+        // selection is how a reader dismisses it — and WebKit only collapses the selection
+        // *after* our pointerup, so bailing on "a selection exists" swallows that tap (and
+        // the next word lookup with it). So only bail when the press landed inside the
+        // selection's own rects; otherwise clear it and let the tap through.
+        shouldIgnoreUp: (e) => {
+          const sel = doc.getSelection()
+          if (!sel || sel.type !== 'Range' || !sel.toString().length) return false
+          for (let i = 0; i < sel.rangeCount; i++)
+            for (const r of sel.getRangeAt(i).getClientRects())
+              if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom)
+                return true
+          try {
+            sel.removeAllRanges()
+          } catch {
+            /* ignore */
+          }
+          return false
+        },
+        onTap: (e) => {
+          const frame = doc.defaultView?.frameElement as HTMLElement | null
+          const rect = frame?.getBoundingClientRect()
+          const px = (rect?.left ?? 0) + e.clientX
+          const py = (rect?.top ?? 0) + e.clientY
+          this.#cb.onTap?.({ doc, ix: e.clientX, iy: e.clientY, px, py })
+        },
       },
-      onTap: (e) => {
-        const frame = doc.defaultView?.frameElement as HTMLElement | null
-        const rect = frame?.getBoundingClientRect()
-        const px = (rect?.left ?? 0) + e.clientX
-        const py = (rect?.top ?? 0) + e.clientY
-        this.#cb.onTap?.({ doc, ix: e.clientX, iy: e.clientY, px, py })
-      },
-    })
+      signal,
+    )
 
     // Surface finished text selections for the highlight / translate toolbar.
-    const signal = this.#ac.signal
     doc.addEventListener(
       'selectionchange',
       () => {

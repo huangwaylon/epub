@@ -15,6 +15,7 @@
     clearAnnotations,
     saveAnnotation,
     removeAnnotation,
+    isHighlighted,
     newId,
   } from '../../stores/annotations.svelte'
   import { debounce } from '../util/debounce'
@@ -58,7 +59,6 @@
   const isBookmarked = $derived(
     annotations.items.some((a) => a.kind === 'bookmark' && a.cfi === currentCFI),
   )
-  const hasHighlights = $derived(annotations.items.some((a) => a.kind === 'highlight'))
 
   // Dictionary popup state. Tapping a word looks it up *and* highlights it yellow
   // (a vocab record); the popup's footer toggles that highlight off/on.
@@ -127,13 +127,6 @@
 
   /** Close every transient overlay (dict popup, selection toolbar). */
   function closeOverlays() {
-    // A page turn or overlay-close invalidates any tap deferred for highlight-hit
-    // resolution (see onTap) — drop it so it can't fire a lookup against a page that
-    // has since turned away.
-    if (pendingTap) {
-      clearTimeout(pendingTap)
-      pendingTap = undefined
-    }
     dictState.open = false
     sel.open = false
     // Release the content Document + Text-node refs held for auto-highlighting the last
@@ -185,10 +178,20 @@
 
   // ── Tapping an existing highlight → reopen its definition (with a remove option) ──
   function onShowAnnotation(value: string, range: Range) {
-    // This tap was on a highlight — cancel the deferred tap-define action.
-    if (pendingTap) {
-      clearTimeout(pendingTap)
-      pendingTap = undefined
+    // Prefer the word we stored when the highlight was made: a range that spans ruby
+    // stringifies with the furigana spliced in (決けっ心), which looks up as nothing.
+    const saved = annotations.items.find((a) => a.kind === 'highlight' && a.cfi === value)?.text
+    const word = saved || range.toString()
+    // This `click` rides the same gesture as our tap. If that tap already defined a word
+    // (which auto-highlights it, so it is very likely *this* annotation), stand down —
+    // re-opening would run a second lookup and fight the card that is already correct.
+    // Just adopt the annotation, so the footer offers "Remove highlight" and a toggle
+    // back re-saves the right word (`autoHighlight` skips once `cfi` is set).
+    if (Date.now() - tapDefinedAt < 500) {
+      if (!dictState.cfi) dictState.cfi = value
+      if (!dictState.word) dictState.word = word
+      dictState.highlighted = true
+      return
     }
     const doc = range.startContainer.ownerDocument
     const frame = doc?.defaultView?.frameElement as HTMLElement | null
@@ -196,12 +199,12 @@
     const r = range.getBoundingClientRect()
     sel.open = false
     openDefine({
-      text: range.toString(),
+      text: word,
       tapOffset: 0,
       px: (fr?.left ?? 0) + r.left + r.width / 2,
       py: (fr?.top ?? 0) + r.top,
       existingCfi: value,
-      word: range.toString(),
+      word,
     })
   }
 
@@ -264,53 +267,50 @@
     }
   }
 
-  // A tap and foliate's highlight hit-test (click) both fire on the same gesture.
-  // When highlights exist, briefly defer the tap action so a highlight tap can
-  // cancel it (and open the edit toolbar) instead of also turning the page/defining.
-  // The window must outlast the click→show-annotation hop, which on touch can trail
-  // the pointerup by several frames; 60ms is the documented, safer margin (the lookup
-  // itself runs in a worker, so this delay is purely for race-resolution, not work).
-  let pendingTap: number | undefined
+  // A tap and foliate's highlight hit-test (a real `click`) fire on the same gesture, so
+  // both can want to open the card for the tapped word. Rather than delay every tap
+  // waiting to see which wins (that cost 60ms on the hot path and made taps droppable),
+  // we let the tap run immediately and have the later `show-annotation` stand down if the
+  // tap already opened the same word — the two paths agree on the outcome anyway, since a
+  // looked-up word is highlighted.
+  let tapDefinedAt = 0
   function onTap(info: TapInfo) {
-    if (hasHighlights) {
-      if (pendingTap) clearTimeout(pendingTap)
-      pendingTap = window.setTimeout(() => {
-        pendingTap = undefined
-        handleTap(info)
-      }, 60)
-    } else {
-      handleTap(info)
-    }
+    handleTap(info)
   }
 
+  /**
+   * Tap routing. A tap that lands on a Japanese glyph **always** defines it — the reading
+   * gesture wins over every piece of chrome, because the alternative (checking the nav-bar
+   * band and the open card first) made the first and last characters of every line
+   * un-lookupable and cost a wasted tap for each new word. Everything else — blank paper,
+   * the margins, the edge band — keeps its old meaning.
+   */
   function handleTap(info: TapInfo) {
-    // A tap while the definition popup is open *only* dismisses it — anywhere on
-    // screen, including the top/bottom nav-bar band. The popup takes priority over
-    // both chrome-toggling and defining a new word, so a tap meant to clear the card
-    // never also flashes the bars (and forgiving glyph hit-slack, not re-anchoring,
-    // is what keeps tap-to-define reliable, so we don't re-look-up here either).
+    // 1. On a word → look it up. Works with the card already open (it re-targets to the
+    //    new word) and inside the top/bottom band, where live text overlaps the band.
+    if (settings.tapToDefine && info.doc && tryDefine(info)) {
+      tapDefinedAt = Date.now()
+      chromeVisible = false // don't leave the bars covering the card
+      return
+    }
+    // 2. Blank tap while the definition popup is open → dismiss it, and nothing else, so
+    //    clearing the card never also flashes the chrome.
     if (dictState.open) {
       closeOverlays()
       return
     }
-    // A tap in the top or bottom edge band (over the nav bars) toggles the chrome.
-    // This is the way a tap *shows* the bars — a tap in the central reading area
-    // never reveals them, so reading taps don't flash the chrome.
+    // 3. Blank tap in the top or bottom edge band (over the nav bars) → toggle the chrome.
+    //    This is the only way a tap *shows* the bars, so reading taps don't flash them.
     if (inChromeToggleBand(info.py, viewportSize().h)) {
       chromeVisible = !chromeVisible
       return
     }
-    // While the chrome is visible, a tap anywhere in the reading area dismisses it
-    // (and is consumed — it doesn't also define) so the bars are easy to clear
-    // without reaching for them, matching their own tap-to-hide behaviour.
+    // 4. Otherwise a blank tap dismisses the chrome if it's up, so the bars are easy to
+    //    clear without reaching for them.
     if (chromeVisible) {
       chromeVisible = false
       return
     }
-    // Reading area, chrome hidden, no popup: look the tapped word up. Pagination is by
-    // swipe — never by tap; the glyph hit-test in extractTextAt makes tryDefine return
-    // false for blank space.
-    if (settings.tapToDefine) tryDefine(info)
   }
 
   /**
@@ -374,35 +374,54 @@
   }
 
   async function runLookup(text: string, tapOffset: number, key: string) {
-    if (!(await isDictReady())) {
+    try {
+      if (!(await isDictReady())) {
+        if (!dictState.open || dictState.lastKey !== key) return
+        dictState.loading = false
+        dictState.needsDownload = true
+        return
+      }
+      const res = await lookupAt(text, tapOffset)
+      // Ignore if the popup was dismissed or a newer tap superseded this lookup.
       if (!dictState.open || dictState.lastKey !== key) return
       dictState.loading = false
-      dictState.needsDownload = true
-      return
-    }
-    const res = await lookupAt(text, tapOffset)
-    // Ignore if the popup was dismissed or a newer tap superseded this lookup.
-    if (!dictState.open || dictState.lastKey !== key) return
-    dictState.loading = false
-    dictState.result = res
-    // Auto-highlight the matched word — but only a real match, only a fresh tap
-    // that isn't already highlighted, and not on a download/no-match miss.
-    if (res && res.entries.length && !dictState.cfi && defineDoc && definePositions.length) {
-      void autoHighlight(res, key)
+      dictState.result = res
+      // Auto-highlight the matched word — but only a real match, only a fresh tap
+      // that isn't already highlighted, and not on a download/no-match miss.
+      if (res && res.entries.length && !dictState.cfi && defineDoc && definePositions.length) {
+        void autoHighlight(res, key)
+      }
+    } catch (err) {
+      // Never leave the card spinning: a failed IndexedDB open (iOS storage pressure, a
+      // version change from another tab) used to reject here and latch the spinner on for
+      // the rest of the session.
+      console.warn('Lookup failed', err)
+      if (!dictState.open || dictState.lastKey !== key) return
+      dictState.loading = false
+      dictState.result = null
     }
   }
 
   /** Highlight the matched word yellow and persist it as a vocab annotation. */
   async function autoHighlight(res: LookupResult, key: string) {
     if (!controller || !defineDoc) return
-    const range = rangeForSpan(defineDoc, definePositions, res.matchStart, res.matchStart + res.matchLength)
+    const start = res.matchStart
+    const end = res.matchStart + res.matchLength
+    const range = rangeForSpan(defineDoc, definePositions, start, end)
     if (!range) return
     const cfi = controller.cfiForSelection(defineDoc, range)
     if (!cfi) return
     // Bail if a newer lookup superseded this one while we built the range/CFI.
     if (!dictState.open || dictState.lastKey !== key) return
-    const word = range.toString()
-    if (!annotations.items.some((a) => a.kind === 'highlight' && a.cfi === cfi)) {
+    // Read the word off the extracted positions, not `range.toString()`: a range over a
+    // ruby-annotated compound spans the intervening <rt>, so stringifying it splices the
+    // furigana into the word (決けっ心) — which then shows wrong in Notes and fails to
+    // look up when the highlight is tapped again.
+    const word = definePositions
+      .slice(start, end)
+      .map((c) => c.node.data.charAt(c.offset))
+      .join('')
+    if (!isHighlighted(cfi)) {
       await saveAnnotation({
         id: newId(),
         bookId,
@@ -454,20 +473,65 @@
     else if (kind === 'writingmode' && bookFile) void controller.reopenForWritingMode(bookFile)
   }
 
-  // While a book is open, shed the lookup worker (and the ~tens-of-MB resident kuromoji
-  // trie it holds) whenever the PWA is backgrounded. iOS aggressively reclaims memory
-  // from hidden web content; holding that trie resident across a backgrounding raises the
-  // odds the whole tab is killed — losing the reading position — rather than just the
-  // worker. On return to the foreground re-warm from the SW-cached dict (no network) so
-  // the first tap-to-define is still fast. The worker is a lazy singleton, so the
-  // dispose→rebuild cycle is cheap and self-contained.
+  // While a book is open, shed the lookup worker (and the resident kuromoji trie it holds)
+  // when the PWA stays backgrounded. iOS aggressively reclaims memory from hidden web
+  // content; holding that trie resident across a long backgrounding raises the odds the
+  // whole tab is killed — losing the reading position — rather than just the worker.
+  //
+  // But only after a grace period. Dispose-on-hide punished the common case (a glance at
+  // another app, a notification, Slide Over): coming back, the worker had to rebuild the
+  // trie, and taps issued during the rebuild silently fell back to greedy segmentation —
+  // i.e. a wrong word, with no way for the reader to tell. Rebuilding also costs more
+  // transient memory than staying resident does.
+  const LOOKUP_IDLE_DISPOSE_MS = 60_000
+  let disposeTimer: number | undefined
   function onVisibility() {
     if (document.hidden) {
-      disposeLookup()
-    } else if (settings.tapToDefine) {
-      void isDictReady().then((ok) => {
-        if (ok) void warmupLookup()
-      })
+      if (disposeTimer) clearTimeout(disposeTimer)
+      disposeTimer = window.setTimeout(() => {
+        disposeTimer = undefined
+        if (document.hidden) disposeLookup()
+      }, LOOKUP_IDLE_DISPOSE_MS)
+    } else {
+      if (disposeTimer) {
+        clearTimeout(disposeTimer)
+        disposeTimer = undefined
+        return // never disposed, so the worker is still warm — nothing to do
+      }
+      if (settings.tapToDefine) {
+        void isDictReady().then((ok) => {
+          if (ok) void warmupLookup()
+        })
+      }
+    }
+  }
+
+  /** Most recently loaded content document — dev diagnostics only (see `__tsuzuri`). */
+  let lastDoc: Document | null = null
+  function onLoad(doc: Document) {
+    lastDoc = doc
+  }
+
+  /**
+   * Dev-only diagnostics hook. foliate renders into a **closed** shadow DOM, so an
+   * automated harness has no other way to reach the content document and measure how
+   * accurately a tap point resolves to a glyph. Guarded by `import.meta.env.DEV`, so it
+   * is dead code (tree-shaken) in the production build.
+   */
+  function installDevHook() {
+    if (!import.meta.env.DEV) return
+    ;(window as any).__tsuzuri = {
+      get doc() {
+        return lastDoc
+      },
+      get controller() {
+        return controller
+      },
+      get dictState() {
+        return dictState
+      },
+      extractTextAt,
+      lookupAt,
     }
   }
 
@@ -498,6 +562,7 @@
       }
       controller = new ReaderController(host, settings, {
         onRelocate,
+        onLoad,
         onTap,
         onTurn,
         onSelection,
@@ -506,6 +571,7 @@
       })
       await controller.open(file, progress?.cfi)
       toc = controller.view.book?.toc ?? []
+      installDevHook()
 
       // Load annotations and seed the highlight overlays.
       await loadAnnotations(bookId)
@@ -532,7 +598,7 @@
   })
 
   onDestroy(() => {
-    if (pendingTap) clearTimeout(pendingTap)
+    if (disposeTimer) clearTimeout(disposeTimer)
     document.removeEventListener('visibilitychange', onVisibility)
     saveProgress.cancel()
     controller?.destroy()
@@ -651,6 +717,9 @@
     height: var(--app-height, 100dvh);
     background: var(--paper);
     overflow: hidden;
+    /* Same reason as the injected content stylesheet: no double-tap zoom over the reading
+       surface, because a scaled visual viewport disables tap-to-define and page turns. */
+    touch-action: manipulation;
   }
   .view-host {
     position: absolute;

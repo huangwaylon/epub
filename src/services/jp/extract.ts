@@ -1,10 +1,15 @@
 /**
- * Extracts the text needed to look up the word at a tap point. To make tapping
- * *any* character of a word resolve the whole word (not just the run from the
- * tapped character onward), we gather the contiguous Japanese run on **both**
- * sides of the tap and report the tap's offset within it; `lookup.ts` then
- * segments that run and returns the word covering the tap. Furigana (<rt>/<rp>)
- * is skipped so reading text doesn't pollute the window.
+ * Extracts the text needed to look up the word at a tap point. Two jobs:
+ *
+ * 1. **Resolve the glyph under the point** (`resolveGlyph`). The caret APIs return the
+ *    nearest caret *boundary*, not the character containing the point, so the caret is
+ *    only a seed — the tapped character is then decided from measured glyph boxes.
+ * 2. **Gather the word's neighbourhood.** So that tapping *any* character of a word
+ *    resolves the whole word (not just the run from the tapped character onward), we
+ *    collect the contiguous Japanese run on **both** sides of the tap and report the
+ *    tap's offset within it; `lookup.ts` then segments that run and returns the word
+ *    covering the tap. Furigana (<rt>/<rp>) is excluded from the run, and a tap that
+ *    lands *on* furigana is redirected to the base text it annotates.
  */
 
 export interface Extracted {
@@ -69,9 +74,9 @@ function caretPosition(doc: Document, x: number, y: number): { node: Node; offse
 }
 
 /**
- * Minimum hit slack (px) on every side. Matches the old flat slack so the line-aware
- * box below is never *tighter* than before — it only ever grows the target. Acts as a
- * floor when there's no leading to borrow (text set solid at line-height ~1).
+ * Minimum hit slack (px) on every side. Acts as a floor when there's no leading to
+ * borrow (text set solid at line-height ~1), and forgives a small near-miss just past
+ * the first / last glyph of a line.
  */
 const MIN_HIT_SLACK = 6
 /**
@@ -106,11 +111,16 @@ interface GlyphSlack {
  * glyphs. (Widen `WORD_CHAR` to proportional/latin and this estimate would need the
  * glyph's real cross-extent instead.)
  *
+ * The slack only ever decides whether a *near-miss* still counts as a tap on that glyph
+ * (`hitDistance`); which glyph gets resolved is settled geometrically by `resolveGlyph`.
+ * Keep it from ballooning: a page of Japanese is wall-to-wall glyphs, and the blank-space
+ * fall-through (chrome toggle / dismiss) depends on some taps missing every glyph.
+ *
  * In vertical (縦書き) writing the columns stack horizontally, so the cross axis is x;
  * in horizontal writing the lines stack vertically, so the cross axis is y. We treat
  * every non-`horizontal-*` mode (vertical-rl/-lr, sideways-rl/-lr) as vertical, since
  * all of them stack lines horizontally. A missing view/element falls back to a flat
- * floor on both axes (never tighter than the old behaviour).
+ * floor on both axes.
  */
 function glyphSlack(win: Window | null, el: Element | null): GlyphSlack {
   const cs = win && el ? win.getComputedStyle(el) : null
@@ -126,40 +136,52 @@ function glyphSlack(win: Window | null, el: Element | null): GlyphSlack {
   return vertical ? { x: crossSlack, y: readingSlack } : { x: readingSlack, y: crossSlack }
 }
 
+/** The character actually under the tap point (as opposed to the nearest caret). */
+interface GlyphHit {
+  node: Text
+  offset: number
+  /** 0 when the point is inside the glyph's own box; otherwise how far outside (px). */
+  distance: number
+}
+
 /**
- * Whether (x, y) lands on the glyph at/next to the caret. `caretRangeFromPoint`
- * snaps to the *nearest* text even in blank margins and inter-column gaps, so on a
- * page that is wall-to-wall Japanese it reports a hit almost everywhere. We bound
- * that by confirming the tap point is inside the glyph's own box (grown by a
- * line-aware, per-axis slack — see `glyphSlack`), so taps on empty space fall through
- * to page-turn / chrome / dismiss instead of always defining, while a tap anywhere in
- * the line's own spacing still resolves the word.
+ * The measured box of a single character.
+ *
+ * Takes the **largest-area** client rect rather than any/all of them. A one-character
+ * range normally has exactly one rect, but WebKit also emits a degenerate (zero-extent)
+ * rect at the end of the *previous* line for a range sitting at a line start — in
+ * 縦書き the previous line is the column to the **right**, so accepting any rect lets a
+ * tap in one column validate a glyph in another. Per CSSOM-View the rect is the
+ * character's **font box** (ascent+descent × advance), *not* the line box, so it does
+ * not include the leading — which is why `glyphSlack` adds that itself.
  */
-function pointOnGlyph(doc: Document, node: Node, offset: number, x: number, y: number): boolean {
-  if (node.nodeType !== Node.TEXT_NODE) return false
-  const data = (node as Text).data
-  if (!data) return false
-  // Test the character at the caret offset, clamping at the end of the node.
-  let start = offset
-  let end = offset + 1
-  if (end > data.length) {
-    start = Math.max(0, data.length - 1)
-    end = data.length
-  }
-  if (start >= end) return false
+function charRect(doc: Document, node: Text, offset: number): DOMRect | null {
+  if (offset < 0 || offset >= node.data.length) return null
   const range = doc.createRange()
   try {
-    range.setStart(node, start)
-    range.setEnd(node, end)
+    range.setStart(node, offset)
+    range.setEnd(node, offset + 1)
   } catch {
-    return false
+    return null
   }
-  const slack = glyphSlack(doc.defaultView, node.parentElement)
+  let best: DOMRect | null = null
   for (const r of range.getClientRects()) {
-    if (x >= r.left - slack.x && x <= r.right + slack.x && y >= r.top - slack.y && y <= r.bottom + slack.y)
-      return true
+    if (!r.width || !r.height) continue
+    if (!best || r.width * r.height > best.width * best.height) best = r
   }
-  return false
+  return best
+}
+
+/**
+ * How far (x, y) is from a character's tap target: `0` when the point is inside the
+ * glyph's own box, the px overflow when it is merely within `slack`, and `null` when it
+ * is outside the target altogether (so the tap falls through to chrome / dismiss).
+ */
+function hitDistance(r: DOMRect, x: number, y: number, slack: GlyphSlack): number | null {
+  const dx = Math.max(r.left - x, x - r.right, 0)
+  const dy = Math.max(r.top - y, y - r.bottom, 0)
+  if (dx > slack.x || dy > slack.y) return null
+  return dx + dy
 }
 
 function isInRuby(node: Node): boolean {
@@ -192,29 +214,137 @@ function leadingRun(cells: CharPosition[], max: number): CharPosition[] {
   return cells.slice(0, i)
 }
 
-export function extractTextAt(doc: Document, x: number, y: number): Extracted | null {
-  const pos = caretPosition(doc, x, y)
-  if (!pos) return null
-  // Only treat this as a word lookup if the tap actually landed on a glyph;
-  // otherwise it's blank space and the caller should turn the page / toggle chrome.
-  if (!pointOnGlyph(doc, pos.node, pos.offset, x, y)) return null
-  if (pos.node.nodeType !== Node.TEXT_NODE) return null
-  const tapNode = pos.node as Text
-  if (pos.offset >= tapNode.data.length) return null
-  // The tapped glyph is the character at pos.offset. Bail if it isn't a word char
-  // (latin, punctuation, …) so the tap falls through to the chrome toggle.
-  if (!WORD_CHAR.test(tapNode.data.charAt(pos.offset))) return null
-
-  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+/** A TreeWalker over the document's text nodes, skipping furigana. */
+function textWalker(doc: Document): TreeWalker {
+  return doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
     acceptNode: (n) => (isInRuby(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   })
+}
+
+/** The text node before / after `node` in document order (furigana skipped). */
+function siblingText(doc: Document, node: Text, dir: 'prev' | 'next'): Text | null {
+  const w = textWalker(doc)
+  try {
+    w.currentNode = node
+  } catch {
+    return null
+  }
+  return (dir === 'prev' ? w.previousNode() : w.nextNode()) as Text | null
+}
+
+/**
+ * A tap that landed in furigana resolves to the character of the **base** text it
+ * annotates. In 縦書き the annotation column sits immediately beside the base within the
+ * same line box, so a tap aimed at the base easily lands in the reading (and in 横書き
+ * the same happens above it) — looking up the reading instead of the word is both wrong
+ * and, because the user compensates by aiming away from the annotation, the thing that
+ * makes tapping feel misaligned. Ruby bases are one to a few characters, so scanning
+ * every base character of the enclosing `<ruby>` and taking the nearest is trivial.
+ */
+function rubyBaseHit(doc: Document, node: Text, x: number, y: number): GlyphHit | null {
+  let el: Element | null = node.parentElement
+  while (el && el.tagName.toUpperCase() !== 'RUBY') el = el.parentElement
+  if (!el) return null
+  const w = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (isInRuby(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  })
+  let best: GlyphHit | null = null
+  let t: Text | null
+  while ((t = w.nextNode() as Text | null)) {
+    for (let k = 0; k < t.data.length; k++) {
+      const r = charRect(doc, t, k)
+      if (!r) continue
+      const dx = Math.max(r.left - x, x - r.right, 0)
+      const dy = Math.max(r.top - y, y - r.bottom, 0)
+      const d = dx + dy
+      if (!best || d < best.distance) best = { node: t, offset: k, distance: d }
+    }
+  }
+  return best
+}
+
+/**
+ * Resolves the glyph under (x, y) — the heart of tap accuracy.
+ *
+ * `caretRangeFromPoint` / `caretPositionFromPoint` return the nearest **caret boundary**,
+ * not the character containing the point: both WebKit and Blink pick the next character
+ * once the point passes the current glyph's mid-advance (WebKit's
+ * `offsetForPosition(…, includePartialGlyphs: true)`). Taking that offset as "the tapped
+ * character" therefore mis-resolves the whole far half of every glyph — measured in this
+ * app against a real novel, taps in the far ~40% of each glyph resolved the *next*
+ * character (≈35% of the glyph area looked up the following word, and another ≈5–13%
+ * resolved punctuation or ran off the end of the text node and defined nothing at all).
+ * Along the reading axis that is "one character late": rightwards in 横書き, downwards in
+ * 縦書き — which is why aiming further back (left / up) appeared to work better.
+ *
+ * So we use the caret only as a *seed* and then decide geometrically: measure the seed
+ * character and its predecessor (plus the adjacent text node when the seed sits on a node
+ * boundary) and keep whichever box the point actually falls in. This is engine-independent
+ * — it corrects the mid-glyph rule, WebKit's line-snapping in vertical writing modes, and
+ * the end-of-node case in one place — and costs a handful of `getClientRects` calls.
+ */
+function resolveGlyph(doc: Document, x: number, y: number): GlyphHit | null {
+  const pos = caretPosition(doc, x, y)
+  if (!pos) return null
+  if (pos.node.nodeType !== Node.TEXT_NODE) return null
+  const seed = pos.node as Text
+
+  // A caret inside <rt>/<rp> means the tap landed on furigana — redirect to the base.
+  if (isInRuby(seed)) return rubyBaseHit(doc, seed, x, y)
+
+  const slack = glyphSlack(doc.defaultView, seed.parentElement)
+  const candidates: { node: Text; offset: number }[] = []
+  const push = (node: Text | null, offset: number) => {
+    if (node && offset >= 0 && offset < node.data.length) candidates.push({ node, offset })
+  }
+  // The seed offset, then the character *before* it — the mid-glyph correction. When the
+  // caret snapped past the last character of the node, `offset - 1` is that character, so
+  // the same two candidates also cover the end-of-node case.
+  push(seed, pos.offset)
+  push(seed, pos.offset - 1)
+  // At a node boundary the neighbouring character lives in another text node (a kanji
+  // compound with ruby splits its base text, so this is common in Japanese EPUBs).
+  if (pos.offset <= 0) {
+    const prev = siblingText(doc, seed, 'prev')
+    if (prev) push(prev, prev.data.length - 1)
+  }
+  if (pos.offset >= seed.data.length) {
+    const next = siblingText(doc, seed, 'next')
+    if (next) push(next, 0)
+  }
+
+  let best: GlyphHit | null = null
+  for (const c of candidates) {
+    const r = charRect(doc, c.node, c.offset)
+    if (!r) continue
+    const d = hitDistance(r, x, y, slack)
+    if (d === null) continue
+    if (d === 0) return { ...c, distance: 0 } // inside the glyph box — done
+    if (!best || d < best.distance) best = { ...c, distance: d }
+  }
+  return best
+}
+
+export function extractTextAt(doc: Document, x: number, y: number): Extracted | null {
+  // Resolve the glyph the tap actually landed on. `null` means blank space (margin,
+  // inter-column gap, past the end of a line) and the caller should treat the tap as a
+  // chrome toggle / dismiss instead of a lookup.
+  const hit = resolveGlyph(doc, x, y)
+  if (!hit) return null
+  const tapNode = hit.node
+  const tapOffset = hit.offset
+  // Bail if the tapped glyph isn't a word char (latin, punctuation, …) so the tap falls
+  // through to the chrome toggle.
+  if (!WORD_CHAR.test(tapNode.data.charAt(tapOffset))) return null
+
+  const walker = textWalker(doc)
 
   // Forward run, starting at (and including) the tapped char. Track each char's
   // DOM location so the caller can map a matched span back to a Range. Every loop is
   // capped at MAX_AFTER: leadingRun keeps at most that many anyway, so scanning a whole
   // long paragraph's Text node would just allocate thousands of cells to discard them.
   let afterCells: CharPosition[] = []
-  for (let k = pos.offset; k < tapNode.data.length && afterCells.length < MAX_AFTER; k++)
+  for (let k = tapOffset; k < tapNode.data.length && afterCells.length < MAX_AFTER; k++)
     afterCells.push({ node: tapNode, offset: k })
   walker.currentNode = tapNode
   while (afterCells.length < MAX_AFTER) {
@@ -228,7 +358,7 @@ export function extractTextAt(doc: Document, x: number, y: number): Extracted | 
   // so only ever keep the last MAX_BEFORE chars of each preceding node (trailingRun keeps
   // just the suffix run regardless).
   let beforeCells: CharPosition[] = []
-  for (let k = Math.max(0, pos.offset - MAX_BEFORE); k < pos.offset; k++) beforeCells.push({ node: tapNode, offset: k })
+  for (let k = Math.max(0, tapOffset - MAX_BEFORE); k < tapOffset; k++) beforeCells.push({ node: tapNode, offset: k })
   walker.currentNode = tapNode
   while (beforeCells.length < MAX_BEFORE) {
     const n = walker.previousNode() as Text | null

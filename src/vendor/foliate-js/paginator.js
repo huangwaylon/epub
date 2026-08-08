@@ -1064,7 +1064,12 @@ export class Paginator extends HTMLElement {
             index: this.#adjacentIndex(dir),
             anchor: prev ? () => 1 : () => 0,
         })
-        if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+        // TSUZURI PATCH: only debounce when the turn actually crossed into a new section.
+        // Upstream also waits when `animated` is absent — and we deliberately leave
+        // `animated` off (we drive our own horizontal slide), so every single page turn
+        // paid this 100ms with the view translated off-screen showing blank paper.
+        // Rapid-turn coalescing is handled app-side (`#turning`/`#pendingDir` in reader.ts).
+        if (shouldGo) await wait(100)
         this.#locked = false
     }
     prev(distance) {

@@ -10,10 +10,11 @@
  * IndexedDB, so the worker reads exactly the data the main thread downloaded — no
  * duplicate download, no message-passing of dictionary bytes.
  */
-import { lookupAt, warmup } from './lookup'
+import { lookupAt, warmup, isSegmenterReady } from './lookup'
 
 type Incoming =
   | { type: 'warmup'; id: number }
+  | { type: 'ready'; id: number }
   | { type: 'lookup'; id: number; text: string; tapOffset: number }
 
 self.onmessage = async (e: MessageEvent<Incoming>) => {
@@ -25,10 +26,19 @@ self.onmessage = async (e: MessageEvent<Incoming>) => {
     ;(self as unknown as Worker).postMessage({ id: msg.id, result: ready })
     return
   }
+  if (msg.type === 'ready') {
+    // Cheap synchronous status probe: is the tokenizer built? Lets the main thread
+    // distinguish "segmentation is still loading" from "no dictionary match".
+    ;(self as unknown as Worker).postMessage({ id: msg.id, result: isSegmenterReady() })
+    return
+  }
   if (msg.type === 'lookup') {
     try {
       const result = await lookupAt(msg.text, msg.tapOffset)
-      ;(self as unknown as Worker).postMessage({ id: msg.id, result })
+      // `ready` reports which path produced this result: only a morphological (kuromoji-
+      // ready) result is authoritative enough for the client to cache across worker
+      // disposal — see `lookupClient`.
+      ;(self as unknown as Worker).postMessage({ id: msg.id, result, ready: isSegmenterReady() })
     } catch (err) {
       ;(self as unknown as Worker).postMessage({ id: msg.id, result: null, error: String(err) })
     }

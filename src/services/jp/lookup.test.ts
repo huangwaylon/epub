@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // --- Mocks -----------------------------------------------------------------
 //
@@ -26,7 +26,7 @@ vi.mock('./segment', () => ({
   tokenStartAt: (text: string, tapOffset: number) => tokenStartImpl(text, tapOffset),
 }))
 
-import { lookupAt, lookup } from './lookup'
+import { lookupAt, lookup, isSegmenterReady } from './lookup'
 
 // --- Dictionary builders ---------------------------------------------------
 
@@ -50,13 +50,28 @@ function setDict(dict: Record<string, any[]>): void {
   getWords.mockImplementation(async (term: string) => dict[term] ?? [])
 }
 
+/** A fresh copy of the module, so the private `RESULT_LRU` and the remembered
+ *  "kuromoji build failed" flag start clean — needed by the tests that assert
+ *  *first-tap* behaviour (the state a worker is in right after being rebuilt). */
+async function freshLookup(): Promise<typeof import('./lookup')> {
+  vi.resetModules()
+  return import('./lookup')
+}
+
 beforeEach(() => {
   getWords.mockReset()
   ensureSegmenter.mockClear()
+  // Restore the default (resolves immediately); individual tests override it to model a
+  // slow, stalled or failing kuromoji build.
+  ensureSegmenter.mockImplementation(async () => undefined)
   segmenterReadyValue = false
   tokenStartImpl = () => null
   // RESULT_LRU is module-private with no reset export; tests use distinct inputs to
   // avoid cross-test cache hits. The few that probe caching reuse one input deliberately.
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 // --- lookupAt --------------------------------------------------------------
@@ -152,12 +167,12 @@ describe('lookupAt', () => {
     })
   })
 
-  it('keeps the kuromoji token only if it actually covers the tap, else falls back', async () => {
-    // kuromoji claims a 1-char token starting at 0, but the tap is at offset 2.
-    // matchAt from the token start yields matchLength 1, which does NOT cover offset 2
-    // (1 > 2-0 is false), so lookupAt drops it and the greedy scan resolves the word.
+  it('falls back to greedy when the kuromoji token start yields no covering match', async () => {
+    // kuromoji split 早起き and reports a token starting at 2 (き). Only a match that
+    // *spans* the tap is usable, and nothing in the dictionary starts at き, so lookupAt
+    // drops the token path and the greedy scan resolves the whole compound from 0.
     segmenterReadyValue = true
-    tokenStartImpl = () => 0
+    tokenStartImpl = () => 2
     setDict({
       早: [word({ k: '早', r: 'はや', pos: ['pref'], glosses: ['early'] })],
       早起き: [word({ k: '早起き', r: 'はやおき', pos: ['n', 'vs'], glosses: ['early rising'] })],
@@ -168,6 +183,163 @@ describe('lookupAt', () => {
     expect(res!.matchStart).toBe(0)
     expect(res!.matchLength).toBe(3)
     expect(res!.entries[0].headword).toBe('早起き')
+  })
+
+  it('prefers the leftmost covering start over a longer match further right', async () => {
+    // Both 決心 (start 0, len 2) and 心配性 (start 1, len 3) cover a tap on 心 (offset 1).
+    // Across starts the *leftmost* wins — the tie-break that makes tapping any character
+    // of a word resolve the word it begins, not the one it merely continues into.
+    segmenterReadyValue = false
+    tokenStartImpl = () => null
+    setDict({
+      決心: [word({ k: '決心', r: 'けっしん', pos: ['n'], glosses: ['determination'] })],
+      心配性: [word({ k: '心配性', r: 'しんぱいしょう', pos: ['n'], glosses: ['worrier'] })],
+    })
+
+    const res = await lookupAt('決心配性', 1)
+    expect(res!.matchStart).toBe(0)
+    expect(res!.matchLength).toBe(2)
+    expect(res!.entries[0].headword).toBe('決心')
+  })
+})
+
+// --- Waiting for kuromoji before deciding the path -------------------------
+//
+// The tokenizer is *not* built for the first taps after the lookup worker is created,
+// and the worker is recreated on every foreground (Reader.svelte sheds it when the PWA
+// is backgrounded). Racing that build silently downgrades those taps to the greedy
+// fallback, which returns a plausible-but-wrong span — so lookupAt waits for it, with a
+// ceiling.
+//
+// 今日本 is the discriminating case: a tap on 日 (offset 1) is answered 今日 by greedy
+// leftmost-covering (start 0) but 日本 by kuromoji (which tokenises 今 | 日本).
+
+describe('lookupAt — kuromoji readiness', () => {
+  const AMBIGUOUS = {
+    今日: [word({ k: '今日', r: 'きょう', pos: ['n'], glosses: ['today'] })],
+    日本: [word({ k: '日本', r: 'にほん', pos: ['n'], glosses: ['Japan'] })],
+  }
+
+  it('waits for a build that is still in flight, so the tap takes the morphological path', async () => {
+    segmenterReadyValue = false
+    tokenStartImpl = () => (segmenterReadyValue ? 1 : null)
+    // The build completes a tick after the tap arrives — the post-foreground window.
+    ensureSegmenter.mockImplementation(async () => {
+      await Promise.resolve()
+      segmenterReadyValue = true
+      return undefined
+    })
+    setDict(AMBIGUOUS)
+
+    const { lookupAt: fresh } = await freshLookup()
+    const res = await fresh('今日本', 1)
+    expect(res!.matchStart).toBe(1)
+    expect(res!.entries[0].headword).toBe('日本')
+  })
+
+  it('answers greedily when the build never completes, without hanging the tap', async () => {
+    vi.useFakeTimers()
+    segmenterReadyValue = false
+    tokenStartImpl = () => null
+    ensureSegmenter.mockImplementation(() => new Promise<undefined>(() => {})) // never settles
+    setDict(AMBIGUOUS)
+
+    const { lookupAt: fresh } = await freshLookup()
+    let settled = false
+    const p = fresh('今日本', 1).then((r) => {
+      settled = true
+      return r
+    })
+    // Still waiting on the segmenter: nothing has been decided yet.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(false)
+
+    // Past the ceiling it degrades to greedy leftmost-covering rather than hanging.
+    await vi.advanceTimersByTimeAsync(1200)
+    const res = await p
+    expect(settled).toBe(true)
+    expect(res!.matchStart).toBe(0)
+    expect(res!.entries[0].headword).toBe('今日')
+  })
+
+  it('stops waiting on the build once it has failed (offline, IPADIC not cached)', async () => {
+    vi.useFakeTimers()
+    segmenterReadyValue = false
+    tokenStartImpl = () => null
+    // A build that fails after 500 ms — i.e. inside the wait window, so the first tap
+    // learns about the failure.
+    ensureSegmenter.mockImplementation(
+      () =>
+        new Promise<undefined>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('IPADIC fetch failed')), 500)
+        }),
+    )
+    setDict({
+      今日: AMBIGUOUS.今日,
+      日本: AMBIGUOUS.日本,
+      猫: [word({ k: '猫', r: 'ねこ', pos: ['n'], glosses: ['cat'] })],
+    })
+
+    const { lookupAt: fresh } = await freshLookup()
+    const first = fresh('今日本', 1)
+    await vi.advanceTimersByTimeAsync(500)
+    expect((await first)!.entries[0].headword).toBe('今日') // greedy
+
+    // The failure is remembered: this tap must resolve with NO timers advanced (a second
+    // 1200 ms wait per tap on a fetch that cannot succeed would be pure latency), so
+    // awaiting it directly under fake timers would deadlock if it re-waited.
+    const res = await fresh('猫', 0)
+    expect(res!.entries[0].headword).toBe('猫')
+  })
+
+  it('reports segmenter readiness to the caller (isSegmenterReady)', () => {
+    segmenterReadyValue = false
+    expect(isSegmenterReady()).toBe(false)
+    segmenterReadyValue = true
+    expect(isSegmenterReady()).toBe(true)
+  })
+})
+
+// --- Query fan-out bounds (MAX_WINDOW + the covering-span prune) -----------
+//
+// Every extra (start, length) pair is a deinflection pass plus one `getWords` per
+// candidate, and each `getWords` opens three IndexedDB transactions — the dominant cost
+// of a tap on iOS. Two bounds keep it in check, both asserted here as behaviour:
+// MAX_WINDOW = 12, and "never probe a span that can't cover the tap".
+
+describe('lookupAt / lookup — query fan-out bounds', () => {
+  const TWELVE = 'あいうえおかきくけこさし' // 12 chars
+  const THIRTEEN = TWELVE + 'す' // 13 chars
+
+  it('matches a 12-character surface form (the window cap is inclusive)', async () => {
+    setDict({ [TWELVE]: [word({ r: TWELVE, pos: ['n'], glosses: ['twelve'] })] })
+    const res = await lookup(THIRTEEN)
+    expect(res!.matchLength).toBe(12)
+  })
+
+  it('never probes past 12 characters', async () => {
+    setDict({ [THIRTEEN]: [word({ r: THIRTEEN, pos: ['n'], glosses: ['thirteen'] })] })
+    // The only entry is 13 chars long, so the capped window can't reach it.
+    expect(await lookup(THIRTEEN)).toBeNull()
+    expect(getWords.mock.calls.map(([t]) => t)).not.toContain(THIRTEEN)
+  })
+
+  it('skips greedy starts and lengths that cannot reach the tap', async () => {
+    segmenterReadyValue = false
+    tokenStartImpl = () => null
+    setDict({}) // force the full scan — nothing matches, so no early exit
+    // 20 distinct kanji (no kana, so deinflection adds nothing), tap on 万 at offset 12.
+    const text = '一二三四五六七八九十百千万億兆京垓子丑寅'
+    expect(await lookupAt(text, 12)).toBeNull()
+
+    const terms = getWords.mock.calls.map(([t]) => t as string)
+    expect(terms.length).toBeGreaterThan(0)
+    // No span of length <= 12 starting at offset 0 can reach offset 12, so start 0 is
+    // never probed at all.
+    expect(terms.some((t) => t.startsWith('一'))).toBe(false)
+    // And within a start, only lengths that reach the tap are probed — so the single
+    // 1-character probe is the tapped character itself.
+    expect(terms.filter((t) => t.length === 1)).toEqual(['万'])
   })
 })
 

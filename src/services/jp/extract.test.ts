@@ -38,8 +38,8 @@ interface FakeElement {
 interface FakeText {
   nodeType: number
   data: string
-  /** Per-character client rects, keyed by offset. Drives pointOnGlyph hit-testing. */
-  rects: Record<number, { left: number; right: number; top: number; bottom: number }>
+  /** Per-character client rects, keyed by offset. Drives the glyph hit-testing. */
+  rects: Record<number, { left: number; right: number; top: number; bottom: number; width: number; height: number }>
   parentElement: FakeElement
 }
 
@@ -52,7 +52,17 @@ function textNode(data: string, parent: FakeElement, originX = 0, glyph = 16): F
   const rects: FakeText['rects'] = {}
   for (let i = 0; i < data.length; i++) {
     const left = originX + i * glyph
-    rects[i] = { left, right: left + glyph, top: 0, bottom: glyph }
+    rects[i] = { left, right: left + glyph, top: 0, bottom: glyph, width: glyph, height: glyph }
+  }
+  return { nodeType: 3, data, rects, parentElement: parent }
+}
+
+/** Build a Text node laid out top-to-bottom in one column at `originX` (縦書き). */
+function columnNode(data: string, parent: FakeElement, originX = 0, originY = 0, glyph = 16): FakeText {
+  const rects: FakeText['rects'] = {}
+  for (let i = 0; i < data.length; i++) {
+    const top = originY + i * glyph
+    rects[i] = { left: originX, right: originX + glyph, top, bottom: top + glyph, width: glyph, height: glyph }
   }
   return { nodeType: 3, data, rects, parentElement: parent }
 }
@@ -208,16 +218,63 @@ describe('extractTextAt', () => {
     expect(res).toBeNull()
   })
 
-  it('returns null when the caret offset is at/past the end of the node', () => {
-    // caret snaps to offset == data.length: pos.offset >= length guard fires.
+  it('resolves the tapped glyph when the caret snapped past it (mid-glyph rule)', () => {
+    // The caret APIs return the nearest *boundary*: a tap past a glyph's mid-advance
+    // reports the NEXT character. Tapping the right 85% of 猫 in 猫がすき must still
+    // resolve 猫, not が.
+    const p = el('P')
+    const a = textNode('猫がすき', p, 0)
+    const x = a.rects[0].left + 16 * 0.85 // still inside 猫's own box
+    const y = 8
+    const doc = makeDoc([a], () => ({ node: a, offset: 1 })) // caret snapped to が
+    const res = extractTextAt(doc, x, y)
+    expect(res).not.toBeNull()
+    expect(res!.text[res!.tapOffset]).toBe('猫')
+    expect(res!.tapOffset).toBe(0)
+  })
+
+  it('resolves the last glyph when the caret snapped to the end of the node', () => {
+    // Tapping the far half of a node's last character snaps the caret to offset ==
+    // data.length. That used to return null — a tap that did nothing at all, which with
+    // mono-ruby (one Text node per kanji) was every second tap on a furigana'd word.
     const p = el('P')
     const a = textNode('猫', p, 0)
     const doc = makeDoc([a], () => ({ node: a, offset: 1 }))
-    // Hit-test still needs to pass first: pointOnGlyph clamps end>length back to the
-    // last glyph, so tap that glyph's centre.
-    const [x, y] = center(a, 0)
-    const res = extractTextAt(doc, x, y)
-    expect(res).toBeNull()
+    const res = extractTextAt(doc, 14, 8) // right side of the only glyph
+    expect(res).not.toBeNull()
+    expect(res!.text).toBe('猫')
+    expect(res!.tapOffset).toBe(0)
+  })
+
+  it('crosses into the previous text node when the caret snapped to offset 0', () => {
+    // Mono-ruby splits a compound into one Text node per kanji. A tap on the far half of
+    // 決 can snap the caret to offset 0 of the *next* node (心) — resolve 決 anyway.
+    const p = el('P')
+    const ruby1 = el('RUBY', p)
+    const ruby2 = el('RUBY', p)
+    const k1 = textNode('決', ruby1, 0)
+    const k2 = textNode('心', ruby2, 16)
+    const doc = makeDoc([k1, k2], () => ({ node: k2, offset: 0 }))
+    const res = extractTextAt(doc, 14, 8) // inside 決's box
+    expect(res).not.toBeNull()
+    expect(res!.text).toBe('決心')
+    expect(res!.tapOffset).toBe(0) // 決 is the tapped char
+  })
+
+  it('redirects a tap that landed on furigana to the base text it annotates', () => {
+    // 縦書き puts the <rt> column beside the base, so a tap aimed at the base easily lands
+    // in the reading. Looking up the reading is wrong; resolve the base character.
+    const p = el('P')
+    const ruby = el('RUBY', p)
+    const rt = el('RT', ruby)
+    const base = columnNode('決心', ruby, 0, 0) // base column at x [0,16]
+    const reading = columnNode('けっしん', rt, 16, 0) // reading column at x [16,32]
+    const style: FakeStyle = { writingMode: 'vertical-rl', fontSize: '16px', lineHeight: '30px' }
+    const doc = makeDoc([base, reading], () => ({ node: reading, offset: 0 }), style)
+    const res = extractTextAt(doc, 20, 8) // in the reading column, level with 決
+    expect(res).not.toBeNull()
+    expect(res!.text).toBe('決心')
+    expect(res!.text[res!.tapOffset]).toBe('決')
   })
 
   it('returns null when caretRangeFromPoint finds nothing', () => {

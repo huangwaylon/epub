@@ -32,14 +32,15 @@ is `npm run check` (svelte-check + strict `tsc` on the node config).
 | `npm run dev`     | `vite` (after `predev`)                                                        | HMR dev server, SW enabled (`devOptions.enabled`), exposed on LAN, base `/`. |
 | `npm run build`   | `vite build` (after `prebuild`)                                               | Production build → `dist/`, base `/epub/`. Generates PWA manifest, Workbox precaches the app shell. |
 | `npm run preview` | `vite preview`                                                                 | Serves built `dist/` locally; front with HTTPS tunnel for production-like device tests. |
-| `npm test`        | `vitest run`                                                                   | Unit tests once (Node env). Currently the deinflection tests ([§9](#9-testing)). |
+| `npm test`        | `vitest run`                                                                   | Unit tests once (Node env): deinflection, glyph resolution/extraction, the lookup pipeline, the worker client ([§9](#9-testing)). |
 | `npm run check`   | `svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json`     | Type-checks the app **and** the build tooling (`vite.config.ts`). Run before committing. |
 
 > **`predev` / `prebuild`** run `node scripts/copy-kuromoji-dict.mjs`, staging the
-> ~19 MB kuromoji IPADIC dict from `node_modules/@sglkc/kuromoji/dict` into
-> `public/kuromoji/dict/` (gitignored — regenerated, never committed). Vite serves it
-> in dev and copies it into `dist/` on build, so CI ships the dict without committing
-> it. See [`japanese.md`](./japanese.md) §4 and [`deployment.md`](./deployment.md).
+> kuromoji IPADIC dict (12 `*.dat.gz`, ~19 MB compressed — ≈95 MB once the worker inflates
+> it) from `node_modules/@sglkc/kuromoji/dict` into `public/kuromoji/dict/` (gitignored —
+> regenerated, never committed). Vite serves it in dev and copies it into `dist/` on build,
+> so CI ships the dict without committing it. See [`japanese.md`](./japanese.md) §4 and
+> [`deployment.md`](./deployment.md).
 
 ---
 
@@ -159,11 +160,17 @@ change the generators. Both depend on `sharp` (CI-stripped, [§1](#1-prerequisit
      next, drag right → previous; animates as a horizontal slide). foliate's own touch
      turn is patched out ([§7](#7-coding-conventions)).
    - **Tap-to-define** — tap a Japanese glyph → `DictionaryPopup` (and the word
-     highlights yellow as a vocab record). A tap in the top/bottom edge band toggles
-     chrome; a blank-centre tap does nothing; while a popup is open any tap (including
-     the nav-bar band) just dismisses it **without** toggling chrome. **Tap never turns
-     the page.** Tapping a highlighted word reopens its definition with a remove option.
-   - **Drag-select** → `SelectionToolbar` → **highlight** (yellow) / copy.
+     highlights yellow as a vocab record). **A glyph tap always defines**, including
+     inside the top/bottom edge band and while a card is already open (the card
+     re-targets, so word-after-word is one tap each). A **blank** tap in the edge band
+     toggles chrome; a blank tap dismisses an open card, else hides visible chrome; a
+     blank-centre tap with nothing open does nothing. **Tap never turns the page.**
+     Tapping a highlighted word reopens its definition with a remove option — and the
+     word shown must **not** contain furigana (決けっ心 is the regression).
+   - Tap the **first and last glyph of a column** (the strip the nav bars overlap) —
+     both must define, not toggle the chrome.
+   - **Drag-select** → `SelectionToolbar` → **highlight** (yellow) / copy; then a single
+     tap elsewhere must dismiss the selection *and* define the word it landed on.
    - **Drag-to-scrub** bottom progress bar; **bookmark** toggle (appears in the
      annotations panel).
 6. `list_console_messages` — the **only** expected message is the benign foliate iframe
@@ -171,6 +178,38 @@ change the generators. Both depend on `sharp` (CI-stripped, [§1](#1-prerequisit
    `fixed-layout.js` for a WebKit event bug). Anything else is a regression.
 
 The `tsuzuri-verify` skill covers this loop in detail.
+
+<a id="tap-harness"></a>
+### Measuring tap-hit accuracy (the `__tsuzuri` DEV hook)
+
+foliate renders into a **closed** shadow DOM ([`reader-engine.md`](./reader-engine.md) §14),
+so nothing outside can reach the content `Document` — which makes tap-hit accuracy
+unmeasurable from a normal harness. `Reader.svelte` therefore installs `installDevHook()`,
+guarded by `import.meta.env.DEV` (verified absent from the production bundle), exposing:
+
+```ts
+window.__tsuzuri = { doc, controller, dictState, extractTextAt, lookupAt }   // DEV only
+```
+
+`doc` is the most recently loaded content document (kept via the `onLoad` callback). With
+it you can probe the geometry directly (`extractTextAt(doc, x, y)`) or drive the full
+pipeline (`lookupAt`). Recipe:
+
+1. Drive an **isolated** Chrome via `puppeteer-core` with its own `--user-data-dir` and
+   `--remote-debugging-port`. Do **not** attach to the user's running Chrome or to the
+   chrome-devtools MCP — that one needs the default profile, and the two fight.
+2. Viewport **1194×834** (iPad landscape), navigate to the dev server.
+3. Upload the EPUB to the shelf's file input, click the book, then poll until
+   `window.__tsuzuri.doc` is non-null.
+4. Dispatch synthetic `PointerEvent`s (`pointerdown`/`pointerup`, `isPrimary: true`) at
+   **iframe-local** coordinates: `local = screen − frameElement.getBoundingClientRect()`.
+   Host-level (margin) gestures must be dispatched on the **`<foliate-view>` element
+   itself**, not on the surrounding `.view-host` div — that is where
+   `#attachHostGestures` listens.
+5. For an accuracy sweep, walk every character's client rects inside `doc`, probe a grid of
+   points per glyph, and compare `extractTextAt`'s resolved character against the expected
+   one. Note that a probe landing on furigana is *expected* to resolve the ruby **base**
+   ([`japanese.md`](./japanese.md) §6).
 
 ### On-device (iOS Safari)
 
@@ -209,8 +248,8 @@ iOS requires **HTTPS** for service workers and Add-to-Home-Screen:
 
 ### Never edit `src/vendor/foliate-js`
 
-…except as a deliberate, documented patch. There are **two** (full rationale in
-[`reader-engine.md`](./reader-engine.md)):
+…except as a deliberate, documented patch. There are **three** (full rationale in
+[`reader-engine.md`](./reader-engine.md) §1):
 
 1. **pdf.js removal** — the `else if (await isPDF(...))` branch (and its
    `import('./pdf.js')`) was deleted from `makeBook` in `view.js`; PDFs are no longer
@@ -221,6 +260,12 @@ iOS requires **HTTPS** for service workers and Add-to-Home-Screen:
    back-swipe) but drops `scrollBy`, and `#onTouchEnd` drops the velocity-snap turn. We
    drive turns from a horizontal swipe detector in `reader.ts` (`#attachTaps`) so the
    turn stays horizontal for 縦書き books.
+3. **Page-turn debounce narrowed to section crossings** — `paginator.js` `#turnPage` ended
+   every turn with `wait(100)` whenever `animated` was absent, and we deliberately leave
+   `animated` off, so each turn spent 100 ms showing blank paper (the view is already
+   translated off-screen by then). Now it waits only when the turn crossed into a new
+   section (`shouldGo`): measured `view.next()` **106 ms → 5 ms**. Rapid-turn coalescing is
+   app-side (`#turning`/`#pendingDir`), so nothing depended on the wait.
 
 If a patch is unavoidable: make the **smallest possible** change, document it both here
 (extend this list) and in [`reader-engine.md`](./reader-engine.md), and keep the diff
@@ -259,11 +304,21 @@ padding for free.
 
 - **Runner:** Vitest. `vitest.config.ts` is intentionally **plugin-free** (no Svelte/PWA
   plugins) so tests run fast: `environment: 'node'`, `include: ['src/**/*.test.ts']`.
-- **Scope:** unit tests for **pure service logic** — no DOM, no Svelte. The only current
-  test is `src/services/jp/deinflect.test.ts`, asserting the vendored deinflection engine
-  reduces conjugated surface forms to their dictionary base (ichidan te-form, i-adjective
-  past, godan past, -tai, volitional, passive/potential), always includes the original
-  surface as a candidate, and tags deinflected candidates with non-empty `reasonChains`.
+- **Scope:** unit tests for **pure service logic**, all under `src/services/jp/`:
+
+  | File | Asserts |
+  |------|---------|
+  | `deinflect.test.ts` | The vendored deinflection engine reduces conjugated surface forms to their dictionary base (ichidan te-form, i-adjective past, godan past, -tai, volitional, passive/potential), always includes the original surface as a candidate, and tags deinflected candidates with non-empty `reasonChains`. |
+  | `extract.test.ts` | Glyph resolution and run collection — the mid-glyph correction, end-of-node, crossing text nodes, the furigana→base redirect, blank space ⇒ `null`, run caps, vertical cross-axis slack — plus `rangeForSpan` and `looksJapanese`. |
+  | `lookup.test.ts` | Token vs. greedy paths and tie-breaks, the result LRU and its readiness bit, the bounded segmenter wait (in-flight / never-completes / already-failed), the `MAX_WINDOW = 12` fan-out bounds and `minLen` pruning, `candidateMatches`, POS labels. |
+  | `lookupClient.test.ts` | The worker client against a stub Worker: lazy construction, no-worker ⇒ `null`, the main-thread result cache (serves repeat taps, survives `disposeLookup()`, caches ready results only), `lookupReady()` semantics. |
+
+  **No jsdom.** `extract.ts` is the only DOM-touching module in the pipeline, and
+  `extract.test.ts` runs it against a hand-built fake `Document` that mocks exactly the
+  surface the code reads (`caretRangeFromPoint`, `createRange`/`getClientRects` with
+  per-character rects injected, `createTreeWalker`, `getComputedStyle`). That is what makes
+  the geometry assertions — which rect a point falls in — expressible at all; keep new
+  cases in that style rather than adding a browser environment.
 - **Adding a test:** drop a `*.test.ts` next to the module and import the function
   directly:
   ```ts
@@ -273,11 +328,12 @@ padding for free.
     it('does X', () => { expect(someFn('入力')).toBe('期待') })
   })
   ```
-  Good candidates: deinflection edge cases, `jp/extract.ts` ruby-aware extraction,
-  `jp/lookup.ts` candidate ranking, `util/debounce.ts`. Anything needing the browser,
+  Good candidates: deinflection edge cases, further `jp/extract.ts` geometry cases,
+  `jp/lookup.ts` candidate ranking, `util/debounce.ts`. Anything needing the real browser,
   OPFS, IndexedDB, or `<foliate-view>` is **not** a unit test — verify via the loop in
-  [§6](#6-running--verifying). (`@vitest/browser` is installed but no browser-mode tests
-  exist yet.)
+  [§6](#6-running--verifying), or measure it through the
+  [`__tsuzuri` harness](#tap-harness). (`@vitest/browser` is installed but no browser-mode
+  tests exist yet.)
 
 ---
 
@@ -290,12 +346,21 @@ padding for free.
 - **Backend-free / offline.** Fully client-side. The dictionary downloads once into
   jpdict's IndexedDB then works entirely offline; book bytes live in OPFS; the app shell
   is precached by the SW. See [`storage-pwa-ios.md`](./storage-pwa-ios.md).
-- **On-device iOS verification still pending** — all verified in desktop Chrome only:
+- **On-device iOS verification still pending** — everything below is measured in desktop
+  Chrome only:
   - **縦書き column-height fill quirk** — foliate could under-measure column height on
     first paint. Primarily addressed by `applyLayout` (`reader.ts`) deriving the vertical
     page box from the live viewport; a ~250 ms `#nudgeLayout()` re-render and a debounced
     `#onResize` listener remain as hedges. See [`reader-engine.md`](./reader-engine.md).
-  - **`caretRangeFromPoint` accuracy** in vertical iframes (tap hit-testing) —
+  - **Tap-hit accuracy in vertical iframes.** The caret APIs' mid-glyph boundary rule (and
+    the ~35% wrong-word rate it caused) was found and fixed by measurement in desktop
+    Chrome on **2026-08-08**; the fix decides the tapped character from measured glyph
+    boxes, so it is engine-independent in principle. **Unverified on real iOS**, where
+    WebKit additionally has open bugs in vertical-writing caret hit-testing
+    (webkit.org/b/283620, /287007, /263988 — iOS layout-test baselines even expect *no*
+    caret for a tap inside a fragmented inline box in `vertical-rl`), and the seed for the
+    geometry still comes from those APIs. Re-measure on device with the
+    [`__tsuzuri` harness](#tap-harness) before treating it as settled.
     [`reader-engine.md`](./reader-engine.md) / [`japanese.md`](./japanese.md).
   - **OPFS `createWritable`** behaviour and **Add-to-Home-Screen** install / data
     durability on iOS Safari — [`storage-pwa-ios.md`](./storage-pwa-ios.md).
