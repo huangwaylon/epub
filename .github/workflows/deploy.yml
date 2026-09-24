@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       # `sharp` (local-only script dep) crashes npm in CI ("Exit handler never called!"),
       # so drop it and resolve fresh without the lockfile.

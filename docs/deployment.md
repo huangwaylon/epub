@@ -10,7 +10,7 @@ Permissions `contents: read`, `pages: write`, `id-token: write`. Concurrency gro
 with `cancel-in-progress: false`.
 
 **`build`** (ubuntu-latest):
-1. `actions/checkout@v4`, `actions/setup-node@v4` (Node 22, `cache: npm`).
+1. `actions/checkout@v4`, `actions/setup-node@v4` (Node 24 — npm 11; npm 10's fresh resolve crashes on this tree with `Cannot read properties of null (reading 'edgesOut')` — `cache: npm`).
 2. Install without `sharp` (§3), with `NODE_ENV: development`:
    ```sh
    npm pkg delete devDependencies.sharp
@@ -47,7 +47,7 @@ relative (`icons/…`). In app code, never hard-code a root-relative URL: it esc
 `@img/*` packages, so CI deletes it and resolves fresh without the lockfile. As a result:
 - Regenerate icons, splash screens and the test EPUB locally and commit the outputs
   (`public/icons/`, `public/splash/`, `index.html`).
-- CI doesn't install from `package-lock.json`; the lockfile only serves local installs.
+- CI doesn't install from `package-lock.json`; the lockfile only serves local installs. Keep its `resolved` URLs on `registry.npmjs.org` (npm substitutes your configured registry at install time).
 - A new dependency with heavy native optional deps may need the same treatment.
 
 ## 4. What ships (`dist/`)
