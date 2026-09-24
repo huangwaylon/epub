@@ -1,26 +1,28 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { extractTextAt, rangeForSpan, looksJapanese, type CharPosition } from './extract'
+import { extractTextAt, rangeForSpan, type CharPosition } from './extract'
 
 /*
  * extract.ts is the only part of the JP pipeline that touches the DOM, so we run it
  * against a hand-built fake Document (vitest is configured for the `node` env; jsdom
  * is not installed). We mock ONLY the surface the code actually reads:
  *
- *   Globals:   Node.TEXT_NODE / ELEMENT_NODE, NodeFilter.{SHOW_TEXT,FILTER_*}
+ *   Globals:   Node.TEXT_NODE / ELEMENT_NODE, NodeFilter.{SHOW_TEXT,SHOW_ELEMENT,FILTER_*}
  *   Document:  body, caretRangeFromPoint, createRange, createTreeWalker, defaultView
  *   Range:     setStart/setEnd, getClientRects  (rects are injected per-character)
  *   Window:    getComputedStyle -> { writingMode, fontSize, lineHeight }
  *   Text:      nodeType, data, parentElement
  *   Element:   tagName, parentElement
  *
- * The fake tree is a flat in-order list of Text nodes; the TreeWalker walks that list
- * applying the ruby (rt/rp) reject filter, which is all extractTextAt needs.
+ * The fake tree is a flat in-order list of Text nodes (plus, optionally, void elements
+ * such as <br> that sit between them); the TreeWalker walks that list honouring
+ * `whatToShow` and the ruby (rt/rp) reject filter, which is all extractTextAt needs.
  */
 
 // --- DOM constants the source references as globals (absent in node env) ---------
 beforeAll(() => {
   ;(globalThis as any).Node = { ELEMENT_NODE: 1, TEXT_NODE: 3 }
   ;(globalThis as any).NodeFilter = {
+    SHOW_ELEMENT: 0x1,
     SHOW_TEXT: 0x4,
     FILTER_ACCEPT: 1,
     FILTER_REJECT: 2,
@@ -31,6 +33,7 @@ beforeAll(() => {
 // --- Minimal fake DOM ------------------------------------------------------------
 
 interface FakeElement {
+  nodeType?: number
   tagName: string
   parentElement: FakeElement | null
 }
@@ -79,7 +82,7 @@ interface FakeStyle {
  * @param style     computed style returned for every element.
  */
 function makeDoc(
-  nodes: FakeText[],
+  nodes: (FakeText | FakeElement)[],
   caretFor: (x: number, y: number) => { node: FakeText; offset: number } | null,
   style: FakeStyle = { writingMode: 'horizontal-tb', fontSize: '16px', lineHeight: '16px' },
 ): any {
@@ -106,11 +109,15 @@ function makeDoc(
     }
   }
 
-  // TreeWalker over the flat `nodes` list, honouring the SHOW_TEXT + reject filter.
-  const createTreeWalker = (_root: any, _what: number, filter: any) => {
-    const accept = (n: FakeText) => (filter ? filter.acceptNode(n) : NodeFilter.FILTER_ACCEPT)
+  // TreeWalker over the flat `nodes` list, honouring whatToShow + the reject filter.
+  const createTreeWalker = (_root: any, what: number, filter: any) => {
+    const accept = (n: any) => {
+      const shown = n.nodeType === 3 ? what & NodeFilter.SHOW_TEXT : what & NodeFilter.SHOW_ELEMENT
+      if (!shown) return NodeFilter.FILTER_SKIP
+      return filter ? filter.acceptNode(n) : NodeFilter.FILTER_ACCEPT
+    }
     const walker: any = {
-      currentNode: null as FakeText | null,
+      currentNode: null as any,
       nextNode() {
         let i = walker.currentNode ? nodes.indexOf(walker.currentNode) : -1
         for (i = i + 1; i < nodes.length; i++) {
@@ -157,18 +164,6 @@ function center(node: FakeText, o: number): [number, number] {
 }
 
 // =================================================================================
-describe('looksJapanese', () => {
-  it('is true for kana', () => expect(looksJapanese('あ')).toBe(true))
-  it('is true for katakana', () => expect(looksJapanese('カ')).toBe(true))
-  it('is true for kanji', () => expect(looksJapanese('猫')).toBe(true))
-  it('is false for latin', () => expect(looksJapanese('hello')).toBe(false))
-  it('is false for an empty string', () => expect(looksJapanese('')).toBe(false))
-  it('only inspects the first character', () => {
-    expect(looksJapanese('aあ')).toBe(false)
-    expect(looksJapanese('あa')).toBe(true)
-  })
-})
-
 describe('extractTextAt', () => {
   it('gathers the contiguous run across multiple text nodes and reports tapOffset', () => {
     // Two nodes that together read 猫がすき; tap the が (node b, offset 0).
@@ -312,6 +307,57 @@ describe('extractTextAt', () => {
     const doc = makeDoc([a], () => ({ node: a, offset: 0 }))
     const res = extractTextAt(doc, x, y)
     expect(res!.text).toBe('人々')
+  })
+
+  it('does not run across a paragraph boundary (adjacent 縦書き columns)', () => {
+    // <p>猫が</p><p>好き</p> — tapping 好 must not pull in the previous paragraph, and
+    // tapping が must not pull in the next one.
+    const body = el('BODY')
+    const p1 = el('P', body)
+    const p2 = el('P', body)
+    const a = textNode('猫が', p1, 0)
+    const b = textNode('好き', p2, 100)
+    const doc = makeDoc([a, b], (x) => (x >= 100 ? { node: b, offset: 0 } : { node: a, offset: 1 }))
+    const fwd = extractTextAt(doc, ...center(b, 0))
+    expect(fwd!.text).toBe('好き')
+    expect(fwd!.tapOffset).toBe(0)
+    const back = extractTextAt(doc, ...center(a, 1))
+    expect(back!.text).toBe('猫が')
+  })
+
+  it('does not run across a <br>', () => {
+    const p = el('P')
+    const a = textNode('猫が', p, 0)
+    const br: FakeElement = { nodeType: 1, tagName: 'br', parentElement: p } // XHTML: lowercase
+    const b = textNode('好き', p, 100)
+    const doc = makeDoc([a, br, b], (x) => (x >= 100 ? { node: b, offset: 0 } : { node: a, offset: 1 }))
+    expect(extractTextAt(doc, ...center(b, 0))!.text).toBe('好き')
+    expect(extractTextAt(doc, ...center(a, 1))!.text).toBe('猫が')
+  })
+
+  it('still joins inline elements (ruby, span) within one paragraph', () => {
+    const p = el('P')
+    const span = el('SPAN', p)
+    const a = textNode('猫が', p, 0)
+    const b = textNode('好き', span, 32)
+    const doc = makeDoc([a, b], () => ({ node: b, offset: 0 }))
+    expect(extractTextAt(doc, ...center(b, 0))!.text).toBe('猫が好き')
+  })
+
+  it('treats ・ (katakana middle dot) as a boundary', () => {
+    const p = el('P')
+    const a = textNode('ジョン・スミス', p, 0)
+    const doc = makeDoc([a], () => ({ node: a, offset: 5 }))
+    const res = extractTextAt(doc, ...center(a, 5)) // tap ミ
+    expect(res!.text).toBe('スミス')
+    expect(res!.tapOffset).toBe(1)
+  })
+
+  it('treats 〇 (ideographic zero) and 〆 as word chars', () => {
+    const p = el('P')
+    const a = textNode('二〇二四年の〆切', p, 0)
+    const doc = makeDoc([a], () => ({ node: a, offset: 1 }))
+    expect(extractTextAt(doc, ...center(a, 1))!.text).toBe('二〇二四年の〆切')
   })
 
   it('truncates the forward run at MAX_AFTER characters', () => {

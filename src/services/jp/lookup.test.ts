@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // The lookup pipeline talks to two collaborators we replace here:
 //  * `@birchill/jpdict-idb`'s `getWords` — the IndexedDB JMdict reader. We back it
 //    with an in-memory dictionary keyed by the *deinflected* term `lookup.ts` queries.
-//  * `./segment` — kuromoji. We control `segmenterReady`/`tokenStartAt` so we can
+//  * `./segment` — kuromoji. We control `segmenterReady`/`tokenSpanAt` so we can
 //    exercise both the morphological (kuromoji) path and the greedy fallback, and
 //    `ensureSegmenter` is a no-op so no ~19 MB dict load is attempted.
 //
@@ -18,20 +18,25 @@ vi.mock('@birchill/jpdict-idb', () => ({
 }))
 
 let segmenterReadyValue = false
-let tokenStartImpl: (text: string, tapOffset: number) => number | null = () => null
+type Span = { start: number; end: number }
+let tokenSpanImpl: (text: string, tapOffset: number) => Span | null = () => null
 const ensureSegmenter = vi.fn(async () => undefined)
 vi.mock('./segment', () => ({
   ensureSegmenter: () => ensureSegmenter(),
   segmenterReady: () => segmenterReadyValue,
-  tokenStartAt: (text: string, tapOffset: number) => tokenStartImpl(text, tapOffset),
+  tokenSpanAt: (text: string, tapOffset: number) => tokenSpanImpl(text, tapOffset),
 }))
 
-import { lookupAt, lookup, isSegmenterReady } from './lookup'
+import { lookupAt, resolveLookup, warmup, isSegmenterReady } from './lookup'
+
+/** Forward-only match from the head of `text` (greedy path, tap on the first char). */
+const lookup = (text: string) => lookupAt(text, 0)
 
 // --- Dictionary builders ---------------------------------------------------
 
 /** A JMdict word as `getWords` would return it (jpdict-idb internal shape). */
 function word(opts: {
+  id?: number
   k?: string
   r: string
   pos: string[]
@@ -39,6 +44,7 @@ function word(opts: {
   accent?: number
 }): any {
   return {
+    id: opts.id,
     k: opts.k ? [{ ent: opts.k }] : undefined,
     r: [{ ent: opts.r, a: opts.accent }],
     s: [{ pos: opts.pos, g: opts.glosses.map((str) => ({ str })) }],
@@ -50,9 +56,9 @@ function setDict(dict: Record<string, any[]>): void {
   getWords.mockImplementation(async (term: string) => dict[term] ?? [])
 }
 
-/** A fresh copy of the module, so the private `RESULT_LRU` and the remembered
- *  "kuromoji build failed" flag start clean — needed by the tests that assert
- *  *first-tap* behaviour (the state a worker is in right after being rebuilt). */
+/** A fresh copy of the module, so the remembered "kuromoji build failed" flag starts
+ *  clean — needed by the tests that assert *first-tap* behaviour (the state a worker is
+ *  in right after being rebuilt). */
 async function freshLookup(): Promise<typeof import('./lookup')> {
   vi.resetModules()
   return import('./lookup')
@@ -65,9 +71,7 @@ beforeEach(() => {
   // slow, stalled or failing kuromoji build.
   ensureSegmenter.mockImplementation(async () => undefined)
   segmenterReadyValue = false
-  tokenStartImpl = () => null
-  // RESULT_LRU is module-private with no reset export; tests use distinct inputs to
-  // avoid cross-test cache hits. The few that probe caching reuse one input deliberately.
+  tokenSpanImpl = () => null
 })
 
 afterEach(() => {
@@ -90,7 +94,7 @@ describe('lookupAt', () => {
     // kuromoji says the token "決心" starts at index 0; a tap on the 2nd char (心)
     // must still resolve 決心 because matchAt runs from the token start.
     segmenterReadyValue = true
-    tokenStartImpl = (_text, _off) => 0
+    tokenSpanImpl = () => ({ start: 0, end: 2 })
     setDict({ 決心: [word({ k: '決心', r: 'けっしん', pos: ['n'], glosses: ['determination'] })] })
 
     const res = await lookupAt('決心', 1)
@@ -104,7 +108,7 @@ describe('lookupAt', () => {
   it('falls back to greedy leftmost-covering when kuromoji is not ready', async () => {
     // segmenterReady is false and tokenStartAt returns null -> greedy scan from start.
     segmenterReadyValue = false
-    tokenStartImpl = () => null
+    tokenSpanImpl = () => null
     setDict({ 決心: [word({ k: '決心', r: 'けっしん', pos: ['n'], glosses: ['determination'] })] })
 
     // Tap the 2nd char; greedy scan starts at 0, finds 決心 spanning the tap.
@@ -119,7 +123,7 @@ describe('lookupAt', () => {
     // Both 決 and 決心 are in the dict; a tap at offset 0 should take the longest
     // match that still covers the tap (決心), not the 1-char 決.
     segmenterReadyValue = false
-    tokenStartImpl = () => null
+    tokenSpanImpl = () => null
     setDict({
       決: [word({ k: '決', r: 'けつ', pos: ['n'], glosses: ['decision'] })],
       決心: [word({ k: '決心', r: 'けっしん', pos: ['n'], glosses: ['determination'] })],
@@ -136,43 +140,12 @@ describe('lookupAt', () => {
     expect(await lookupAt('猫犬', 0)).toBeNull()
   })
 
-  describe('RESULT_LRU caching', () => {
-    it('a repeat lookup hits the cache and avoids a second getWords', async () => {
-      segmenterReadyValue = false
-      tokenStartImpl = () => null
-      setDict({ 山: [word({ k: '山', r: 'やま', pos: ['n'], glosses: ['mountain'] })] })
-
-      const first = await lookupAt('山', 0)
-      const callsAfterFirst = getWords.mock.calls.length
-      expect(callsAfterFirst).toBeGreaterThan(0)
-
-      const second = await lookupAt('山', 0)
-      // Identical input + readiness -> same cache key -> served from LRU, no new reads.
-      expect(getWords.mock.calls.length).toBe(callsAfterFirst)
-      expect(second).toEqual(first)
-    })
-
-    it('ready vs not-ready produce distinct cache keys (segmenterReady is part of the key)', async () => {
-      tokenStartImpl = () => 0
-      setDict({ 川: [word({ k: '川', r: 'かわ', pos: ['n'], glosses: ['river'] })] })
-
-      segmenterReadyValue = false
-      await lookupAt('川', 0)
-      const callsNotReady = getWords.mock.calls.length
-
-      // Flip readiness: same text/offset but a different LRU key, so it re-queries.
-      segmenterReadyValue = true
-      await lookupAt('川', 0)
-      expect(getWords.mock.calls.length).toBeGreaterThan(callsNotReady)
-    })
-  })
-
   it('falls back to greedy when the kuromoji token start yields no covering match', async () => {
     // kuromoji split 早起き and reports a token starting at 2 (き). Only a match that
     // *spans* the tap is usable, and nothing in the dictionary starts at き, so lookupAt
     // drops the token path and the greedy scan resolves the whole compound from 0.
     segmenterReadyValue = true
-    tokenStartImpl = () => 2
+    tokenSpanImpl = () => ({ start: 2, end: 3 })
     setDict({
       早: [word({ k: '早', r: 'はや', pos: ['pref'], glosses: ['early'] })],
       早起き: [word({ k: '早起き', r: 'はやおき', pos: ['n', 'vs'], glosses: ['early rising'] })],
@@ -190,7 +163,7 @@ describe('lookupAt', () => {
     // Across starts the *leftmost* wins — the tie-break that makes tapping any character
     // of a word resolve the word it begins, not the one it merely continues into.
     segmenterReadyValue = false
-    tokenStartImpl = () => null
+    tokenSpanImpl = () => null
     setDict({
       決心: [word({ k: '決心', r: 'けっしん', pos: ['n'], glosses: ['determination'] })],
       心配性: [word({ k: '心配性', r: 'しんぱいしょう', pos: ['n'], glosses: ['worrier'] })],
@@ -222,7 +195,7 @@ describe('lookupAt — kuromoji readiness', () => {
 
   it('waits for a build that is still in flight, so the tap takes the morphological path', async () => {
     segmenterReadyValue = false
-    tokenStartImpl = () => (segmenterReadyValue ? 1 : null)
+    tokenSpanImpl = () => (segmenterReadyValue ? { start: 1, end: 3 } : null)
     // The build completes a tick after the tap arrives — the post-foreground window.
     ensureSegmenter.mockImplementation(async () => {
       await Promise.resolve()
@@ -240,7 +213,7 @@ describe('lookupAt — kuromoji readiness', () => {
   it('answers greedily when the build never completes, without hanging the tap', async () => {
     vi.useFakeTimers()
     segmenterReadyValue = false
-    tokenStartImpl = () => null
+    tokenSpanImpl = () => null
     ensureSegmenter.mockImplementation(() => new Promise<undefined>(() => {})) // never settles
     setDict(AMBIGUOUS)
 
@@ -265,7 +238,7 @@ describe('lookupAt — kuromoji readiness', () => {
   it('stops waiting on the build once it has failed (offline, IPADIC not cached)', async () => {
     vi.useFakeTimers()
     segmenterReadyValue = false
-    tokenStartImpl = () => null
+    tokenSpanImpl = () => null
     // A build that fails after 500 ms — i.e. inside the wait window, so the first tap
     // learns about the failure.
     ensureSegmenter.mockImplementation(
@@ -326,7 +299,7 @@ describe('lookupAt / lookup — query fan-out bounds', () => {
 
   it('skips greedy starts and lengths that cannot reach the tap', async () => {
     segmenterReadyValue = false
-    tokenStartImpl = () => null
+    tokenSpanImpl = () => null
     setDict({}) // force the full scan — nothing matches, so no early exit
     // 20 distinct kanji (no kana, so deinflection adds nothing), tap on 万 at offset 12.
     const text = '一二三四五六七八九十百千万億兆京垓子丑寅'
@@ -437,4 +410,198 @@ describe('POS label rendering', () => {
       expect(res!.entries[0].senses[0].pos).toEqual([label])
     })
   }
+})
+
+// --- Merging candidates at the winning length (kana verbs) -------------------------
+//
+// した is the surface of 下/舌 *and* the past of する; the surface form is always the
+// first deinflection candidate, so taking only the first candidate with a hit answered
+// 下 for 勉強した. All candidates at the winning length are merged, and when the matched
+// span runs past the kuromoji token it started in (勉強|し|た), the deinflected entries
+// lead.
+
+/** A jpdict-idb record as returned for a *kana* search, with match metadata. */
+function kanaHit(opts: { id: number; k?: string; r: string; pos: string[]; glosses: string[]; uk?: boolean }): any {
+  return {
+    id: opts.id,
+    k: opts.k ? [{ ent: opts.k, match: true }] : [],
+    r: [{ ent: opts.r, match: true, matchRange: [0, opts.r.length] }],
+    s: [{ pos: opts.pos, g: opts.glosses.map((str) => ({ str })), match: true, ...(opts.uk ? { misc: ['uk'] } : {}) }],
+  }
+}
+
+describe('matchAt — every candidate at the winning length', () => {
+  const SHITA = [
+    kanaHit({ id: 1, k: '下', r: 'した', pos: ['n'], glosses: ['below'] }),
+    kanaHit({ id: 2, k: '舌', r: 'した', pos: ['n'], glosses: ['tongue'] }),
+  ]
+  const SURU = [kanaHit({ id: 3, k: '為る', r: 'する', pos: ['vs-i'], glosses: ['to do'], uk: true })]
+
+  it('勉強した (tap し): the verb する leads, with its reasons; the nouns follow', async () => {
+    segmenterReadyValue = true
+    tokenSpanImpl = () => ({ start: 2, end: 3 }) // 勉強 | し | た
+    setDict({ した: SHITA, する: SURU })
+    const res = await lookupAt('勉強した', 2)
+    expect(res!.matchStart).toBe(2)
+    expect(res!.matchLength).toBe(2)
+    expect(res!.entries.map((e) => e.headword)).toEqual(['する', '下', '舌'])
+    expect(res!.entries[0].reasons).toEqual(['past'])
+    expect(res!.entries[0].kanaOnly).toBe(true) // usually kana ⇒ shown as する, not 為る
+    expect(res!.entries[1].reasons).toEqual([])
+    expect(res!.reasons).toEqual(['past']) // top-level mirrors entries[0]
+  })
+
+  it('机の下 (tap 下): a one-token surface noun stays first', async () => {
+    segmenterReadyValue = true
+    tokenSpanImpl = () => ({ start: 2, end: 3 })
+    setDict({ 下: [word({ id: 1, k: '下', r: 'した', pos: ['n'], glosses: ['below'] })], した: SHITA, する: SURU })
+    const res = await lookupAt('机の下', 2)
+    expect(res!.matchLength).toBe(1)
+    expect(res!.entries[0].headword).toBe('下')
+  })
+
+  it('机のした (one IPADIC token): the noun leads, the verb reading is still offered', async () => {
+    segmenterReadyValue = true
+    tokenSpanImpl = () => ({ start: 2, end: 4 }) // した is a single noun token
+    setDict({ した: SHITA, する: SURU })
+    const res = await lookupAt('机のした', 3)
+    expect(res!.entries.map((e) => e.headword)).toEqual(['下', '舌', 'する'])
+  })
+
+  it('いた → いる over 板, きた → 来る over 北', async () => {
+    segmenterReadyValue = true
+    tokenSpanImpl = (text) => ({ start: text.length - 2, end: text.length - 1 }) // …|い|た
+    setDict({
+      いた: [kanaHit({ id: 10, k: '板', r: 'いた', pos: ['n'], glosses: ['board'] })],
+      いる: [kanaHit({ id: 11, k: '居る', r: 'いる', pos: ['v1'], glosses: ['to be'], uk: true })],
+      きた: [kanaHit({ id: 12, k: '北', r: 'きた', pos: ['n'], glosses: ['north'] })],
+      くる: [kanaHit({ id: 13, k: '来る', r: 'くる', pos: ['vk'], glosses: ['to come'] })],
+    })
+    const ita = await lookupAt('ここにいた', 3)
+    expect(ita!.entries[0].headword).toBe('いる')
+    expect(ita!.entries[1].headword).toBe('板')
+    const kita = await lookupAt('家にきた', 2)
+    expect(kita!.entries[0].headword).toBe('来る') // not usually kana ⇒ the kanji it's a reading of
+    expect(kita!.entries[0].reading).toBe('くる')
+    expect(kita!.entries[0].reasons).toEqual(['past'])
+  })
+
+  it('dedupes an entry reached by several candidates, keeping the least-inflected', async () => {
+    const same = kanaHit({ id: 42, k: '為る', r: 'する', pos: ['vs-i'], glosses: ['to do'], uk: true })
+    setDict({ した: [same], する: [same] })
+    const res = await lookup('した')
+    expect(res!.entries.length).toBe(1)
+    expect(res!.entries[0].reasons).toEqual([]) // from the surface candidate, listed first
+  })
+})
+
+// --- toEntry: honour jpdict-idb match metadata -----------------------------------
+
+describe('toEntry — matched form, reading and senses', () => {
+  it('shows the matched kanji spelling and its reading, matched senses first', async () => {
+    setDict({
+      想う: [
+        {
+          id: 7,
+          k: [{ ent: '思う', match: false }, { ent: '想う', match: true, matchRange: [0, 2] }],
+          r: [{ ent: 'おもう', match: true, a: 2 }],
+          s: [
+            { pos: ['v5u'], g: [{ str: 'to think' }], match: false },
+            { pos: ['v5u'], g: [{ str: 'to yearn for' }], misc: ['arch'], match: true },
+          ],
+        },
+      ],
+    })
+    const res = await lookup('想う')
+    const e = res!.entries[0]
+    expect(e.id).toBe(7)
+    expect(e.headword).toBe('想う')
+    expect(e.reading).toBe('おもう')
+    expect(e.pitch).toBe(2)
+    expect(e.kanaOnly).toBe(false)
+    expect(e.senses.map((s) => s.glosses[0])).toEqual(['to yearn for', 'to think'])
+    expect(e.senses[0]).toMatchObject({ matched: true, misc: ['archaic'] })
+    expect(e.senses[1].matched).toBe(false)
+  })
+
+  it('a kana hit on a kanji word shows the kanji that reading belongs to', async () => {
+    setDict({
+      した: [
+        {
+          id: 1,
+          k: [{ ent: '舌', match: false }, { ent: '下', match: true }],
+          r: [{ ent: 'した', match: true, matchRange: [0, 2] }],
+          s: [{ pos: ['n'], g: [{ str: 'below' }], match: true }],
+        },
+      ],
+    })
+    const e = (await lookup('した'))!.entries[0]
+    expect(e.headword).toBe('下')
+    expect(e.reading).toBe('した')
+    expect(e.kanaOnly).toBe(false)
+  })
+})
+
+// --- Readiness is captured when the path is chosen --------------------------------
+
+describe('resolveLookup — ready flag', () => {
+  it('a greedy answer stays ready:false even if kuromoji finishes during its queries', async () => {
+    segmenterReadyValue = false
+    tokenSpanImpl = () => null
+    ensureSegmenter.mockImplementation(async () => {
+      throw new Error('not yet') // settle immediately ⇒ greedy path
+    })
+    getWords.mockImplementation(async (term: string) => {
+      segmenterReadyValue = true // the build lands while the IndexedDB reads are in flight
+      return term === '猫' ? [word({ k: '猫', r: 'ねこ', pos: ['n'], glosses: ['cat'] })] : []
+    })
+    const { resolveLookup: fresh } = await freshLookup()
+    const reply = await fresh('猫', 0)
+    expect(reply.result!.entries[0].headword).toBe('猫')
+    expect(reply.ready).toBe(false)
+  })
+
+  it('reports ready:true for a morphological answer', async () => {
+    segmenterReadyValue = true
+    tokenSpanImpl = () => ({ start: 0, end: 1 })
+    setDict({ 犬: [word({ k: '犬', r: 'いぬ', pos: ['n'], glosses: ['dog'] })] })
+    expect((await resolveLookup('犬', 0)).ready).toBe(true)
+  })
+})
+
+// --- Greedy fallback runs its starts concurrently, leftmost still wins -------------
+
+describe('greedy fallback concurrency', () => {
+  it('probes later starts before earlier ones resolve, yet returns the leftmost match', async () => {
+    segmenterReadyValue = false
+    tokenSpanImpl = () => null
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const queried: string[] = []
+    getWords.mockImplementation(async (term: string) => {
+      queried.push(term)
+      if (term === '決心') {
+        await gate // the leftmost start's hit is slow…
+        return [word({ k: '決心', r: 'けっしん', pos: ['n'], glosses: ['determination'] })]
+      }
+      if (term === '心') return [word({ k: '心', r: 'こころ', pos: ['n'], glosses: ['heart'] })] // …the next start's is instant
+      return []
+    })
+    const p = lookupAt('決心', 1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(queried).toContain('心') // start 1 was probed while start 0 was still pending
+    release()
+    const res = await p
+    expect(res!.matchStart).toBe(0)
+    expect(res!.entries[0].headword).toBe('決心')
+  })
+})
+
+describe('warmup', () => {
+  it('opens the worker IndexedDB connection alongside the kuromoji build', async () => {
+    setDict({})
+    expect(await warmup()).toBe(true)
+    expect(getWords).toHaveBeenCalled()
+    expect(ensureSegmenter).toHaveBeenCalled()
+  })
 })

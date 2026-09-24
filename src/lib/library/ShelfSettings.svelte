@@ -3,19 +3,33 @@
   import { settings, updateSettings } from '../../stores/settings.svelte'
   import { storageStatus, formatBytes, type StorageStatus } from '../../services/storage/persist'
   import { dict } from '../../stores/dict.svelte'
-  import { getDb, downloadAndWarmDictionary } from '../../services/jp/dictdb'
+  import { getDb, cacheIpadic, downloadAndCacheDictionary, dictPhase } from '../../services/jp/dictdb'
   import Segmented from '../components/Segmented.svelte'
   import type { ThemeName } from '../../services/types'
 
   let status = $state<StorageStatus | null>(null)
   onMount(async () => {
+    // Initialise dictionary state for the status readout. If JMdict is already installed
+    // (e.g. downloaded by an older build that only cached IPADIC via a trie build), top up
+    // the IPADIC Cache API copy so offline segmentation doesn't depend on having opened a
+    // book since — a no-op when every file is already cached.
+    void getDb().then(
+      () => {
+        if (dict.state === 'ok') void cacheIpadic()
+      },
+      () => {},
+    )
     status = await storageStatus()
-    void getDb() // initialise dictionary state for the status readout
   })
+
+  /** One reactive status for the section: see `DictPhase` in dictdb.ts. */
+  const phase = $derived(dictPhase())
 
   async function getDict() {
     try {
-      await downloadAndWarmDictionary('en')
+      // JMdict + the IPADIC files into the Cache API — no kuromoji trie is built (or held
+      // in memory) from the shelf; the reader warms it when a book opens.
+      await downloadAndCacheDictionary('en')
     } catch {
       /* error shown via store */
     }
@@ -42,24 +56,32 @@
     <h3>Japanese dictionary</h3>
     <div class="dict-row">
       <div class="dict-status">
-        {#if dict.updating}
+        {#if phase === 'downloading'}
           Downloading… {Math.round(dict.progress * 100)}%
-        {:else if dict.warming}
-          Caching dictionary for offline use…
-        {:else if dict.state === 'ok'}
+        {:else if phase === 'retrying'}
+          Waiting to resume download…
+        {:else if phase === 'preparing'}
+          Preparing for offline use…
+        {:else if phase === 'ready'}
           <span class="ok">Installed</span> · tap any word to look it up
+        {:else if phase === 'checking'}
+          Checking…
+        {:else if phase === 'unavailable'}
+          Storage unavailable
         {:else}
           Not installed
         {/if}
       </div>
-      {#if !dict.updating && dict.state !== 'ok'}
+      {#if phase === 'missing' || phase === 'unavailable'}
         <button class="dict-btn" onclick={getDict}>Download</button>
+      {:else if phase === 'retrying'}
+        <button class="dict-btn" onclick={getDict}>Retry now</button>
       {/if}
     </div>
-    {#if dict.updating}
+    {#if phase === 'downloading' || phase === 'retrying'}
       <div class="usebar"><div class="usefill" style="width:{Math.round(dict.progress * 100)}%"></div></div>
     {/if}
-    {#if dict.error}<p class="hint err">{dict.error}</p>{/if}
+    {#if dict.error}<p class="hint {phase === 'retrying' ? '' : 'err'}">{dict.error}</p>{/if}
     <p class="hint">JMdict data from the 10ten project. Stored on-device for offline lookups.</p>
   </section>
 

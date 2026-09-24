@@ -38,6 +38,8 @@ source; references are by symbol/file, not line number.
 | `src/services/reader.ts` | `ReaderController` — the app-facing wrapper around `<foliate-view>` |
 | `src/lib/reader/Reader.svelte` | The reader screen; wires the controller to the UI |
 | `src/lib/util/chromeBand.ts` | `inChromeToggleBand(py, vh)` — pure edge-band test (§8) |
+| `src/services/cfi.ts` | Pure CFI helpers: `nearestFirst` (highlight draw order, §10), `cfiWithinPage` (bookmarks, §12) |
+| `src/lib/util/anchoredPosition.ts` | `placeAnchored` / `placeNearWord` — popup + toolbar placement (§12) |
 | `src/services/viewport.ts` | Publishes `--app-height`; exports `viewportSize()` |
 | `src/vendor/foliate-js/view.js` | Registers `<foliate-view>` (class `View`) |
 | `src/vendor/foliate-js/paginator.js` | CSS-multicolumn renderer (`<foliate-paginator>`) |
@@ -71,15 +73,21 @@ Three documented patches:
   turn input, which lets the turn animate as a horizontal slide ([§8a](#slide)).
   Touch listeners still attach; only their page-turn effect is gone. The
   selection-drag auto-turn (`checkPointerSelection`) is untouched.
-- **Page-turn debounce narrowed to section crossings** (`paginator.js` `#turnPage`).
+- **Page-turn debounce never blocks the turn** (`paginator.js` `#turnPage`).
   Upstream ends a turn with `if (shouldGo || !this.hasAttribute('animated')) await
   wait(100)`; the second clause exists to pace *its own* animation, but Tsuzuri
   deliberately leaves `animated` **off** ([§8a](#slide)), so every single page turn paid
   a flat 100 ms — spent with our view already translated off-screen, i.e. showing blank
-  paper. The patch waits only when the turn actually crossed into a new section
-  (`shouldGo`). Measured A/B on fresh page loads: `view.next()` **106 ms → 5 ms**.
-  Rapid-turn coalescing does not depend on this wait — it is handled app-side by
-  `#turning`/`#pendingDir` ([§8a](#slide)).
+  paper. The first version of the patch waited only on section crossings (`shouldGo`;
+  measured `view.next()` **106 ms → 5 ms** within a section), but a chapter boundary still
+  held our slide on blank paper for 100 ms. Now `#turnPage` **resolves immediately** in
+  every case; after a section crossing it keeps `#locked` for the same 100 ms but releases
+  it from a `setTimeout` instead of awaiting it. Measured (desktop Chrome, test book): a
+  full slide turn is ~284 ms within a section and ~317 ms across one (the difference is
+  the section load). The held lock can't drop one of *our* turns — the next can't reach
+  `#turnPage` sooner than one slide phase (150 ms) later — though a TOC/scrubber `goTo`
+  issued within 100 ms of a chapter crossing is ignored, as upstream. Rapid-turn
+  coalescing is app-side (`#turning`/`#pendingDir`, [§8a](#slide)).
 
 MOBI/KF8, FB2, FBZ, CBZ branches are **kept** — cheap lazy dynamic `import()`s.
 
@@ -112,6 +120,8 @@ it touches as the `FoliateView` interface (reader.ts).
 | --- | --- |
 | `renderer.setStyles(css)` | Injects/replaces a `<style>` in the content-iframe doc (`applyAppearance`). String or `[before, after]`. |
 | `renderer.setAttribute(name, value)` | We set only `margin`, `gap`, `max-column-count`, `max-block-size`, `max-inline-size` (`applyLayout`). foliate **also observes `flow`, but we never set it.** |
+| `renderer.atStart` / `atEnd` | Getters: first/last page of the book. `#turn` bounces instead of sliding there (§8a). |
+| `renderer.getContents()` | `[{index, doc, overlayer}]` for the loaded section — `setHighlights` draws only these (§10). |
 | `renderer.render()` | Re-runs `#beforeRender` + relayout for the current section. |
 
 Other view methods (`search`, `select`, `showAnnotation`, TTS, media overlay) —
@@ -130,7 +140,7 @@ them in one `abort()`.
 | --- | --- | --- |
 | `relocate` | `{cfi, fraction, tocItem:{label,href}, range, …}` | Store `lastCFI`; call `onRelocate`. **No `reason`** — see below. |
 | `load` | `{doc, index}` (per section load) | Record `doc→index`; `#applyIntendedWritingMode` ([§6b](#intended-wm)); detect writing mode; `#applyPageProgression`; attach taps + `selectionchange` on a **per-document** `AbortController` (§8); `onLoad`. |
-| `create-overlay` | `{index}` | `reapplyHighlights(index)` — redraw **only that section's** highlights, chunked and nearest-first (§10). |
+| `create-overlay` | `{index}` | `reapplyHighlights(index)` — draw **only that section's** highlights, chunked and nearest-first (§10). This is also how the *opening* section's highlights paint (they're seeded before `open()`). |
 | `draw-annotation` | `{draw, annotation:{value}, doc, range}` | `draw(Overlayer.highlight, {color: HIGHLIGHT_HEX})`. **Where a highlight is painted.** |
 | `show-annotation` | `{value, index, range}` (a real **click** hit-tests the overlayer) | `onShowAnnotation(value, range)` → reopen the dictionary popup, unless our own tap just defined a word ([§8a](#defer)). |
 
@@ -157,15 +167,18 @@ Creates a `<foliate-view>` (`display:block;width:100%;height:100%`), appends it 
 `container`. Nothing renders until `open()`.
 
 **Public fields:** `view` (raw element; `view.book.toc` feeds the TOC), `lastCFI`
-(last CFI from `relocate`; bookmarks fall back to it), `bookDir` (`'ltr'|'rtl'`
-from `book.dir`).
+(last CFI from `relocate` — seeded from the `open()` position hint until the first one;
+bookmarks fall back to it), `bookDir` (`'ltr'|'rtl'` from `book.dir`), getter `vertical`
+(the popup places itself beside the column when true).
 
 **Notable private state:** `#docIndex` (`WeakMap<Document, index>`), `#highlights`
 (`Set<cfi>` — source of truth for drawn ranges, single colour), `#highlightIndex`
 (`Map<cfi, index>` — cached spine index per highlight, §10), `#vertical`,
 `#lastLayout` (idempotency cache, [§6](#idempotency)), `#turning`/`#pendingDir`
 (turn coalescing, [§8a](#slide)), `#selTimers` (per-doc selectionchange debounce,
-§9), `#redrawGen`/`#redrawTimer` (chunked highlight sweep, §10), `#ac` (one
+§9), `#redrawGen`/`#redrawTimer` (chunked highlight sweep, §10), `#reopenGen`/`#reopenChain`
+(serialized writing-mode re-opens, §14), `#destroyed` (every async path re-checks it
+after each await; an `open()` that resolves after `destroy()` closes what it made), `#ac` (one
 `AbortController` for the host gestures + the `<foliate-view>` event listeners + the
 in-flight turn `transitionend`), `#docACs` (`Map<Document, AbortController>` — one per
 **content document**, so a section's listeners die with the document, §8).
@@ -177,13 +190,14 @@ in-flight turn `transitionend`), `#docACs` (`Map<Document, AbortController>` —
 | `open(file, lastCFI?)` | Full open sequence (below). |
 | `applyAppearance(s)` | Re-inject the content stylesheet via `setStyles(appearanceCSS(s))`. Live-safe (§5). |
 | `applyLayout(s)` | Set paginator geometry, viewport-derived, branching on `#vertical`. Idempotent (§6). Live-safe. |
-| `reopenForWritingMode(file)` | Re-`open()` at `lastCFI` — writing mode must be re-detected from the content doc (§14). |
-| `goLeft()` / `goRight()` | Dir-aware turn, animated as a horizontal slide ([§8a](#slide)). Each fires `onTurn` first. |
+| `reopenForWritingMode(file)` | Re-`open()` at `lastCFI` — writing mode must be re-detected from the content doc (§14). **Serialized**: queues behind an in-flight re-open; a call superseded before it starts is skipped (5 synchronous toggles → 1 re-open, measured). Rejects on failure — callers `.catch`. |
+| `goLeft()` / `goRight()` | Dir-aware turn, animated as a horizontal slide — or a bounce at the first/last page ([§8a](#slide)). Each fires `onTurn` first. |
+| `goForward()` / `goBackward()` | Reading-order turn (Space / Shift-Space): `goLeft` in an rtl book, else `goRight`. |
 | `goTo(target)` / `goToFraction(frac)` | TOC/annotation nav; clamped seek (backs the scrubber, §12). |
 | `cfiForSelection(doc, range)` | `#docIndex` lookup → `view.getCFI`. `null` if doc unknown or CFI throws. |
-| `addHighlight(cfi)` / `removeHighlight(cfi)` | Add/drop in `#highlights` + cached index, then `view.addAnnotation`/`deleteAnnotation`. |
-| `setHighlights(cfis)` | Replace the whole set (book-open seed), reseed index cache, `reapplyHighlights()` (full sweep). |
-| `reapplyHighlights(index?)` | `addAnnotation` for known CFIs (no-ops for unloaded). With `index`, redraw only that section's; without, sweep all. **Chunked + nearest-first** (§10). |
+| `addHighlight(cfi)` / `removeHighlight(cfi)` | Add/drop in `#highlights` + cached index, then `view.addAnnotation`/`deleteAnnotation`. Paint only — persistence is the `annotations` store's (§10). |
+| `setHighlights(cfis)` | Replace the whole set. Call **before `open()`** (book-open seed): draws nothing, the opening section's `create-overlay` paints its share. After open it draws only the loaded section(s) — never a whole-book sweep. |
+| `reapplyHighlights(index?)` | Draw that section's known CFIs (default: the loaded section(s)). **Chunked + nearest-first** (§10). |
 | `clearSelection()` | Best-effort `view.deselect()`. |
 | `destroy()` | Remove resize listeners (window + `visualViewport`), clear all timers (incl. `#redrawTimer`) and bump `#redrawGen`, null `#pendingDir`, abort **every `#docACs` controller** then **`#ac.abort()`**, best-effort `view.close()` **then `book.destroy()`** (revokes EPUB blob URLs), remove the element. |
 
@@ -198,6 +212,7 @@ interface ReaderCallbacks {
   onSelection?:       (info: SelectionInfo) => void
   onSelectionCleared?:() => void
   onShowAnnotation?:  (value: string, range: Range) => void  // tap landed on a highlight
+  onKey?:             (e: KeyboardEvent) => void              // keydown inside a content doc
 }
 ```
 
@@ -208,9 +223,9 @@ persists progress and dismisses popups, now that `relocate` carries no `reason`.
 ### Data types
 
 ```ts
-interface RelocateDetail { cfi: string; fraction: number; tocItem?: { label?: string; href?: string }; range?: Range }
-// note: no `reason` field (§3)
-interface TocItem { label?: string; href?: string; subitems?: TocItem[] }
+interface RelocateDetail { cfi: string; fraction: number; tocItem?: { id?: number; label?: string; href?: string }; range?: Range }
+// note: no `reason` field (§3). tocItem.id is foliate's unique per-item TOC id (progress.js assignIDs)
+interface TocItem { id?: number; label?: string; href?: string; subitems?: TocItem[] }
 interface TapInfo {                          // no `zone` field — pagination is by swipe, not tap rails (§8)
   doc: Document | null   // content doc, or null for a margin tap
   ix: number; iy: number // coords inside the content iframe (for caretRangeFromPoint)
@@ -224,8 +239,11 @@ interface SelectionInfo {
 
 ### `open()` sequence
 
-1. `await view.open(file)` — parse + pick renderer (no paint).
-2. `bookDir = view.book?.dir === 'rtl' ? 'rtl' : 'ltr'`.
+0. `lastCFI = lastCFI` (position hint for the first nearest-first highlight draw).
+1. `await view.open(file)` — parse + pick renderer (no paint). If `destroy()` ran
+   meanwhile, close the Book and return.
+2. `bookDir = view.book?.dir === 'rtl' ? 'rtl' : 'ltr'`; `#vertical = #expectVertical()`
+   ([§6](#expect-vertical)).
 3. `#wireView()` — register the five event listeners (§3).
 4. `applyAppearance(settings)` then `applyLayout(settings)` — **before** `init()`,
    so the first paint already has the right styles + geometry.
@@ -341,20 +359,38 @@ dimensions (reliable on iOS, incl. cold launch), falling back to `window.inner*`
 only while pinch-zoomed (`scale > 1.01`). The same helper backs `--app-height`
 (§11), so the foliate page box and the `.reader` container size from one source.
 
-### `#vertical` detection (in `load`)
+**Only changed attributes are written.** Each `setAttribute` restyles the paginator
+grid, so `applyLayout` writes `margin`/`gap`/`max-column-count`/`max-block-size` only
+when they differ from `#lastLayout` (all of them on the first call / after a re-open),
+and writes `max-inline-size` — the one whose callback calls `render()` — whenever
+*anything* changed, last, so each real change is still exactly one relayout.
+
+<a id="expect-vertical"></a>
+### `#vertical`: expected before open, confirmed in `load`
+
+`applyLayout` runs before `view.init`, i.e. before any section document exists. With a
+`false` default, every 縦書き book's first `load` flipped the flag and re-ran
+`applyLayout`, whose `max-inline-size` write forces a paginator `render()` — a full
+columnize of the section *with the stale horizontal axis*, inside foliate's `afterLoad`,
+thrown away by foliate's own render a moment later. So `open()` (and `#reopen`) pre-set
+it with `#expectVertical()`: `writingMode` `'vertical'`/`'horizontal'` is authoritative;
+on `'auto'`, `book.dir === 'rtl'` **and** a Japanese `metadata.language` (`ja`, `ja-JP`)
+guesses vertical. Measured on the test book (desktop Chrome, paginator `render()` calls
+per open, 3 runs each): **2–3 renders / 1.9–2.9 ms with the guess vs 3–4 / 4.2–7.4 ms
+without** — one wasted render per open, proportionally larger on a real section. A wrong
+guess (an rtl-bound *horizontal* Japanese book, §6a)
+costs exactly what every vertical book used to: the `load` handler still corrects it.
 
 ```ts
-const wm = doc.defaultView.getComputedStyle(doc.documentElement).writingMode || ''
-const vertical = wm.startsWith('vertical')
+const el = doc.body ?? doc.documentElement      // the element foliate's getDirection reads
+const vertical = (doc.defaultView.getComputedStyle(el).writingMode || '').startsWith('vertical')
 if (vertical !== this.#vertical) { this.#vertical = vertical; this.applyLayout(this.#settings) }
 ```
 
-First section load detects vertical-ness and re-applies layout once if it flipped
-(`applyLayout` ran with the old `#vertical` before any doc existed). Reads
-`documentElement`, whereas the paginator's `getDirection` reads `body` — but the
-EPUB sets writing-mode on `html` and our override (§5) also targets `html`. The read
-happens **after** `#applyIntendedWritingMode` ([§6b](#intended-wm)), so a
-metadata-only-vertical book is already computing as `vertical-rl` by this point.
+Reads `body` (falling back to `documentElement`) so our measure and the paginator's axis
+can never disagree about a book that sets writing-mode on `body` only. The read happens
+**after** `#applyIntendedWritingMode` ([§6b](#intended-wm)), so a metadata-only-vertical
+book is already computing as `vertical-rl` by this point.
 
 ### `#onResize`
 
@@ -440,10 +476,10 @@ So when the setting is `'auto'` and `doc.documentElement` carries `vrtl`,
   'vertical-rl'|'vertical-lr'`, and `rtl` from `body.dir` / computed `direction` /
   `html.dir`. Decides axis mapping per section.
 - **Touch page-turn patched OUT** (§1). `checkPointerSelection` auto-turn untouched.
-- **`#turnPage`'s trailing `wait(100)` patched to section crossings only** (§1). Upstream
-  also waited whenever `animated` is absent, which is our permanent state, so it taxed
-  every turn (106 ms → 5 ms measured). The `#locked` flag it guards is released
-  immediately after; rapid taps/swipes are coalesced app-side ([§8a](#slide)).
+- **`#turnPage` never awaits its trailing debounce** (§1). Upstream waited 100 ms whenever
+  `animated` is absent (our permanent state) or the turn crossed a section. Now it
+  resolves at once; only after a section crossing is `#locked` held for 100 ms, released
+  from a timer. Rapid taps/swipes are coalesced app-side ([§8a](#slide)).
 - **Grid + custom props.** `#top` is a CSS grid (`container-type: size`).
   Defaults: `--_gap:7%`, `--_margin:48px`, `--_max-inline-size:720px`,
   `--_max-block-size:1440px`, `--_max-column-count:2`,
@@ -496,7 +532,9 @@ controller already registered for this same `doc` and (b) any whose document's
 | `TAP_MOVE_TOLERANCE` | 16px | max down→up travel to still be a tap |
 | `TAP_MAX_MS` | **700ms** | max tap duration — see below |
 | `SWIPE_MIN_DISTANCE` | 45px | min horizontal travel for a page-turn swipe |
+| `SWIPE_DECIDE_MS` | 500ms | a touch swipe may be decided mid-move only this soon after the press (below) |
 | `TURN_PHASE_MS` | 150ms | one phase (out / in) of the slide ([§8a](#slide)) |
+| `BOUNCE_PX` / `BOUNCE_MS` | 28px / 110ms | the first/last-page nudge ([§8a](#slide)) |
 
 (`HIGHLIGHT_DRAW_CHUNK = 24`, the other `reader.ts` module constant, belongs to the
 highlight sweep — [§10](#chunked-redraw).)
@@ -530,6 +568,34 @@ RTL 縦書き book, dragging **right** advances). A swipe `return`s before the t
 branch. On a real tap it emits `onTap({doc, ix, iy, px, py})` — `ix/iy`
 (iframe-local) feed the caret APIs; `px/py` (top-window, via
 `frameElement.getBoundingClientRect()`) place the popup.
+
+<a id="early-swipe"></a>
+**Touch swipes turn on the move.** In `pointermove`, once a **touch** pointer's drag
+crosses `SWIPE_MIN_DISTANCE` (horizontal-dominant), the turn fires right there and the
+gesture is consumed (`active = false`), so its `pointerup` is ignored — the page starts
+moving while the finger is still travelling, like Books. All of these must hold, else the
+`pointerup` decision above applies unchanged:
+
+- `pointerType === 'touch'` — a **mouse** drag across text is a drag-*select*;
+- within `SWIPE_DECIDE_MS` of the press — a lingering press may be an iOS long-press
+  turning into a selection;
+- no second contact joined the gesture (`multi`, set by a non-primary `pointerdown`);
+- not pinch-zoomed;
+- `canSwipeEarly()` — for a content doc, **no live `Range` selection** (the finger may be
+  dragging a selection handle). The host (margins) has no selection to protect.
+
+Verified in desktop Chrome touch emulation: the turn lands before the lift, the later
+`pointerup` doesn't turn again. On real iOS a selection-handle drag is expected to
+`pointercancel` anyway; the guards above are the belt-and-braces.
+
+<a id="keyboard"></a>
+**Keyboard.** `Reader.svelte`'s `onKey` runs from `<svelte:window onkeydown>` **and**
+from each content document (`#attachTaps` forwards `keydown` via `onKey` — iframe key
+events never reach the top window): **←/→** `goLeft`/`goRight` (already rtl-aware),
+**Space / Shift-Space** `goForward`/`goBackward` (reading order), **Escape** closes the
+card/toolbar (clearing any selection), else hides the chrome. Ignored while a sheet is
+open (the Sheet owns Escape), with a modifier held, or when focus is in a field, the
+scrubber slider (its arrows seek), or — for Space — a button.
 
 <a id="pointer-hygiene"></a>
 ### Multi-touch & selection hygiene (why taps used to vanish)
@@ -612,11 +678,20 @@ the visual ourselves like Books on iPad. `goLeft`/`goRight` fire `onTurn`, then
 3. Slide the new page in from the opposite edge to `translateX(0)`.
 
 One continuous horizontal push. Both phases are **`transitionend`-driven**
-(`#transition`, with a `TURN_PHASE_MS + 120`ms fallback) so timer drift can't leave
-a blank-paper gap; the fallback `setTimeout` is held on `#slideTimer` so a
+(`#transition(ms, easing, transform)`, with an `ms + 120` fallback) so timer drift can't
+leave a blank-paper gap; the fallback `setTimeout` is held on `#slideTimer` so a
 `destroy()` mid-turn clears it (`#ac.abort()` removes the listener but can't cancel
-a bare timer). A `#turning` flag + a single `#pendingDir` **coalesce rapid swipes**
-(the latest queued turn runs when the current finishes). A literal page-**curl**
+a bare timer). Each phase commits its start state with a **forced style flush**
+(`void el.offsetWidth`) before writing the new transform — the old code spent a
+`requestAnimationFrame` per phase for the same effect (up to ~16 ms of dead time, twice
+per turn). A `#turning` flag + a single `#pendingDir` **coalesce rapid swipes**
+(the latest queued turn runs when the current finishes).
+
+**Bounce at the ends.** When the turn has nowhere to go (`#atEdge`: `renderer.atEnd`
+for a forward turn, `atStart` for a backward one — forward is `goLeft` in an rtl book),
+`#turn` runs `#bounce` instead: a `BOUNCE_PX` nudge toward the finger and back
+(`BOUNCE_MS` out, 1.4× back), rather than sliding the page out and the *same* page back
+in. A literal page-**curl**
 isn't possible (closed-shadow-DOM iframe can't be rasterised), and only one page
 renders at a time, so the vacated strip shows the paper background (intended).
 `goTo()` is **not** animated.
@@ -625,11 +700,11 @@ renders at a time, so the vacated strip shows the paper background (intended).
 **Highlight de-conflict (`tapDefinedAt`).** A real `click` fires on the same gesture as
 our tap and may hit-test a highlight → `show-annotation`, so both paths can want to open
 the card for the same word. The tap runs **immediately** and the later `show-annotation`
-stands down: `onShowAnnotation` returns early if `Date.now() - tapDefinedAt < 500`, only
-adopting the annotation's CFI (`dictState.cfi ||= value`; `highlighted = true`) so the
-footer toggle is correct. The two paths agree on the outcome anyway — a looked-up word is
-auto-highlighted — and re-opening would run a second lookup against a card that is
-already right.
+stands down: `onShowAnnotation` simply **returns** if `Date.now() - tapDefinedAt < 500`.
+The tap's own lookup owns the card, including its highlight state (`highlightMatch` sets
+`cfi`/`highlighted` for the matched word, finding the existing record via the CFI dedupe).
+It used to adopt the clicked annotation's CFI instead, which raced the lookup and could
+leave the footer toggling a different highlight than the one on the card.
 
 There is deliberately **no timer on the tap path**. The previous design deferred
 `handleTap` by 60ms whenever any highlight existed (`pendingTap` + a `hasHighlights`
@@ -660,8 +735,10 @@ onSelection({ doc, range, text: sel.toString(),
 
 Otherwise `onSelectionCleared()`. The top-window `rect` positions the
 `SelectionToolbar` (via `placeAnchored`, §12). `onSelection` opens the toolbar with
-**Highlight** (`cfiForSelection` → `saveAnnotation` → `addHighlight` →
-`clearSelection`; always yellow) and **Copy** (`navigator.clipboard.writeText`). A
+**Highlight** (`cfiForSelection` → the reader's `addHighlight(cfi, text)`, §10 →
+`clearSelection`; always yellow) and **Copy** (`navigator.clipboard.writeText`). Every
+exit path (`clearSel`) also drops the held `sel.doc`/`sel.range`, so a used selection
+can't pin a navigated-away section's DOM. A
 page turn closes the toolbar via `closeOverlays()`. The paginator independently
 watches `selectionchange` to auto-turn while dragging a selection past the page
 edge — its own concern, doesn't interfere.
@@ -676,6 +753,24 @@ the **source of truth**; no per-highlight colour. Persistence is separate — th
 [japanese.md](japanese.md)) holds durable records (a highlight `Annotation` has
 **no `color` field**); `#highlights` is the in-memory render state.
 
+<a id="one-path"></a>
+**One create/remove pair.** Every highlight change goes through two functions in
+`Reader.svelte`: `addHighlight(cfi, text)` — **paint first** (`controller.addHighlight`,
+skipped if already highlighted), then `addHighlightRecord` — and `removeHighlight(cfi)`
+(`removeHighlightRecord` + `controller.removeHighlight`). The `annotations` store's
+`addHighlightRecord` **dedupes on CFI** (an existing record is returned, nothing written),
+updates the in-memory list synchronously, and persists to IndexedDB in the background; so
+tap-to-define, the popup's Highlight toggle and drag-select → Highlight can't diverge.
+**Deleting from the Notes panel** (`AnnotationsPanel`'s `onremove`) removes the record and
+then unpaints the CFI **when no other highlight record still shares it** — before, the
+record vanished but its yellow overlay stayed until the next reload.
+
+**The `annotations` store** (`src/stores/annotations.svelte.ts`): `items` is a
+`$state.raw` **immutable** array (every change replaces it — nothing deep-proxied, one
+signal per change), read via `annotations.items`; plain `Map` indexes rebuilt on each
+replacement back `isHighlighted(cfi)` / `highlightAt(cfi)` (O(1)). `loadAnnotations` is
+generation-guarded so a slow load for a book already closed can't land in the next one.
+
 **Two ways a highlight is created:**
 
 1. **Tap-to-define (primary).** Tapping a Japanese word looks it up *and* highlights
@@ -684,17 +779,19 @@ the **source of truth**; no per-highlight colour. Persistence is separate — th
    real match, `rangeForSpan(doc, positions, matchStart, matchStart + matchLength)`
    rebuilds a `Range` for exactly the matched word (it can straddle text nodes — a
    kanji compound with ruby splits its base text, hence an index→node map, not a
-   string offset), `cfiForSelection` → CFI, then `saveAnnotation` + `addHighlight`
-   (guarded by the O(1) `isHighlighted(cfi)` from the `annotations` store, not a
-   `.some()` over the proxied array). The stored `text` is read **from
-   `definePositions`, not `range.toString()`** — see the ruby gotcha below.
+   string offset), `cfiForSelection` → CFI, then the reader's `addHighlight` (above).
+   `highlightMatch` does all of this **synchronously** and after re-checking the lookup
+   key: the old `autoHighlight` awaited the IndexedDB write and the paint before setting
+   `dictState.cfi`, so a tap on another word in between got this older word's CFI
+   written into its card. The stored `text` is read **from `definePositions`, not
+   `range.toString()`** — see the ruby gotcha below.
    The popup's footer toggle removes/re-adds without closing the card.
 2. **Drag-select (§9).** Selection → the toolbar's **Highlight** action.
 
 > **Never stringify a highlight `Range` for the word.** A range over a ruby-annotated
 > compound spans the intervening `<rt>`, so `range.toString()` splices the furigana in
 > (決**けっ**心) — wrong in the Notes panel and unlookupable when the highlight is
-> re-tapped. `autoHighlight` builds the word by mapping `definePositions.slice(start,
+> re-tapped. `highlightMatch` builds the word by mapping `definePositions.slice(start,
 > end)` back to characters (furigana is already excluded from that run), and
 > `onShowAnnotation` correspondingly prefers the stored annotation `text` over the
 > range's string, falling back to `range.toString()` only for a highlight with no record.
@@ -711,10 +808,12 @@ spine index via `#indexForCFI` → `view.resolveCFI`), then `view.addAnnotation`
   O(highlights-in-that-section), not O(all-highlights) — important because
   tap-to-define grows the set.
 
-> `setHighlights` deliberately does **not** pre-resolve every CFI's spine index on
-> the book-open critical path (that would parse each CFI twice — once here, once in
-> `addAnnotation`). `#highlightIndex` is filled lazily by `reapplyHighlights(index)`
-> as each section loads.
+> **Book open seeds before `open()`.** `Reader.svelte` loads annotations in the same
+> `Promise.all` as the book file and calls `setHighlights` *before* `controller.open`, so
+> the opening section's `create-overlay` (fired during `view.init`) paints its own share on
+> the normal per-section path — no second pass after open, and no whole-book sweep that
+> called (and no-op'd) `addAnnotation` for every highlight in the book.
+> `#highlightIndex` fills lazily as sections load.
 
 <a id="chunked-redraw"></a>
 **Chunked, nearest-first redraw.** Because tap-to-define highlights *every* looked-up
@@ -724,11 +823,15 @@ an SVG node. Painting them in one loop blocks the main thread on every section c
 estimated ~160 ms per section entry at 500 highlights and ~630 ms at 2000. So
 `reapplyHighlights`:
 
-1. Collects the CFIs to draw (all, or just `index`'s).
-2. If there are more than `HIGHLIGHT_DRAW_CHUNK` (24) and `lastCFI` is known, **sorts by
-   `Math.abs(compare(cfi, lastCFI))`** — `compare` imported from `epubcfi.js`; a CFI that
-   fails to compare sorts last (`MAX_SAFE_INTEGER`). The page the reader is actually
-   looking at therefore paints in the first chunk; the rest of the section trickles in.
+1. Collects the CFIs of the requested section(s).
+2. If there are more than `HIGHLIGHT_DRAW_CHUNK` (24) and `lastCFI` is known, orders them
+   **nearest-first** with `nearestFirst(cfis, lastCFI)` (`src/services/cfi.ts`): parse
+   each CFI **once** (collapsed to its start point), sort into document order,
+   binary-search where `lastCFI` falls, then walk outward alternating after/before.
+   Unparseable CFIs go last. The page the reader is looking at therefore paints in the
+   first chunk; the rest of the section trickles in. (The previous
+   `sort by Math.abs(compare(cfi, lastCFI))` was a **no-op**: `compare` returns only
+   -1/0/1, so every CFI had "distance" 1.)
 3. Draws 24 per task, re-scheduling with `setTimeout(…, 0)` on `#redrawTimer`, so a swipe
    is never blocked behind the tail.
 4. Guards with `#redrawGen`: a newer sweep increments it and the in-flight one abandons at
@@ -791,29 +894,43 @@ out-of-flow element may consume the var) live in
 
 The screen; owns no rendering, only orchestration.
 
-**Mount** (`onMount`): `Promise.all([getBookMeta, getBookFile, getProgress])` →
-throw if no file (re-import message) → **seed displayed progress** from saved
-`progress` so the bar is correct before the first relocate → `new
-ReaderController(host, settings, callbacks)` → `controller.open(file,
-progress?.cfi)` → read `view.book?.toc` → `installDevHook()` (DEV-only
-`window.__tsuzuri`, see [development.md](development.md) §6) → `loadAnnotations(bookId)` →
-`setHighlights(highlight CFIs)` → `status='ready'`; register `visibilitychange`;
-warm the lookup worker if the dict is ready. Errors → `status='error'` + a
-back-to-library CTA.
+**Mount** (`onMount`), before the first await: **`prefetchEngine()`** (dynamic-imports
+foliate's `vendor/zip.js`, `epub.js` and `paginator.js` — the chunks `view.open` otherwise
+fetches one after another, each import nested inside the previous step; same specifiers,
+so Vite resolves the same chunks and the module map dedupes; no vendor edit) and
+**`warmLookupIfReady()`** (kuromoji builds in the worker in parallel with the open). Then
+`Promise.all([getBookMeta, getBookFile, getProgress, loadAnnotations])` → throw if no
+file (re-import message) → **seed displayed progress** from saved `progress` → `new
+ReaderController(host, settings, callbacks)` → **`setHighlights(highlight CFIs)`** (before
+open, §10) → `controller.open(file, progress?.cfi)` → **`status='ready'`** → read
+`view.book?.toc` → `installDevHook()` (DEV-only `window.__tsuzuri`, see
+[development.md](development.md) §6) → register `visibilitychange` + `pagehide`. **A
+`destroyed` flag is re-checked after every await**, so leaving mid-open (the loading
+screen has a **← Back to library** button) doesn't go on to set state, register
+listeners or warm the worker; the controller likewise closes a Book that finished
+opening after `destroy()` (verified: exit during loading leaves no `<foliate-view>`, no
+hook, no errors). Errors → `status='error'` + a back-to-library CTA.
 
 **Reactive state** (`$state`/`$derived`): `chromeVisible`, `fraction`,
-`sectionLabel`, `currentCFI`, `isBookmarked` (bookmark at `currentCFI`). Plain
+`sectionLabel`, `currentTocId`, `currentCFI`, `isBookmarked` (**a bookmark lies within
+the visible page's range** — `cfiWithinPage(bookmark, currentCFI)`, start-inclusive /
+end-exclusive — not an exact CFI match, which broke as soon as a reflow moved the page
+boundaries; `toggleBookmark` removes every bookmark on the page, else adds one). Plain
 (non-reactive) refs: `defineDoc`/`definePositions` (live DOM for the in-flight define),
-`tapDefinedAt` ([§8a](#defer)), `lastDoc` (dev hook), `disposeTimer`. A module-scope
-`userInteracted` flag gates progress persistence.
+`tapDefinedAt` ([§8a](#defer)), `lastDoc` (dev hook; only tracked in DEV), `disposeTimer`,
+`destroyed`, `appliedTheme`. A module-scope `userInteracted` flag gates progress
+persistence.
 
 **Callbacks → UI:**
 
-- `onRelocate` → update `fraction`/`currentCFI`/`sectionLabel`, then the
+- `onRelocate` → update `fraction`/`currentCFI`/`currentTocId`/`sectionLabel`, then the
   **600ms-debounced `saveProgress`** *only when* `userInteracted` — so noisy startup
   relocations (bogus fraction) don't persist a misleading position. `userInteracted`
   is set entirely from the gesture/nav side (`onTurn`, `navigate`, `navAnnotation`,
-  `seek`), since `relocate` has no `reason` (§3).
+  `seek`), since `relocate` has no `reason` (§3). The debounce is **flushed** (`flush()`
+  in `src/lib/util/debounce.ts` runs a pending call now) on `visibilitychange → hidden`,
+  `pagehide` and `onDestroy` — a turn then an immediate background/exit used to lose the
+  position when iOS killed the page before the 600 ms timer fired.
   > **Fraction caveat.** foliate's `relocate.fraction` is an *overall-book* fraction
   > incl. the page's trailing-edge term; the tiny test EPUB reports a large % on
   > page 1, a real book ≈ 0–1%. foliate's progress model, not a bug — the
@@ -825,6 +942,12 @@ back-to-library CTA.
 - `onShowAnnotation` → stands down behind a just-completed tap ([§8a](#defer)),
   otherwise reopens the `DictionaryPopup` via `openDefine({existingCfi, …})`.
 
+**Theme.** An `$effect` on `appearance.resolved` (settings store) re-runs
+`applyAppearance` when the *resolved* palette changes under an `'auto'` theme (the OS
+switching to dark mid-read); `appliedTheme` stops it double-applying after an explicit
+pick, which already re-applies via `onSettingChange`. `appearanceCSS` keys `color-scheme`
+off `<html data-theme>` (the resolved palette), not `settings.theme` (may be `'auto'`).
+
 **Visibility (memory).** A `visibilitychange` handler sheds the lookup worker — and the
 resident kuromoji trie — so iOS is less likely to kill the backgrounded tab, but only
 after a **`LOOKUP_IDLE_DISPOSE_MS = 60_000` grace period** (`disposeTimer`, re-checking
@@ -832,54 +955,75 @@ after a **`LOOKUP_IDLE_DISPOSE_MS = 60_000` grace period** (`disposeTimer`, re-c
 returns: the worker was never disposed, so there is nothing to re-warm. Disposing on hide
 punished the common case (a glance at another app, a notification, Slide Over) — coming
 back, the trie had to rebuild, and taps during the rebuild fell back to greedy
-segmentation, i.e. silently returned the wrong word. If a dispose *did* happen, the
-return path re-warms (`warmupLookup`, if `tapToDefine` + dict ready) with no network (from
-the SW cache; see [japanese.md](japanese.md)).
+segmentation, i.e. silently returned the wrong word. On return it always **pings**
+(`pingLookup()`): iOS can reclaim a hidden worker without an `onerror`, so a worker that
+doesn't answer (or was disposed) is dropped and re-warmed (`warmupLookup`, if
+`tapToDefine` + dict ready) with no network (see [japanese.md](japanese.md)).
 
-**Sheets & popups:** `TocSheet` (`onnavigate` → `goTo(href)`), `ReaderSettings`
+**Sheets & popups:** `TocSheet` (`onnavigate` → `goTo(href)`; rows keyed on foliate's
+unique TOC `id`, the current row matched by `currentTocId` — label as fallback — marked
+`aria-current="location"` and scrolled into view when the sheet opens), `ReaderSettings`
 (`onchange(kind)` → `applyAppearance`/`applyLayout`/`reopenForWritingMode` per
-`'appearance'|'layout'|'writingmode'`), `AnnotationsPanel` (`onnavigate` →
-`goTo(cfi)`), `DictionaryPopup`.
+`'appearance'|'layout'|'writingmode'`; a writing-mode re-open first `closeOverlays()`),
+`AnnotationsPanel` (`onnavigate` → `goTo(cfi)`, `onremove` → §10), `DictionaryPopup`.
+TOC/note jumps and scrubber seeks also `closeOverlays()`.
 
 **One `SelectionToolbar`** — fresh selections only (`open, rect, onHighlight,
 onCopy`). Editing an existing highlight routes through the dictionary popup (§10).
 
 **Define + highlight in one popup.** `tryDefine` → `openDefine({text, tapOffset,
-px, py, doc, positions})` and returns whether a lookup started (that boolean is what
-[§8's](#tap-routing) glyph-first rule keys off). `runLookup` resolves and, on a real match,
-calls `autoHighlight` (build the word `Range` from `positions` +
-`matchStart`/`matchLength`, CFI it, save + `addHighlight`). The whole of `runLookup` is
+anchor, doc, positions})` and returns whether a lookup started (that boolean is what
+[§8's](#tap-routing) glyph-first rule keys off). `anchor` is the tapped character's box
+(`glyphAnchor`: one Range over `positions[tapOffset]`, top-window coords). `runLookup`
+resolves and, on a real match, calls `highlightMatch` (build the word `Range` from
+`positions` + `matchStart`/`matchLength`, CFI it, **re-anchor the card to the word's
+rect**, `addHighlight`). The whole of `runLookup` is
 wrapped in **try/catch**: a rejected `isDictReady()` (a `versionchange` from another tab, or
 IndexedDB refusing to open under iOS storage pressure) used to latch the popup spinner on
 for the rest of the session; now it logs, clears `loading`, and shows the empty state.
 `dictState` carries `cfi`/`highlighted`/`word` so the footer toggle (`ontogglehighlight` →
 `toggleWordHighlight`) removes/re-adds without closing the card. A stale-lookup guard
-(`lastKey`) drops a superseded lookup. If the dict isn't installed, the popup shows a
-download prompt; `downloadDict` calls **`downloadAndWarmDictionary('en')`** (downloads
-JMdict then warms kuromoji while online) before retrying (see
-[japanese.md](japanese.md)).
+(`lastKey`) drops a superseded lookup. **Re-targeting an open card keeps the previous
+result on screen, dimmed** (`.body.stale`), and the popup shows a spinner only once a
+lookup has run ~150 ms (most resolve sooner). If the dict isn't installed, the popup
+shows a download prompt whose copy follows `dictPhase()` (downloading / retrying /
+**"Preparing…"** — it never re-offers Download while a download runs or the segmenter
+is being prepared); `downloadDict` calls **`downloadAndWarmDictionary('en')`** (keeps the
+online-warm invariant in dictdb), but the card doesn't wait for the warm: an `$effect`
+re-runs the pending lookup **as soon as `dict.state === 'ok'`** (JMdict queryable), see
+[japanese.md](japanese.md). The popup's **X and Escape go through `closeOverlays()`** (the
+popup's `onclose`), so `defineDoc`/`definePositions` are always released.
 
 **Progress scrubber** (`ProgressScrubber.svelte`, `{fraction, sectionLabel,
 onseek}`). Press-and-drag fast-scroll; the press must cross an **8px (touch) / 4px
 (mouse)** dead-zone before it arms, the seek (`onseek` → `seek` → `goToFraction`)
 commits only on **release**, and a clean tap is a no-op. It `stopPropagation`s its
-own click so it doesn't trip `dismissChromeFromBar`. **DictionaryPopup** positions
-via `placeAnchored`, re-placing on `x`/`y` *or content* change. **Chrome:** top bar
+own click so it doesn't trip `dismissChromeFromBar`. **DictionaryPopup** positions via
+`placeNearWord(anchor, w, h, vertical)`, re-placing on anchor *or content* change, and
+**synchronously** — measured and placed in the effect that runs in the mounting flush,
+before paint (`visibility:hidden` until placed), so there is no first frame at 0,0 (the
+old `requestAnimationFrame` placement painted one). `SelectionToolbar` does the same. **Chrome:** top bar
 (library / notes / display) + bottom bar (TOC / scrubber / bookmark);
 `toggleBookmark` toggles a `bookmark` annotation at `currentCFI || lastCFI`.
 
-**Destroy** (`onDestroy`): clear `disposeTimer`, remove `visibilitychange`,
-`saveProgress.cancel()`, `controller.destroy()`, `disposeLookup()`,
-`clearAnnotations()`, drop retained `defineDoc`/`definePositions`.
+**Destroy** (`onDestroy`): `destroyed = true`, clear `disposeTimer`, remove
+`visibilitychange` + `pagehide`, **`saveProgress.flush()`**, `controller.destroy()`,
+`disposeLookup()`, `clearAnnotations()`, drop retained `defineDoc`/`definePositions`,
+`sel.doc`/`sel.range` and `lastDoc`, and `delete window.__tsuzuri` (DEV).
 
 ### Anchored positioning
 
 `placeAnchored(centerX, anchorTop, anchorBottom, w, h, opts)`
-(`src/lib/util/anchoredPosition.ts`) is shared by the dictionary popup and the
-selection toolbar: centres on `centerX`, **prefers above** the anchor and flips
-below on a top-margin collision, and clamps inside the viewport honouring `--safe-*`
-insets. All coords top-window. The popup passes `gap: 16`; the toolbar uses the
-default.
+(`src/lib/util/anchoredPosition.ts`) — used by the selection toolbar, and by the popup for
+horizontal text: centres on `centerX`, **prefers above** the anchor and flips below on a
+top-margin collision, and clamps inside the viewport honouring `--safe-*` insets.
+
+`placeNearWord(rect, w, h, vertical, opts)` — the popup's placement. Horizontal: 
+`placeAnchored` on the **word's rect** (above/below its line — not the tap point).
+**Vertical (縦書き): beside the column** — left of the word if the card fits there, else
+right, else the roomier side clamped — vertically centred on the word; above/below would
+cover the rest of the very column being read. All coords top-window; the popup passes
+`gap: 16`. Unit-tested in `anchoredPosition.test.ts`.
 
 ---
 
@@ -938,6 +1082,9 @@ shadow DOM.
   `load` event's `doc` (in `#docIndex`, passed to `onLoad`/`onTap`/`onSelection`) — which
   is why an automated tap-accuracy harness needs the DEV-only `window.__tsuzuri` hook
   ([development.md](development.md) §6).
+- **Writing-mode re-opens are serialized** (`#reopenChain` + `#reopenGen`). Unserialized,
+  rapid 横書き/縦書き/Auto taps interleaved their `close()`/`open()` awaits and the loser's
+  paginator was never closed. Don't call `view.open` outside `open()`/`#reopen`.
 - **Writing-mode toggle requires `reopenForWritingMode`.** `applyAppearance`'s
   injected `writing-mode` override changes the CSS, but the paginator's vertical/RTL
   axis decisions were made from `getDirection(doc)` at load and are **not** re-derived

@@ -1,7 +1,5 @@
-// @ts-ignore — vendored JS module, no type declarations
-import { makeBook } from '../vendor/foliate-js/view.js'
 import type { BookMeta } from './types'
-import { putBook, getBookFile, deleteBook } from './storage/blobs'
+import { putBook, getBookFile, deleteBook, hasBook } from './storage/blobs'
 import {
   deleteBookCascade,
   getAllBooks,
@@ -62,6 +60,38 @@ async function thumbnailCover(blob: Blob | undefined): Promise<Blob | undefined>
   }
 }
 
+/** Title/author/language/direction/cover parsed from the EPUB via foliate. Never
+ *  throws: an unparseable book falls back to its file name and no cover. */
+async function parseMeta(file: File) {
+  const out = {
+    title: file.name.replace(/\.epub$/i, ''),
+    author: '',
+    language: '',
+    dir: 'ltr' as 'ltr' | 'rtl',
+    cover: undefined as Blob | undefined,
+  }
+  try {
+    // Loaded on demand: foliate's view.js (and the epubcfi/zip code it pulls in) is
+    // only needed to import or read, so it stays off the shelf's cold-start path.
+    // @ts-ignore — vendored JS module, no type declarations
+    const { makeBook } = await import('../vendor/foliate-js/view.js')
+    const book: any = await makeBook(file)
+    const meta = book?.metadata ?? {}
+    out.title = flattenLangMap(meta.title) || out.title
+    if (Array.isArray(meta.author)) {
+      out.author = meta.author.map((a: any) => flattenLangMap(a?.name ?? a)).filter(Boolean).join('、')
+    } else {
+      out.author = flattenLangMap(meta.author)
+    }
+    out.language = (Array.isArray(meta.language) ? meta.language[0] : meta.language) ?? ''
+    out.dir = book?.dir === 'rtl' ? 'rtl' : 'ltr'
+    out.cover = await thumbnailCover((await book?.getCover?.()) ?? undefined)
+  } catch (err) {
+    console.warn('Could not parse EPUB metadata; using fallbacks.', err)
+  }
+  return out
+}
+
 /**
  * Import an EPUB: dedupe by content hash, persist the bytes, then parse metadata
  * and cover via foliate. Returns the (new or existing) shelf entry.
@@ -75,50 +105,26 @@ export async function importEpub(file: File): Promise<BookMeta> {
 
   const existing = await getBookMeta(id)
   if (existing) {
+    // Re-importing a book whose bytes were lost (evicted / cleared) restores them —
+    // that's exactly what the reader's "please re-import the EPUB" message asks for.
+    if (!(await hasBook(id))) await putBook(id, file)
     existing.lastOpenedAt = Date.now()
     await putBookMeta(existing)
     return existing
   }
 
-  // Store the original File directly (it's a Blob); putBook writes it to OPFS without
-  // allocating a second copy. makeBook likewise reads ranges from the same File.
-  await putBook(id, file)
-
-  // From here on the bytes are already persisted, so any failure must roll them back —
-  // otherwise a throw (most likely `putBookMeta` hitting quota on a near-full iPad)
-  // would orphan multi-MB OPFS bytes with no `books` row pointing at them: invisible to
-  // the shelf and to `removeBook` (which deletes by known id), leaking against quota.
+  // Write the bytes and parse the metadata concurrently — both only read the File
+  // (putBook streams it to OPFS without a second copy; makeBook reads ranges of it).
+  // If anything fails the bytes must be rolled back — otherwise a throw (most likely
+  // `putBookMeta` hitting quota on a near-full iPad) would orphan multi-MB OPFS bytes
+  // with no `books` row pointing at them: invisible to the shelf and to `removeBook`
+  // (which deletes by known id), leaking against quota.
   try {
-    let title = file.name.replace(/\.epub$/i, '')
-    let author = ''
-    let language = ''
-    let dir: 'ltr' | 'rtl' = 'ltr'
-    let cover: Blob | undefined
-
-    try {
-      const book: any = await makeBook(file)
-      const meta = book?.metadata ?? {}
-      title = flattenLangMap(meta.title) || title
-      if (Array.isArray(meta.author)) {
-        author = meta.author.map((a: any) => flattenLangMap(a?.name ?? a)).filter(Boolean).join('、')
-      } else {
-        author = flattenLangMap(meta.author)
-      }
-      language = (Array.isArray(meta.language) ? meta.language[0] : meta.language) ?? ''
-      dir = book?.dir === 'rtl' ? 'rtl' : 'ltr'
-      cover = await thumbnailCover((await book?.getCover?.()) ?? undefined)
-    } catch (err) {
-      console.warn('Could not parse EPUB metadata; using fallbacks.', err)
-    }
-
+    const [, parsed] = await Promise.all([putBook(id, file), parseMeta(file)])
     const now = Date.now()
     const meta: BookMeta = {
       id,
-      title,
-      author,
-      language,
-      dir,
-      cover,
+      ...parsed,
       fileName: file.name,
       fileSize: file.size,
       addedAt: now,

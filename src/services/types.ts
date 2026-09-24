@@ -6,7 +6,11 @@
 /** Writing-mode override the reader can apply on top of what the EPUB declares. */
 export type WritingModePref = 'auto' | 'horizontal' | 'vertical'
 
-export type ThemeName = 'light' | 'sepia' | 'dark'
+/** A concrete palette: what `<html data-theme>` is actually set to (see app.css). */
+export type ResolvedTheme = 'light' | 'sepia' | 'dark'
+
+/** The theme *preference*. 'auto' follows the OS (`prefers-color-scheme`): light ↔ dark. */
+export type ThemeName = 'auto' | ResolvedTheme
 
 /** Metadata for a book on the shelf. The actual .epub bytes live in OPFS under its id. */
 export interface BookMeta {
@@ -69,7 +73,7 @@ export interface ReaderSettings {
 }
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
-  theme: 'light',
+  theme: 'auto',
   fontScale: 1,
   lineHeight: 1.9,
   marginScale: 1,

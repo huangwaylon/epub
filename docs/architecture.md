@@ -107,19 +107,19 @@ static files to GitHub Pages — no backend ([deployment.md](./deployment.md)).
 ### Entry & app
 | Path | Responsibility |
 |---|---|
-| `src/main.ts` | `await initSettings()`, `initViewport()`, `requestPersistence()`, `registerSW()` (wires `pwa` store), `mount(App)`. |
-| `src/App.svelte` | Two-screen router view: `nav.route.name === 'reader'` → lazily-imported `Reader` (keyed on `bookId`), else `Shelf`; always renders `UpdateToast`. Falls back to a "back to library" message if the reader chunk fails to load. |
+| `src/main.ts` | `void initSettings()` (never blocks mount on IDB), `initViewport()`, `validateRestoredRoute()`, `requestPersistence()`, `registerSW()` (wires `pwa` store; hourly-throttled `registration.update()` on return to foreground), drops the old `kuromoji-ipadic` runtime cache, `mount(App)`. |
+| `src/App.svelte` | Two-screen router view: `nav.route.name === 'reader'` → lazily-loaded `Reader` via `nav.loadReader()` (keyed on `bookId`), else `Shelf`; always renders `UpdateToast`. Warms the reader chunk ~1.5 s after mount (idle). While the chunk loads it shows a paper-coloured pending screen (spinner fades in only after 0.4 s); a failed load shows **Try again** + **Back to library**. |
 | `src/app.css` | Design tokens (CSS vars) for light/sepia/dark via `[data-theme]`; fonts, safe-area insets. |
 | `src/vite-env.d.ts` | Ambient types (incl. `virtual:pwa-register`). |
 
 ### Stores (`src/stores/*.svelte.ts`)
 | Path | Responsibility |
 |---|---|
-| `settings.svelte.ts` | Global `ReaderSettings` `$state`; `initSettings` (hydrate from IDB), `updateSettings` (mutate+persist), `applyTheme` (`<html data-theme>` + theme-color meta). |
-| `library.svelte.ts` | Shelf `$state`: `books`, `progress`, `loading`, `importing`, `importError`. `refreshLibrary` (reconciles object identity to avoid re-decoding covers), `importFiles`, `deleteBook`, `markOpened`. |
+| `settings.svelte.ts` | Global `ReaderSettings` `$state` + `appearance.resolved` (the concrete palette, with `'auto'` resolved via `prefers-color-scheme`, live). `initSettings` seeds synchronously from the localStorage mirror `tsuzuri:settings`, then hydrates from IDB (source of truth; keys changed before hydration win). `updateSettings` mutates + mirrors + persists; the internal `applyTheme` sets `<html data-theme>` and the single theme-color meta. |
+| `library.svelte.ts` | Shelf `$state`: `books`, `progress`, `loading`, `importing`, `importError`. `refreshLibrary` (books + `getAllProgress` in parallel; a generation counter drops stale results from overlapping refreshes; reconciles object identity to avoid re-decoding covers), `importFiles` (refreshes after each file of a batch), `deleteBook`, `markOpened`. |
 | `annotations.svelte.ts` | Current book's `items` (highlights+bookmarks). `loadAnnotations`, `clearAnnotations`, `saveAnnotation`, `removeAnnotation` (in-place splice), `newId` (UUID). |
 | `dict.svelte.ts` | Dictionary status: `state` (`init`/`empty`/`ok`/`unavailable`), `updating`, `progress`, `warming`, `error`. Mutated by `jp/dictdb.ts`. |
-| `nav.svelte.ts` | In-memory router: `route` (`{name:'shelf'}` \| `{name:'reader',bookId}`), `openReader`, `openShelf`. |
+| `nav.svelte.ts` | Router: `route` (`{name:'shelf'}` \| `{name:'reader',bookId}`), mirrored to sessionStorage (`tsuzuri:route`) so an in-session reload (the SW update) reopens the book; `validateRestoredRoute`, `openReader`, `openShelf`. Also owns the reader chunk: `loadReader()` (memoised, retryable — a rejection clears the cache) and `warmReader()`. |
 | `pwa.svelte.ts` | SW update state: `needRefresh`, `offlineReady`, `update()`. Set by `main.ts`. |
 
 ### Components (`src/lib/**`)
@@ -137,7 +137,7 @@ sheets, progress, bookmarks), `reader/ReaderSettings.svelte`, `reader/TocSheet.s
 | Path | Responsibility |
 |---|---|
 | `types.ts` | Core persisted data model: `BookMeta`, `ReadingProgress`, `Annotation`, `ReaderSettings`, `DEFAULT_SETTINGS`, `HIGHLIGHT_HEX` (the single yellow). |
-| `library.ts` | `importEpub` (sha-256 dedupe → OPFS bytes → foliate `makeBook` for metadata/cover, downscaled to a ~320px WebP thumbnail; rolls back bytes on metadata failure), `listBooks`, `touchBook`, `removeBook`; re-exports `getBookFile`. |
+| `library.ts` | `importEpub` (sha-256 dedupe — a dedupe hit whose bytes are missing rewrites them → `putBook` ∥ foliate `makeBook` (dynamically imported, so foliate stays off the shelf's critical path) for metadata/cover, downscaled to a ~320px WebP thumbnail; rolls back bytes on failure), `listBooks`, `touchBook`, `removeBook`; re-exports `getBookFile`. |
 | `reader.ts` | **`ReaderController`** — owns one `<foliate-view>`; injects appearance CSS from live theme tokens; derives page geometry (per writing mode, viewport-based for vertical); detects writing mode; custom pointer state machine → swipe-to-turn + `TapInfo`; animates turns as a horizontal slide; selection geometry → `SelectionInfo`; highlight add/remove/reapply (single yellow); `goToFraction`; CFI for selections. See [reader-engine.md](./reader-engine.md). |
 | `viewport.ts` | Publishes the visual-viewport height as `--app-height` (`initViewport`); `viewportSize()` (used by reader geometry). Papers over iOS cold-launch under-report and rotation jitter. See [storage-pwa-ios.md](./storage-pwa-ios.md). |
 
@@ -145,7 +145,7 @@ sheets, progress, bookmarks), `reader/ReaderSettings.svelte`, `reader/TocSheet.s
 | Path | Responsibility |
 |---|---|
 | `db.ts` | `idb`-backed IndexedDB `tsuzuri` (v1): stores `books`, `progress`, `annotations` (`byBook` index), `settings`, `bookBlobs`. CRUD + `deleteBookCascade`. |
-| `blobs.ts` | EPUB bytes: OPFS (`navigator.storage.getDirectory`, `books/<id>.epub`) behind a write-capability probe, with an **IndexedDB `bookBlobs` fallback**. `putBook`, `getBookFile` (returns a `File`), `deleteBook`. |
+| `blobs.ts` | EPUB bytes: OPFS (`navigator.storage.getDirectory`, `books/<id>.epub`) behind a `createWritable` feature check, with an **IndexedDB `bookBlobs` fallback** (non-quota OPFS write failures fall back; reads fall through to it on an OPFS miss). `putBook`, `getBookFile` (returns a `File`), `hasBook`, `deleteBook`. |
 | `persist.ts` | `requestPersistence` (`navigator.storage.persist`), `storageStatus` (`estimate`), `formatBytes`. |
 
 ### Services — Japanese (`src/services/jp/`)
@@ -188,14 +188,17 @@ sheets, progress, bookmarks), `reader/ReaderSettings.svelte`, `reader/TocSheet.s
 `Shelf` file input → `library.importFiles(files)` (filters `.epub` /
 `application/epub+zip`, tracks `importing` and `importError`) →
 `services/library.importEpub(file)`: `sha256Hex(bytes)` = `id`. If `getBookMeta(id)`
-exists, bump `lastOpenedAt` and return (dedupe). Else `blobs.putBook(id, file)`
-(OPFS or IDB fallback), then `makeBook(file)` extracts title/author/language/`dir`/cover
-(cover downscaled to a ~320px WebP thumbnail) → `putBookMeta`. Metadata failure rolls
-the OPFS bytes back. After all files, `refreshLibrary()` reloads `books` + per-book
-`getProgress`.
+exists, rewrite the bytes if `hasBook(id)` is false, bump `lastOpenedAt` and return
+(dedupe). Else, concurrently, `blobs.putBook(id, file)` (OPFS or IDB fallback) and
+`makeBook(file)` (lazy `import()` of foliate's `view.js`) extracting
+title/author/language/`dir`/cover (cover downscaled to a ~320px WebP thumbnail) →
+`putBookMeta`. Any failure rolls the bytes back. In a batch, `refreshLibrary()` runs after
+each file (so books appear as they land) and once at the end; it reads `books` +
+`getAllProgress` (one transaction).
 
 ### (b) Open & read a book
-`Shelf` → `markOpened(id)` → `nav.openReader(id)`. `App` swaps to a lazily-imported
+`Shelf` → `nav.openReader(id)` immediately, `void markOpened(id)` in the background
+(pointerdown on a cover already started `warmReader()`). `App` swaps to the lazily-loaded
 `Reader` (keyed on `bookId`, so a new book remounts cleanly). `Reader.onMount`:
 `Promise.all([getBookMeta, getBookFile, getProgress])` → `new ReaderController(host, settings, callbacks)`
 → `controller.open(file, progress?.cfi)`: `view.open(file)`, wire events, apply
@@ -269,29 +272,38 @@ together. Because `$state` is deep-reactive, in-place mutation (`items.push`,
 
 | Store | Holds | Persisted via |
 |---|---|---|
-| `settings` | `ReaderSettings` (theme, fontScale, lineHeight, marginScale, fontFamily, writingMode, tapToDefine) | `db.saveSettings`/`loadSettings` (IDB key `reader`) |
+| `settings` | `ReaderSettings` (theme incl. `'auto'`, fontScale, lineHeight, marginScale, fontFamily, writingMode, tapToDefine) | `db.saveSettings`/`loadSettings` (IDB key `reader`, source of truth) + localStorage mirror `tsuzuri:settings` (sync first-paint hint) |
 | `library` | `books: BookMeta[]`, `progress`, `loading`, `importing`, `importError` | books/progress in IDB; bytes in OPFS |
 | `annotations` | `items: Annotation[]` for the open book | `db` annotations store (`byBook` index) |
 | `dict` | `state` / `updating` / `progress` / `warming` / `error` | reflects jpdict-idb's own IndexedDB |
-| `nav` | `route` (shelf vs reader+bookId) | in-memory only |
+| `nav` | `route` (shelf vs reader+bookId) | sessionStorage `tsuzuri:route` (per session; validated on restore) |
 | `pwa` | `needRefresh`, `offlineReady`, `update()` | in-memory; driven by `registerSW` |
 
 ---
 
 ## 7. Entry point & routing
 
-`src/main.ts` runs at module top level:
-1. `await initSettings()` — hydrate settings from IndexedDB and `applyTheme()` before
-   first paint (`<html data-theme>` + theme-color meta).
+Before any module runs, an **inline script in `index.html`** reads the localStorage
+settings mirror (`tsuzuri:settings`), resolves `'auto'` via `prefers-color-scheme`, and
+sets `<html data-theme>` + the theme-color meta — so first paint is already themed.
+`src/main.ts` then runs at module top level (no top-level `await`):
+1. `void initSettings()` — seed from the mirror, `applyTheme()`, subscribe to
+   `prefers-color-scheme` changes; hydrate from IndexedDB in the background.
 2. `initViewport()` — start publishing `--app-height` from the visual viewport.
-3. `void requestPersistence()` — request durable storage (fire-and-forget).
-4. `registerSW({ onNeedRefresh, onOfflineReady })` — wires the `pwa` store; sets
-   `pwa.update = () => updateSW(true)`.
-5. `mount(App, { target: #app })`.
+3. `void validateRestoredRoute(...)` — a reader route restored from sessionStorage falls
+   back to the shelf if the book no longer exists.
+4. `void requestPersistence()` — request durable storage (fire-and-forget).
+5. `registerSW({ onNeedRefresh, onOfflineReady, onRegisteredSW })` — wires the `pwa`
+   store (`pwa.update = () => updateSW(true)`); `onRegisteredSW` calls
+   `registration.update()` on `visibilitychange → visible`, at most hourly.
+6. Delete the superseded `kuromoji-ipadic` runtime cache (now `kuromoji-ipadic-v2`).
+7. `mount(App, { target: #app })`.
 
-**Routing** is a two-screen in-memory router (`nav.svelte.ts`). `App.svelte` renders
-`<Reader>` (lazy-imported, inside `{#key nav.route.bookId}` for a clean remount per
-book) when in the reader route, else `<Shelf>`. `<UpdateToast>` is always mounted.
+**Routing** is a two-screen router (`nav.svelte.ts`), mirrored to sessionStorage.
+`App.svelte` renders `<Reader>` (via the retryable `loadReader()`, inside
+`{#key nav.route.bookId}` for a clean remount per book) when in the reader route, else
+`<Shelf>`. `<UpdateToast>` is always mounted. The critical path is one entry chunk
+(Svelte runtime + stores + shelf); foliate, the reader and the settings sheet are lazy.
 
 ---
 
@@ -313,6 +325,7 @@ book) when in the reader route, else `<Shelf>`. `<UpdateToast>` is always mounte
   open, disposed on reader exit; rebuilds from the SW-cached dict with no network. See
   [japanese.md](./japanese.md).
 - **Theme tokens are CSS vars applied two ways.** `applyTheme()` sets `<html data-theme>`
+  to the *resolved* palette (`light`/`sepia`/`dark`; `settings.theme` may be `'auto'`)
   and syncs `theme-color`. The reader reads those live tokens back (`getComputedStyle`)
   and injects them into the content iframe via `appearanceCSS()` (`renderer.setStyles`),
   so the rendered page matches the app chrome across themes/fonts.

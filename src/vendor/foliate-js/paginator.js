@@ -1064,13 +1064,17 @@ export class Paginator extends HTMLElement {
             index: this.#adjacentIndex(dir),
             anchor: prev ? () => 1 : () => 0,
         })
-        // TSUZURI PATCH: only debounce when the turn actually crossed into a new section.
-        // Upstream also waits when `animated` is absent — and we deliberately leave
-        // `animated` off (we drive our own horizontal slide), so every single page turn
-        // paid this 100ms with the view translated off-screen showing blank paper.
-        // Rapid-turn coalescing is handled app-side (`#turning`/`#pendingDir` in reader.ts).
-        if (shouldGo) await wait(100)
-        this.#locked = false
+        // TSUZURI PATCH: never make the caller wait on the debounce. Upstream ends with
+        // `if (shouldGo || !animated) await wait(100)`. We leave `animated` off (we drive
+        // our own horizontal slide), so the second clause taxed every turn; and even the
+        // section-crossing wait was awaited by our slide with the view translated
+        // off-screen — 100ms of blank paper on every chapter boundary. So: resolve now;
+        // after a section crossing keep the lock for the same 100ms, but release it from
+        // a timer instead of blocking the turn on it. Rapid-turn coalescing is app-side
+        // (`#turning`/`#pendingDir` in reader.ts), and our next turn can't reach here
+        // sooner than one slide phase (150ms) later, so the held lock never drops a turn.
+        if (shouldGo) setTimeout(() => this.#locked = false, 100)
+        else this.#locked = false
     }
     prev(distance) {
         return this.#turnPage(-1, distance)

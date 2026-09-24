@@ -60,8 +60,8 @@ export function initViewport(): void {
   window.addEventListener('orientationchange', schedule)
   // Re-assert once the cold-launch viewport / safe-area insets settle — they can lag the
   // first paint by a few hundred ms in a standalone PWA, the window where the layout
-  // viewport is too short and a bottom bar shows a gap. If `load` already fired (this
-  // module runs after a top-level `await`, so it can), re-assert straight away instead.
+  // viewport is too short and a bottom bar shows a gap. If `load` already fired (e.g. a
+  // late caller), re-assert straight away instead.
   const reassert = () => {
     schedule()
     setTimeout(schedule, 300)

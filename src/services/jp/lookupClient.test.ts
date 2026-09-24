@@ -104,9 +104,9 @@ describe('the main-thread result cache', () => {
   })
 
   it('survives disposeLookup — the tap after a foreground needs no worker at all', async () => {
-    // The reader sheds the worker on every backgrounding, which destroys the worker's own
-    // result LRU; this cache is what keeps those taps instant and morphologically correct
-    // while the kuromoji trie rebuilds.
+    // The reader sheds the worker after a sustained backgrounding and on exit; this cache
+    // is what keeps the next taps instant and morphologically correct while the kuromoji
+    // trie rebuilds.
     const { lookupAt, disposeLookup } = await freshClient()
     const p = lookupAt('決心', 1)
     const w = only()
@@ -148,38 +148,38 @@ describe('the main-thread result cache', () => {
   })
 })
 
-describe('lookupReady', () => {
+describe('pingLookup', () => {
   it('is false — without constructing a worker — when there is none', async () => {
-    const { lookupReady } = await freshClient()
-    expect(await lookupReady()).toBe(false)
+    const { pingLookup } = await freshClient()
+    expect(await pingLookup()).toBe(false)
     expect(FakeWorker.instances.length).toBe(0)
   })
 
-  it('reports the worker’s segmenter readiness', async () => {
-    const { lookupAt, lookupReady } = await freshClient()
+  it('is true when the worker answers', async () => {
+    const { lookupAt, pingLookup } = await freshClient()
     void lookupAt('猫', 0) // constructs the worker
     const w = only()
-
-    const notYet = lookupReady()
-    w.reply(w.lastId('ready'), false)
-    expect(await notYet).toBe(false)
-
-    const built = lookupReady()
-    w.reply(w.lastId('ready'), true)
-    expect(await built).toBe(true)
+    const p = pingLookup()
+    w.reply(w.lastId('ping'), true, true)
+    expect(await p).toBe(true)
+    expect(w.terminated).toBe(false)
   })
 
-  it('does not drop the worker when the readiness probe times out (it may just be mid-build)', async () => {
+  it('drops a silently dead worker, so the next call builds a fresh one', async () => {
     vi.useFakeTimers()
     try {
-      const { lookupAt, lookupReady } = await freshClient()
-      void lookupAt('猫', 0)
+      const { lookupAt, pingLookup } = await freshClient()
+      const first = lookupAt('猫', 0)
       const w = only()
 
-      const p = lookupReady()
-      await vi.advanceTimersByTimeAsync(2000)
+      const p = pingLookup(500)
+      await vi.advanceTimersByTimeAsync(500)
       expect(await p).toBe(false)
-      expect(w.terminated).toBe(false)
+      expect(w.terminated).toBe(true)
+      expect(await first).toBeNull() // in-flight work fails fast instead of hanging
+
+      void lookupAt('犬', 0)
+      expect(FakeWorker.instances.length).toBe(2)
     } finally {
       vi.useRealTimers()
     }
@@ -194,5 +194,35 @@ describe('warmupLookup', () => {
     expect(w.posted[0]).toMatchObject({ type: 'warmup' })
     w.reply(w.lastId('warmup'), true)
     expect(await p).toBe(true)
+  })
+
+  it('resolves false and drops the worker if the build never answers', async () => {
+    vi.useFakeTimers()
+    try {
+      const { warmupLookup } = await freshClient()
+      const p = warmupLookup()
+      const w = only()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await p).toBe(false)
+      expect(w.terminated).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('lookup timeouts', () => {
+  it('resolves null and replaces a worker that never replies', async () => {
+    vi.useFakeTimers()
+    try {
+      const { lookupAt } = await freshClient()
+      const p = lookupAt('猫', 0)
+      const w = only()
+      await vi.advanceTimersByTimeAsync(8000)
+      expect(await p).toBeNull()
+      expect(w.terminated).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

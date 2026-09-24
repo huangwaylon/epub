@@ -1,28 +1,36 @@
 <script lang="ts">
   import type { LookupResult } from '../../services/jp/lookupTypes'
+  import { dictPhase } from '../../services/jp/dictdb'
   import { dict } from '../../stores/dict.svelte'
-  import { placeAnchored } from '../util/anchoredPosition'
+  import { placeNearWord, type AnchorRect } from '../util/anchoredPosition'
   import Icon from '../components/Icon.svelte'
 
   let {
-    open = $bindable(false),
-    x = 0,
-    y = 0,
+    open = false,
+    anchor = null,
+    vertical = false,
     loading = false,
     needsDownload = false,
     result = null,
     highlighted = false,
+    onclose,
     ondownload,
     ontogglehighlight,
   }: {
     open?: boolean
-    x?: number
-    y?: number
+    /** The tapped glyph / matched word, in top-window coords. The card never covers it. */
+    anchor?: AnchorRect | null
+    /** Vertical (縦書き) text: place beside the column rather than above/below the line. */
+    vertical?: boolean
+    /** A lookup is in flight. With a previous `result` still set (a re-targeted card),
+     *  that result stays visible, dimmed, rather than blanking to a spinner. */
     loading?: boolean
     needsDownload?: boolean
     result?: LookupResult | null
     /** Whether the looked-up word is currently highlighted (drives the footer toggle). */
     highlighted?: boolean
+    /** Close request (X). The reader owns closing — it also releases the define context. */
+    onclose?: () => void
     ondownload?: () => void
     ontogglehighlight?: () => void
   } = $props()
@@ -40,7 +48,7 @@
   let wasOpen = false
   $effect(() => {
     if (open && !wasOpen) restoreFocus = (document.activeElement as HTMLElement) ?? null
-    if (open) card?.focus()
+    if (open) card?.focus({ preventScroll: true })
     else if (wasOpen && restoreFocus) {
       restoreFocus.focus?.()
       restoreFocus = null
@@ -48,30 +56,44 @@
     wasOpen = open
   })
 
+  // Most lookups resolve well inside 150ms (cached, or a warm worker); flashing a spinner
+  // for those reads as flicker. Show one only when a lookup is genuinely slow.
+  let slow = $state(false)
+  $effect(() => {
+    if (!open || !loading) {
+      slow = false
+      return
+    }
+    const t = setTimeout(() => (slow = true), 150)
+    return () => clearTimeout(t)
+  })
+
   // The highlight toggle only makes sense once we have a real match to anchor it to.
   const showActions = $derived(!loading && !needsDownload && !!result?.entries.length)
+  // One status for the not-installed card: never re-offer Download while a download is
+  // running, waiting to retry, or the segmenter is being prepared.
+  const phase = $derived(dictPhase())
 
-  // Position near the tap, re-running when the anchor (x/y) or the content — hence
-  // the card's size — changes, so a re-tap on another word or a loaded result is
-  // placed correctly rather than left at the first position.
-  let pos = $state({ left: 0, top: 0 })
+  // Place the card against the word, re-running when the anchor or the content (hence the
+  // card's size) changes. Synchronous — measured and placed in the same flush that mounted
+  // it, before the browser paints — so the card never shows a first frame at 0,0 and then
+  // jumps (the old requestAnimationFrame placement did exactly that).
+  let pos = $state<{ left: number; top: number } | null>(null)
   $effect(() => {
-    if (!open) return
-    const ax = x
-    const ay = y
+    if (!open) {
+      pos = null
+      return
+    }
+    if (!card || !anchor) return
+    const a = anchor
+    const v = vertical
     void loading
+    void slow
     void needsDownload
     void result
     void showActions
-    const id = requestAnimationFrame(() => {
-      if (!open) return // a dismiss tap may have landed before this frame
-      const w = card?.offsetWidth ?? 300
-      const h = card?.offsetHeight ?? 160
-      pos = placeAnchored(ax, ay, ay, w, h, { gap: 16 })
-    })
-    // Cancel a queued frame when the anchor/content changes again (rapid re-tap) or
-    // the popup closes, so stale frames don't pile up forcing extra layout reads.
-    return () => cancelAnimationFrame(id)
+    void phase
+    pos = placeNearWord(a, card.offsetWidth, card.offsetHeight, v, { gap: 16 })
   })
 </script>
 
@@ -79,38 +101,50 @@
   <div
     bind:this={card}
     class="popup"
-    style="left:{pos.left}px; top:{pos.top}px"
+    style="left:{pos?.left ?? 0}px; top:{pos?.top ?? 0}px;{pos ? '' : ' visibility:hidden'}"
     role="dialog"
     aria-label="Dictionary"
     tabindex="-1"
   >
-    <button class="close" aria-label="Close" onclick={() => (open = false)}>
+    <button class="close" aria-label="Close" onclick={() => onclose?.()}>
       <Icon name="x" size={16} />
     </button>
-    <div class="body">
-      {#if loading}
-        <div class="loading"><div class="spinner"></div></div>
-      {:else if needsDownload}
+    <div class="body" class:stale={loading && !!result} aria-busy={loading}>
+      {#if needsDownload}
         <div class="download">
-          <p class="dl-title">Dictionary not installed</p>
-          <p class="dl-sub">Download the Japanese dictionary (~few MB) to look up words offline.</p>
-          {#if dict.updating}
+          {#if phase === 'downloading'}
+            <p class="dl-title">Downloading dictionary…</p>
             <div class="track"><div class="fill" style="width:{Math.round(dict.progress * 100)}%"></div></div>
-            <p class="dl-sub">Downloading… {Math.round(dict.progress * 100)}%</p>
+            <p class="dl-sub">{Math.round(dict.progress * 100)}%</p>
+          {:else if phase === 'retrying'}
+            <p class="dl-title">Waiting to resume the download…</p>
+            {#if dict.error}<p class="dl-sub">{dict.error}</p>{/if}
+          {:else if phase === 'preparing' || phase === 'ready' || phase === 'checking'}
+            <!-- Installed (or still being checked), with the segmenter being prepared:
+                 never re-offer the download for a dictionary that is already here. -->
+            <p class="dl-title">Preparing the dictionary…</p>
+            <div class="loading"><div class="spinner"></div></div>
+          {:else if phase === 'unavailable'}
+            <p class="dl-title">Dictionary unavailable</p>
+            <p class="dl-sub">This device’s storage couldn’t be opened. Try again after restarting the app.</p>
           {:else}
+            <p class="dl-title">Dictionary not installed</p>
+            <p class="dl-sub">Download the Japanese dictionary (~few MB) to look up words offline.</p>
             <button class="dl-btn" onclick={ondownload}>Download dictionary</button>
             {#if dict.error}<p class="err">{dict.error}</p>{/if}
           {/if}
         </div>
       {:else if result}
         <div class="entries">
-          {#if result.reasons.length}
-            <div class="reasons">
-              {#each result.reasons as r}<span class="chip">{r}</span>{/each}
-            </div>
-          {/if}
-          {#each result.entries as entry, i (entry.headword + entry.reading + ':' + i)}
+          {#each result.entries as entry, i (entry.id ?? entry.headword + entry.reading + ':' + i)}
             <div class="entry">
+              <!-- Per entry: one result can mix entries reached by different deinflections
+                   (した → する "past", alongside the noun 下 with none). -->
+              {#if entry.reasons?.length}
+                <div class="reasons">
+                  {#each entry.reasons as r}<span class="chip">{r}</span>{/each}
+                </div>
+              {/if}
               <div class="head">
                 <span class="word" lang="ja">{entry.headword}</span>
                 {#if !entry.kanaOnly && entry.reading}
@@ -126,12 +160,17 @@
                 {#each entry.senses as sense}
                   <li>
                     {#if sense.pos.length}<span class="pos">{sense.pos.join(', ')}</span>{/if}
+                    {#if sense.misc?.length}<span class="pos">{sense.misc.join(', ')}</span>{/if}
                     <span class="gloss">{sense.glosses.join('; ')}</span>
                   </li>
                 {/each}
               </ol>
             </div>
           {/each}
+        </div>
+      {:else if loading}
+        <div class="loading">
+          {#if slow}<div class="spinner"></div>{/if}
         </div>
       {:else}
         <div class="none">
@@ -140,6 +179,9 @@
         </div>
       {/if}
     </div>
+    {#if loading && result && slow}
+      <div class="spin-over" aria-hidden="true"><div class="spinner"></div></div>
+    {/if}
     {#if showActions}
       <div class="actions">
         <button class="hl-toggle" class:on={highlighted} onclick={ontogglehighlight}>
@@ -150,8 +192,6 @@
     {/if}
   </div>
 {/if}
-
-<svelte:window onkeydown={(e) => open && e.key === 'Escape' && (open = false)} />
 
 <style>
   .popup {
@@ -199,7 +239,20 @@
   .loading {
     display: grid;
     place-items: center;
+    min-height: 22px;
     padding: 18px;
+  }
+  /* A re-targeted card: the previous word stays readable, dimmed, while the next loads. */
+  .body.stale {
+    opacity: 0.45;
+    transition: opacity 0.12s var(--ease);
+  }
+  .spin-over {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
   }
   .spinner {
     width: 22px;
@@ -219,7 +272,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 5px;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
   }
   .chip {
     font-size: 11px;

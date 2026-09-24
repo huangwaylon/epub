@@ -21,43 +21,48 @@ signatures, and extension recipes. This skill is the quick procedure.
    whose measured box actually contains the point (the caret APIs return a *boundary*, so
    trusting their offset mis-resolves the far half of every glyph; blank taps return null, and
    a tap on furigana redirects to the ruby base) →
-   gathers the contiguous word-char run on **both sides** of the tap (`MAX_BEFORE`/`MAX_AFTER`,
-   **skipping `<rt>/<rp>` furigana**, clause-bounded) and the tap's offset. Returns
-   `{text, tapOffset}` (or null for blank/non-word taps).
-2. **Segment** — `lookupAt(text, tapOffset)` in `src/services/jp/lookup.ts` finds the word
-   boundary via **kuromoji** (`segment.ts`, `tokenStartAt`): the MeCab/IPADIC token containing
-   the tap. kuromoji loads lazily (~19 MB IPADIC); until ready (or if it splits a word JMdict
-   lemmatises differently) it falls back to **greedy leftmost-covering** (scan starts
-   0..tapOffset). So tapping any kanji of a word (決/心 in 決心) resolves the whole word.
-3. **Match** — from the token start, `matchAt` does longest-match-first (len 16→1:
+   gathers the contiguous `WORD_CHAR` run on **both sides** of the tap (`MAX_BEFORE`/`MAX_AFTER`,
+   **skipping `<rt>/<rp>` furigana**, stopping at punctuation, ・, and **paragraph / `<br>`
+   breaks** via `breakBetween`) and the tap's offset. Returns `{text, tapOffset, positions}`
+   (or null for blank/non-word taps).
+2. **Segment** — `resolveLookup(text, tapOffset)` in `lookup.ts` (worker) waits ≤1.2 s for
+   kuromoji, captures `ready`, then `tokenSpanAt` (`segment.ts`) gives the IPADIC token
+   `{start, end}` containing the tap — from the **lattice + Viterbi path** (`tokenSpans`), never
+   `tokenize()`. Until kuromoji is ready (or if its token yields no match) it falls back to
+   **greedy leftmost-covering**, all starts probed concurrently, leftmost wins.
+3. **Match** — from the token start, `matchAt` does longest-match-first (len 12→minLen:
    `toNormalized()` → `deinflect()` → `getWords(...,{matchType:'exact'})`, `candidateMatches`
-   gating) → `{matchLength, reasons, entries}`. (`lookup(window)` is the old forward-only wrapper.)
-4. **Deinflect** — `deinflect(word)` in `src/services/jp/deinflect.ts` (vendored from 10ten,
-   **GPL-3.0**) returns `CandidateWord[]` (`{word, type (WordType bitfield), reasonChains}`).
-5. **DB** — `src/services/jp/dictdb.ts` owns the `JpdictIdb` singleton; `downloadDictionary`
-   pulls JMdict from data.10ten.life into IndexedDB (offline after); the `dict` store
-   (`src/stores/dict.svelte.ts`) holds `{state, updating, progress, error}`.
-6. **UI** — `Reader.svelte` `tryDefine` → `DictionaryPopup.svelte`. Download is also
-   reachable from `ShelfSettings.svelte`.
+   gating). At the winning length **every candidate is merged** (dedupe by id, per-entry
+   `reasons`); deinflected entries lead when the span crosses the token end (勉強した → する, not
+   下). `toEntry` uses jpdict-idb `match`/`matchRange` flags for headword/reading/sense order.
+4. **Deinflect** — `deinflect(word)` in `deinflect.ts` (vendored from 10ten, **GPL-3.0**).
+5. **DB** — `dictdb.ts`: `downloadDictionary` (JMdict, deduped, transient errors ⇒
+   `'retrying'` not reject), `cacheIpadic` (IPADIC → Cache API `kuromoji-ipadic-v2`),
+   `downloadAndCacheDictionary` (shelf) / `downloadAndWarmDictionary` (reader), `dictPhase()`
+   for UI; the `dict` store holds `{state, updating, progress, warming, error}`.
+6. **Client** — `lookupClient.ts`: `lookupAt`, `warmupLookup`, `pingLookup` (resume liveness),
+   `disposeLookup`; the only result cache (`RESULT_CACHE`, ready-derived results only).
+7. **UI** — `Reader.svelte` `tryDefine` → `DictionaryPopup.svelte`; `ShelfSettings.svelte`.
 
 ## Rules & gotchas
 - **GPL:** `deinflect.ts` is GPL-3.0; reimplement it if you need to relicense the app.
-- **kuromoji dict + loader shim.** The ~19 MB IPADIC dict is staged into `public/kuromoji/dict/`
-  by `scripts/copy-kuromoji-dict.mjs` (via `predev`/`prebuild`; gitignored). kuromoji's stock
-  loader hangs if the server auto-gzips the dict, so `src/services/jp/kuromojiLoader.cjs` is
-  aliased in via `vite.config.ts` (`resolve.alias` + `optimizeDeps.rolldownOptions`). Symptom of
-  breakage: dict popup stuck on the spinner + console `Uncaught (in promise)`.
-- **`DictionaryPopup` each-key must include the index.** JMdict homographs share headword+reading
-  (e.g. 度), so the `{#each result.entries (…)}` key uses `…+ ':' + i` — else `each_key_duplicate`
-  crashes the popup. Don't drop the index.
+- **Memory is the constraint (iOS kills the PWA).** kuromoji is ≈30 MB resident only because
+  (a) `scripts/copy-kuromoji-dict.mjs` stages a **trimmed** IPADIC (11 files, 11.3 MB gz,
+  27.4 MB inflated, **no `tid_pos`**), (b) `kuromojiLoader.cjs` (aliased in `vite.config.ts`)
+  inflates with `DecompressionStream`, skips `tid_pos`, and flattens target maps into
+  Int32Arrays, (c) boundaries come from the lattice. Don't call `tokenize()`/`getFeatures`, don't
+  re-add a JS inflate lib, and keep `segment.golden.test.ts` green when touching any of this.
+- **Keep three lists in sync:** `STAGED` (staging script), `IPADIC_FILES` (`ipadic.ts`), and the
+  cache name `IPADIC_CACHE` = workbox `cacheName` in `vite.config.ts` (`kuromoji-ipadic-v2`).
+- **Readiness is captured when the path is chosen**, never after the awaits; only ready results
+  are cached (`RESULT_CACHE`).
+- **`DictionaryPopup` each-key must include the index** (or use `entry.id`). JMdict homographs
+  share headword+reading (e.g. 度).
 - **`toNormalized` returns a TUPLE** `[string, number[]]`, not `{result}`.
 - **Ruby skip uses `tagName.toUpperCase()`** — EPUB content is XHTML where tags are
-  lowercase (`rt`), so a case-sensitive `=== 'RT'` check silently fails. Don't regress this.
-- Word glosses are **always English** — `downloadDictionary('en')` is hardcoded at every
-  call site. There is no sentence-translation feature; the dictionary is the only language
-  feature, and it works fully offline once downloaded.
-- `lookup.ts` reads jpdict records loosely (`any`, fields `k`/`r`/`s`) rather than the
-  exported `WordResult` type.
+  lowercase (`rt`). Same for block/`br` detection in `blockOf`/`breakBetween`.
+- Word glosses are **always English** — `'en'` is hardcoded at every call site.
+- `lookup.ts` reads jpdict records loosely (`any`, fields `id`/`k`/`r`/`s` + match flags).
 
 ## Common tasks
 - **Tighten matching** → extend `candidateMatches` with a full WordType↔POS map (see
@@ -65,8 +70,9 @@ signatures, and extension recipes. This skill is the quick procedure.
 - **Add kanji / name lookups** → use `getKanji` / `getNames` from `@birchill/jpdict-idb`
   and add a series to the download flow.
 - **Pitch accent display** → `DictEntry.pitch` is already parsed (`readingAccent`); render it.
-- **Tests** → `src/services/jp/deinflect.test.ts` (pure, runs in `npm test`). Add cases for
-  new deinflection coverage.
+- **Tests** → all in `src/services/jp/*.test.ts` (`npm test`): deinflect, extract (fake DOM),
+  segment + the real-dictionary golden test, lookup (mocked jpdict-idb), worker protocol,
+  client, dictdb. Add a lookup case for any new ranking rule.
 
 ## Verify
 `npm run check` and `npm test`, then the **tsuzuri-verify** skill: download the dictionary

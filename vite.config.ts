@@ -57,6 +57,8 @@ export default defineConfig(({ command }) => {
       svelte(),
       VitePWA({
         registerType: 'prompt',
+        // Manifest icons are only read by the OS at install; don't precache them.
+        includeManifestIcons: false,
         manifest: {
           name: 'Tsuzuri — Japanese Reader',
           short_name: 'Tsuzuri',
@@ -86,23 +88,17 @@ export default defineConfig(({ command }) => {
           clientsClaim: true,
           // Precache the app shell. Books live in OPFS and the JMdict data lives in
           // jpdict's own IndexedDB, so neither is fetched through the service worker.
-          // (No web fonts are bundled — the app uses the system JP stack — so there's
-          // nothing to glob beyond JS/CSS/HTML and the favicon/icon images.)
-          globPatterns: ['**/*.{js,css,html,svg,png}'],
-          // PDF.js and the ~19 MB kuromoji IPADIC dict are large; keep them out of the
-          // install-time precache (the dict is runtime-cached on first use, below).
-          // Also drop foliate's format loaders this app can never reach — it opens
-          // EPUB only, with no TTS/search UI — so the PWA install isn't padded with
-          // ~17 KB of dead chunks the browser would never request.
-          globIgnores: [
-            '**/pdfjs/**',
-            '**/kuromoji/**',
-            '**/mobi-*.js',
-            '**/fb2-*.js',
-            '**/comic-book-*.js',
-            '**/tts-*.js',
-            '**/search-*.js',
-          ],
+          // No web fonts are bundled (the app uses the system JP stack). Of the images,
+          // only the favicon and the Apple touch icon are referenced by the page; the
+          // manifest icons and the iPad splash screens (public/splash/) are fetched by
+          // the OS at install time, so they stay out of the install-time download.
+          globPatterns: ['**/*.{js,css,html}', 'favicon.svg', 'icons/apple-touch-icon-180.png'],
+          // The ~19 MB kuromoji IPADIC dict is runtime-cached on first use (below), not
+          // precached. Also drop foliate's format loaders this app can never reach — it
+          // opens EPUB only, with no TTS/search UI — so the PWA install isn't padded with
+          // ~37 KB of dead chunks the browser would never request. The `foliate-` prefix
+          // comes from `chunkFileNames` below, so these can't match an app chunk.
+          globIgnores: ['**/kuromoji/**', 'assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js'],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           navigateFallback: `${base}index.html`,
           cleanupOutdatedCaches: true,
@@ -119,7 +115,9 @@ export default defineConfig(({ command }) => {
               urlPattern: /\/kuromoji\/dict\/.*\.dat\.gz$/,
               handler: 'CacheFirst',
               options: {
-                cacheName: 'kuromoji-ipadic',
+                // Versioned: bump with the dict contents. The old 'kuromoji-ipadic' cache
+                // is deleted at startup (main.ts).
+                cacheName: 'kuromoji-ipadic-v2',
                 cacheableResponse: { statuses: [0, 200] },
               },
             },
@@ -132,6 +130,22 @@ export default defineConfig(({ command }) => {
         },
       }),
     ],
+    build: {
+      rolldownOptions: {
+        output: {
+          // Prefix foliate-js chunks so the precache ignore list above targets its
+          // unused format loaders exactly, rather than any chunk that happens to be
+          // called e.g. `search-*`.
+          chunkFileNames(chunk) {
+            const foliate = (id: string) => id.includes('/vendor/foliate-js/')
+            const isFoliate = chunk.facadeModuleId
+              ? foliate(chunk.facadeModuleId)
+              : chunk.moduleIds.length > 0 && chunk.moduleIds.every(foliate)
+            return isFoliate ? 'assets/foliate-[name]-[hash].js' : 'assets/[name]-[hash].js'
+          },
+        },
+      },
+    },
     server: {
       host: true, // expose on LAN for on-device iOS testing
     },

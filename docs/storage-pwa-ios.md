@@ -26,7 +26,8 @@ position or range, stable across reflow/font/writing-mode changes — see
 | Export | Kind | Value / store |
 | --- | --- | --- |
 | `WritingModePref` | type | `'auto' \| 'horizontal' \| 'vertical'` — reader override on top of the EPUB's declared mode. |
-| `ThemeName` | type | `'light' \| 'sepia' \| 'dark'`. |
+| `ResolvedTheme` | type | `'light' \| 'sepia' \| 'dark'` — a concrete palette; what `<html data-theme>` is set to. |
+| `ThemeName` | type | `'auto' \| ResolvedTheme` — the stored preference; `'auto'` follows `prefers-color-scheme` (light ↔ dark). |
 | `AnnotationKind` | type | `'highlight' \| 'bookmark'`. |
 | `HIGHLIGHT_HEX` | const | `'#ffd54a'` — the single highlight colour (reads well behind text at ~0.3 overlay opacity). No colour picker, no per-highlight `color` field. |
 | `BookMeta` | interface | Shelf entry, one per book → `books` store. |
@@ -77,7 +78,7 @@ position or range, stable across reflow/font/writing-mode changes — see
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `theme` | `ThemeName` | `'light'` | |
+| `theme` | `ThemeName` | `'auto'` | New users follow the OS; existing users keep their stored value. |
 | `fontScale` | `number` | `1` | `1` = 100%. |
 | `lineHeight` | `number` | `1.9` | |
 | `marginScale` | `number` | `1` | Multiplies the base page margin. |
@@ -95,16 +96,20 @@ Layout: OPFS root (`navigator.storage.getDirectory()`) → `books/` directory �
 `${id}.epub` per book. The IndexedDB-backed `*BlobFallback` helpers from `db.ts` are the
 fallback path.
 
-**Feature detection — `canUseOpfs()`.** Memoised in module flags (`opfsChecked`,
-`opfsUsable`), so the probe runs at most once per page load. It does **not** trust mere
-presence of `getDirectory` — it *exercises a write* (a `.probe` file via `createWritable`),
-because some engines expose OPFS handles without a working `createWritable`. `getBooksDir()`
-returns `null` (rather than throwing) when the API is missing, forcing the fallback path.
+**Feature detection — `opfsSupported()`.** A synchronous check for
+`navigator.storage.getDirectory` **and** `FileSystemFileHandle.prototype.createWritable`
+(older WebKit exposed OPFS with only worker-side sync access handles). This replaced a
+per-session `.probe` file create/write/remove. Runtime failures are still handled:
+`getBooksDir()` returns `null` (rather than throwing) when `getDirectory` rejects (e.g. a
+private-mode `SecurityError`), and a failed OPFS write in `putBook` removes the partial file
+and then **falls back to `bookBlobs`** — except for `QuotaExceededError`, which is rethrown
+(IDB shares the origin quota, so writing the bytes again would just fail slower).
 
 | Function | Signature | Behaviour |
 | --- | --- | --- |
-| `putBook` | `(id, data: Blob \| ArrayBuffer) => Promise<void>` | Normalises to `Blob`; writes `books/${id}.epub` via OPFS, else `putBlobFallback`. |
-| `getBookFile` | `(id) => Promise<File \| null>` | Reads OPFS handle (or `getBlobFallback`), **re-wraps** as `new File([...], '${id}.epub', { type: 'application/epub+zip' })`. `null` if absent. |
+| `putBook` | `(id, data: Blob \| ArrayBuffer) => Promise<void>` | Normalises to `Blob`; writes `books/${id}.epub` via OPFS, else (unsupported, or a non-quota write failure) `putBlobFallback`. |
+| `getBookFile` | `(id) => Promise<File \| null>` | Reads the OPFS file; on an OPFS **miss** (absent or zero-length) falls through to `getBlobFallback`. **Re-wraps** as `new File([...], '${id}.epub', { type: 'application/epub+zip' })`. `null` if absent from both. |
+| `hasBook` | `(id) => Promise<boolean>` | `getBookFile(id) !== null` — used by the re-import path to restore lost bytes. |
 | `deleteBook` | `(id) => Promise<void>` | Removes the OPFS entry (best-effort) **and** always calls `deleteBlobFallback` — covers bytes written before OPFS became usable. |
 
 The normalised name/MIME on `getBookFile` let the `File` pass straight to foliate's
@@ -115,8 +120,15 @@ The normalised name/MIME on `getBookFile` let the `File` pass straight to foliat
 
 ## 3. IndexedDB schema — `src/services/storage/db.ts`
 
-Opened lazily via a memoised `db()` promise: `openDB<TsuzuriDB>('tsuzuri', 1, { upgrade })`.
-DB name `tsuzuri`, **version 1**; `upgrade` creates every store (no migrations yet — see §8).
+Opened lazily via a memoised `db()` promise: `openDB<TsuzuriDB>('tsuzuri', 1, { upgrade,
+blocking, terminated })`. DB name `tsuzuri`, **version 1**; `upgrade` creates every store
+inside an `if (oldVersion < 1)` step (so future versions append steps — see §8).
+
+**Connection lifecycle.** The cached promise is dropped (so the next `db()` reopens) when
+the connection dies: `terminated` (iOS WebKit can sever IDB connections after long
+backgrounding), `blocking` (a newer build in another tab wants to upgrade — we also
+`close()` so it can proceed), or a failed open. Without this a dead handle would be reused
+forever.
 
 | Store | keyPath / key | Indexes | Value | Purpose |
 | --- | --- | --- | --- | --- |
@@ -133,7 +145,7 @@ All `await db()` first, so they are safe before the DB has opened.
 | Group | Functions |
 | --- | --- |
 | Books | `putBookMeta`, `getBookMeta`, `getAllBooks`, `deleteBookMeta` |
-| Progress | `getProgress`, `putProgress` |
+| Progress | `getProgress`, `getAllProgress` (every row, one transaction — the shelf), `putProgress` |
 | Annotations | `getAnnotations` (via `getAllFromIndex('annotations','byBook',id)`), `putAnnotation`, `deleteAnnotation`, `deleteBookCascade` |
 | Settings | `loadSettings` (`get('settings','reader')`), `saveSettings` (`put('settings', s, 'reader')`) |
 | Blob fallback | `putBlobFallback`, `getBlobFallback` (unwraps `.blob`), `deleteBlobFallback` |
@@ -172,16 +184,20 @@ for `quota === 0`.
 
 1. `id = sha256Hex(await file.arrayBuffer())` (content hash via `crypto.subtle.digest`,
    hex-encoded). The ArrayBuffer isn't held long-term, keeping peak heap near 1× file size.
-2. **Dedupe:** if `getBookMeta(id)` exists, only bump `lastOpenedAt`, `putBookMeta`, return
-   it — bytes are *not* re-stored.
-3. **Persist bytes:** `await putBook(id, file)` (OPFS → IndexedDB fallback, §2).
-4. **Rollback guard:** metadata parse + write run in a `try/catch`; on any throw it calls
-   `deleteBook(id)` and rethrows. The bytes are already persisted, so a throw — most
+2. **Dedupe:** if `getBookMeta(id)` exists, bump `lastOpenedAt`, `putBookMeta`, return it.
+   If its bytes are gone (`!hasBook(id)` — evicted/cleared), `putBook` rewrites them first;
+   that's what the reader's "please re-import the EPUB" message relies on.
+3. **Persist bytes ∥ parse:** `Promise.all([putBook(id, file), parseMeta(file)])` — both only
+   read the `File` (OPFS → IndexedDB fallback, §2).
+4. **Rollback guard:** the whole step 3 + the `putBookMeta` write run in a `try/catch`; on any
+   throw it calls `deleteBook(id)` and rethrows. Once bytes are persisted, a throw — most
    plausibly `putBookMeta` hitting quota on a near-full iPad — would otherwise orphan
    multi-MB OPFS bytes with no `books` row, invisible to the shelf and to `removeBook`,
    leaking against quota.
 5. **Parse metadata** (best-effort nested try/catch; failures fall back to defaults +
-   `console.warn`): `makeBook(file)` from vendored `src/vendor/foliate-js/view.js`, then
+   `console.warn`; `parseMeta` never rejects): `makeBook(file)` from vendored
+   `src/vendor/foliate-js/view.js` — **dynamically imported**, so foliate (view.js + epubcfi
+   + zip) stays off the shelf's cold-start critical path — then
    `title` ← `flattenLangMap(meta.title)` else filename; `author` ← array joined with `、`
    else single; `language` ← `meta.language[0]` or string or `''`; `dir` ← `'rtl'`/`'ltr'`;
    `cover` ← `thumbnailCover(book.getCover())` (320px-wide WebP `Blob`) or `undefined`.
@@ -200,7 +216,9 @@ for `quota === 0`.
 
 **UI wiring:** `src/stores/library.svelte.ts` holds reactive shelf state and exposes
 `importFiles(files)` (filters to `.epub` / `application/epub+zip`, tracks an `importing`
-counter, imports sequentially, then refreshes). Failures surface via `library.importError`
+counter, imports sequentially, refreshing the shelf after each file of a batch and once at the
+end). `refreshLibrary` reads `listBooks` + `getAllProgress` in parallel and carries a
+generation counter, so an older refresh finishing late can't overwrite a newer one. Failures surface via `library.importError`
 (a dismissible shelf alert) — a standalone iOS PWA has no visible console, so a silent error
 would just read as "the book never appeared." `Shelf.svelte` triggers import from a hidden
 `<input>` (§6/§7) and routes long-press delete to `removeBook`.
@@ -213,15 +231,16 @@ would just read as "the book never appeared." `Shelf.svelte` triggers import fro
 
 | Option | Value / effect |
 | --- | --- |
+| `includeManifestIcons` | `false` — the manifest icons are read by the OS at install, not by the page, so they aren't precached. |
 | `registerType` | `'prompt'` — SW does **not** auto-activate an update; the app surfaces a refresh prompt. No `skipWaiting`, so a reading user is never reloaded out from under. |
 | `manifest` | `name: 'Tsuzuri — Japanese Reader'`, `short_name: 'Tsuzuri'`, `display: 'standalone'`, `orientation: 'any'`, `background_color`/`theme_color: '#f6f3ec'`. `start_url`/`scope` = `base`. Icons: `icon-192`, `icon-512` (`any`), `maskable-512` (`maskable`). |
 | `workbox.clientsClaim` | `true` — a freshly-installed SW takes control of the already-loaded page immediately, so the IPADIC dict fetched *in that first session* (right after download → `warmupLookup`) is runtime-cached while still online. |
-| `workbox.globPatterns` | `**/*.{js,css,html,svg,png}` — **app shell only** (no web fonts are bundled; the app uses the system JP stack). |
-| `workbox.globIgnores` | `**/pdfjs/**`, `**/kuromoji/**`, and dead foliate format loaders (`mobi-*`, `fb2-*`, `comic-book-*`, `tts-*`, `search-*`) — keeps the ~19 MB IPADIC dict and ~17 KB of unreachable chunks out of the install-time precache. (`**/pdfjs/**` is a vestigial safety glob: PDF.js was removed from the foliate fork, so it now matches nothing — see [`docs/reader-engine.md`](./reader-engine.md) §1.) |
+| `workbox.globPatterns` | `**/*.{js,css,html}`, `favicon.svg`, `icons/apple-touch-icon-180.png` — **app shell only** (no web fonts are bundled; the app uses the system JP stack). Manifest icons and `public/splash/*` are fetched by the OS at install, so they're not precached. |
+| `workbox.globIgnores` | `**/kuromoji/**` and dead foliate format loaders `assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js` — keeps the ~19 MB IPADIC dict and ~37 KB of unreachable chunks out of the install-time precache. The `foliate-` prefix comes from `build.rolldownOptions.output.chunkFileNames` (any chunk whose facade — or every module — is under `src/vendor/foliate-js/`), so the pattern can't catch an app chunk. |
 | `workbox.maximumFileSizeToCacheInBytes` | `6 * 1024 * 1024`. |
 | `workbox.navigateFallback` | `${base}index.html` — SPA works offline for any in-scope route. |
 | `workbox.cleanupOutdatedCaches` | `true` — drops stale caches across deploys. |
-| `workbox.runtimeCaching` | The ~19 MB IPADIC `*.dat.gz` under `/kuromoji/dict/`: `CacheFirst`, `cacheName: 'kuromoji-ipadic'`, `cacheableResponse.statuses: [0, 200]`. **No `expiration`** — neither `maxAgeSeconds` *nor* `maxEntries`. The dict is build-versioned immutable data and an all-or-nothing set of ~12 shards; any LRU/age purge could evict one shard and leave a partial dict (a failed trie build, with no way to refetch offline). `cleanupOutdatedCaches` handles cross-deploy staleness instead. |
+| `workbox.runtimeCaching` | The ~19 MB IPADIC `*.dat.gz` under `/kuromoji/dict/`: `CacheFirst`, `cacheName: 'kuromoji-ipadic-v2'` (bump with the dict contents; `main.ts` deletes the superseded `kuromoji-ipadic` at startup, since `cleanupOutdatedCaches` only prunes precaches), `cacheableResponse.statuses: [0, 200]`. **No `expiration`** — neither `maxAgeSeconds` *nor* `maxEntries`. The dict is build-versioned immutable data and an all-or-nothing set of ~12 shards; any LRU/age purge could evict one shard and leave a partial dict (a failed trie build, with no way to refetch offline). `cleanupOutdatedCaches` handles cross-deploy staleness instead. |
 | `devOptions` | `{ enabled: true, type: 'module' }` — SW runs under `vite dev` (with `server.host: true` exposing the dev server on the LAN) so install/offline can be tested on-device. |
 
 The `base` is `'/epub/'` for `vite build` (GitHub Pages project site) and `'/'` for
@@ -242,23 +261,40 @@ gotcha live in [`docs/deployment.md`](./deployment.md); the dictionary download/
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Tsuzuri" />
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
-<meta name="theme-color" content="#f6f3ec" media="(prefers-color-scheme: light)" />
-<meta name="theme-color" content="#16140f" media="(prefers-color-scheme: dark)" />
+<!-- splash:start … 36 apple-touch-startup-image links … splash:end -->
+<meta name="theme-color" content="#f6f3ec" />
+<script>/* inline: data-theme + theme-color from localStorage 'tsuzuri:settings' */</script>
 ```
 
 - `viewport-fit=cover` + `maximum-scale=1, user-scalable=no` → edge-to-edge layout under the
   notch/home indicator, no pinch-zoom. Chrome stays clear of indicators via
   `safe-area-inset-*` (e.g. `--safe-bottom` in `UpdateToast.svelte`).
 - `black-translucent` status bar → content renders under the status bar in standalone.
-- The two media-scoped `theme-color` tags give light/dark status-bar tinting and are also
-  updated at runtime per the active reader theme (see
-  [`docs/ui-and-design.md`](./ui-and-design.md)).
+- **One** `theme-color` meta (no `media` variants — they'd fight the runtime value). The inline
+  script sets it and `<html data-theme>` synchronously before first paint from the
+  localStorage settings mirror (`'auto'` → `prefers-color-scheme`); `applyTheme()` in
+  `settings.svelte.ts` then keeps it at the resolved theme's `--paper`, including live OS
+  appearance flips while on `'auto'`. The inline script's key and paper colours must stay in
+  sync with `settings.svelte.ts` / `app.css`. First launch after upgrading from a pre-mirror
+  build has no mirror yet, so it paints `'auto'` for a moment until IDB hydrates.
+- **iPad launch screens** (`apple-touch-startup-image`): 9 iPad screen sizes × portrait/landscape
+  × light/dark (`prefers-color-scheme`) = 36 PNGs in `public/splash/` (~320 KB total), plain
+  paper + the centred app mark. iOS only uses an image whose media query (device-width/height,
+  DPR 2, orientation) matches exactly, and fetches them at Add to Home Screen — hence not
+  precached. Whether iOS honours the `prefers-color-scheme` variant is **unverified on device**.
+  An unlisted iPad size just gets the default blank launch.
 
 ### SW registration & update UI
 
 - `src/main.ts` — `registerSW` (from `virtual:pwa-register`) wires `onNeedRefresh` →
-  `pwa.needRefresh = true` + `pwa.update = () => updateSW(true)` (skip-waiting reload), and
-  `onOfflineReady` → `pwa.offlineReady = true`.
+  `pwa.needRefresh = true` + `pwa.update = () => updateSW(true)` (skip-waiting reload),
+  `onOfflineReady` → `pwa.offlineReady = true`, and `onRegisteredSW` → on
+  `visibilitychange → visible` (and online) call `registration.update()`, **at most hourly**.
+  An installed PWA is resumed far more often than it's navigated, so the browser's own
+  navigation-time update check rarely runs.
+- **Update reload returns to the book.** `nav.route` is mirrored to sessionStorage
+  (`tsuzuri:route`); after the update reload `main.ts` restores it and `validateRestoredRoute`
+  drops back to the shelf if the book was removed. A cold launch is a new session → shelf.
 - `src/stores/pwa.svelte.ts` — Svelte 5 `$state`:
   `{ needRefresh, offlineReady, update }`, initialised falsy / no-op.
 - `src/lib/components/UpdateToast.svelte` — shows "A new version is ready." + **Refresh**
@@ -273,7 +309,10 @@ Run manually (`node scripts/gen-icons.mjs`). Uses **sharp** to rasterise two inl
 `public/icons/`: a **rounded** mark (rust `#b5552e` square, cream book) → `icon-192.png`,
 `icon-512.png`, `apple-touch-icon-180.png`; and a **maskable** variant (full-bleed
 background, artwork in the inner 80% safe zone) → `maskable-512.png`. All four PNGs are
-present in `public/icons/`.
+present in `public/icons/`. It also renders the iPad launch screens into `public/splash/` and
+**rewrites the `<link rel="apple-touch-startup-image">` tags in `index.html`** between the
+`splash:start` / `splash:end` markers (edit the `IPADS` list / `PAPER` colours there, not the
+HTML).
 
 ---
 
@@ -284,7 +323,7 @@ independently confirmed in-source.
 
 | Capability | iOS Safari status | Accommodation |
 | --- | --- | --- |
-| **OPFS** (`getDirectory`, `createWritable`) | Supported **16.4+** | Primary EPUB-byte store. `canUseOpfs()` write-probes before trusting it; falls back to `bookBlobs`. |
+| **OPFS** (`getDirectory`, `createWritable`) | Supported **16.4+** | Primary EPUB-byte store. `opfsSupported()` feature-checks `createWritable`; non-quota write failures and read misses fall back to `bookBlobs`. |
 | **Storage eviction** | Installed (Add-to-Home-Screen / standalone) PWAs are **exempt** from WebKit's 7-day script-writable-storage eviction. | Books survive across sessions when installed; storage is eviction-exempt for the whole origin. Also calls `navigator.storage.persist()` (`requestPersistence`) as belt-and-braces. If a *non-installed* tab is evicted, a `books` row can outlive its OPFS bytes; opening it (`getBookFile` → `null` with meta present) surfaces a specific *"this book's file is no longer on this device — please re-import"* message (`Reader.svelte`). |
 | **Storage quota** | **GB-scale** (≈10 GB observed) — not the old 50 MB myth. | `storageStatus()` reads the real `estimate()` quota; no artificial cap. |
 | **File System Access API** (`showOpenFilePicker`) | **Not available.** | Import uses a hidden `<input type="file" accept=".epub,application/epub+zip" multiple>` in `Shelf.svelte`, programmatically `.click()`ed. |
@@ -339,7 +378,7 @@ handle older rows where it's `undefined` (a default, or a backfill migration). N
 needed.
 
 **Change the blob backend.** `blobs.ts` is the only module that touches raw bytes; keep the
-three-function contract (`putBook` / `getBookFile` / `deleteBook`) and the `getBookFile → File`
+contract (`putBook` / `getBookFile` / `hasBook` / `deleteBook`) and the `getBookFile → File`
 (`type 'application/epub+zip'`) normalisation. `getBookFile` returning `null` is the "missing"
 signal.
 
@@ -354,8 +393,9 @@ through the settings store/UI. The settings store merge backfills missing keys f
 
 - **Import is `<input>`-only on iOS.** No share-target / file-handler / file-picker path; don't
   reach for `showOpenFilePicker`.
-- **OPFS feature detection must actually write.** Presence of `getDirectory` ≠ a working
-  `createWritable`; `canUseOpfs()` writes & deletes a `.probe` file — preserve that.
+- **OPFS detection checks `createWritable`, not just `getDirectory`.** Presence of
+  `getDirectory` ≠ main-thread writes. The check is a feature test; the safety net is
+  `putBook`'s catch → IDB fallback and `getBookFile`'s fall-through, so keep both.
 - **Settings use an out-of-line key.** The `settings` store has no `keyPath`; reads/writes must
   pass the literal key `'reader'`.
 - **`storage.estimate()` is approximate** (coarse for privacy) — only a usage indicator, never
@@ -363,7 +403,8 @@ through the settings store/UI. The settings store merge backfills missing keys f
 - **Deleting a book is two steps.** `deleteBookCascade` removes metadata/progress/annotations but
   **not** the blob; always pair with `deleteBook(id)` (this is what `removeBook` does). Bypassing
   `removeBook` orphans EPUB bytes.
-- **Dedupe is by content hash.** Re-importing identical bytes only bumps `lastOpenedAt`;
+- **Dedupe is by content hash.** Re-importing identical bytes bumps `lastOpenedAt` (and restores
+  the bytes if they were lost);
   identical content under different filenames collapses to one shelf entry.
 - **The IDB blob fallback is always cleaned up.** `deleteBook` deletes from both OPFS and
   `bookBlobs`, so an engine that gained/lost OPFS mid-life never leaks.

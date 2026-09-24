@@ -30,18 +30,40 @@ const DB_VERSION = 1
 
 let dbPromise: Promise<IDBPDatabase<TsuzuriDB>> | null = null
 
+/**
+ * The shared connection, opened lazily and cached. The cache is dropped whenever the
+ * connection dies so the next call reopens instead of reusing a dead handle: iOS
+ * WebKit can sever IDB connections after long backgrounding (`terminated`), and a
+ * newer build in another tab asking to upgrade fires `blocking` (we close so it can).
+ * A failed open isn't cached either.
+ */
 export function db(): Promise<IDBPDatabase<TsuzuriDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<TsuzuriDB>(DB_NAME, DB_VERSION, {
-      upgrade(database) {
-        database.createObjectStore('books', { keyPath: 'id' })
-        database.createObjectStore('progress', { keyPath: 'bookId' })
-        const ann = database.createObjectStore('annotations', { keyPath: 'id' })
-        ann.createIndex('byBook', 'bookId')
-        database.createObjectStore('settings')
-        database.createObjectStore('bookBlobs', { keyPath: 'id' })
+    const p: Promise<IDBPDatabase<TsuzuriDB>> = openDB<TsuzuriDB>(DB_NAME, DB_VERSION, {
+      upgrade(database, oldVersion) {
+        // Each block migrates *from* its version, so a future DB_VERSION bump adds a
+        // new `if (oldVersion < N)` step without re-creating existing stores.
+        if (oldVersion < 1) {
+          database.createObjectStore('books', { keyPath: 'id' })
+          database.createObjectStore('progress', { keyPath: 'bookId' })
+          const ann = database.createObjectStore('annotations', { keyPath: 'id' })
+          ann.createIndex('byBook', 'bookId')
+          database.createObjectStore('settings')
+          database.createObjectStore('bookBlobs', { keyPath: 'id' })
+        }
+      },
+      blocking() {
+        void p.then((d) => d.close())
+        if (dbPromise === p) dbPromise = null
+      },
+      terminated() {
+        if (dbPromise === p) dbPromise = null
       },
     })
+    p.catch(() => {
+      if (dbPromise === p) dbPromise = null
+    })
+    dbPromise = p
   }
   return dbPromise
 }
@@ -68,6 +90,11 @@ export async function deleteBookMeta(id: string): Promise<void> {
 
 export async function getProgress(bookId: string): Promise<ReadingProgress | undefined> {
   return (await db()).get('progress', bookId)
+}
+
+/** Every book's progress in one transaction (the shelf's rings). */
+export async function getAllProgress(): Promise<ReadingProgress[]> {
+  return (await db()).getAll('progress')
 }
 
 export async function putProgress(p: ReadingProgress): Promise<void> {

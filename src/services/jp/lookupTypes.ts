@@ -9,31 +9,48 @@
 export interface Sense {
   pos: string[]
   glosses: string[]
+  /** Usage notes for this sense (JMdict `misc`), labelled — e.g. "usually kana",
+   *  "colloquial", "honorific". Absent when there are none. */
+  misc?: string[]
+  /** Whether this sense applies to the matched spelling/reading (JMdict restricts some
+   *  senses to particular kanji or kana forms). Matched senses are listed first; an
+   *  unmatched one belongs to another spelling of the same entry. Absent ⇒ unknown
+   *  (treat as matched). */
+  matched?: boolean
 }
 
 export interface DictEntry {
-  /** Primary written form (kanji if present, else kana). */
+  /** JMdict entry id — stable and unique, so a good `{#each}` key. */
+  id?: number
+  /** The written form that matched the tapped text: the matched kanji spelling, or the
+   *  kana when the text was kana and the word is usually written in kana (or has no
+   *  kanji at all). Falls back to the entry's first form. */
   headword: string
-  /** Kana reading. */
+  /** Kana reading — the matched reading when the text was kana, else the first reading
+   *  that applies to `headword`. */
   reading: string
-  /** Pitch-accent position (mora index), if known. */
+  /** Pitch-accent position (mora index) of `reading`, if known. */
   pitch?: number
-  /** True when the headword is itself just kana (so reading is redundant). */
+  /** True when `headword` is itself kana (so showing `reading` too is redundant). */
   kanaOnly: boolean
   senses: Sense[]
+  /** Deinflection reasons that turned the tapped surface into this entry's dictionary
+   *  form, outermost first (e.g. ["past"] for した → する). Empty for a surface match.
+   *  Entries in one result can differ here, so render these per entry. */
+  reasons?: string[]
 }
 
 export interface LookupResult {
   /**
-   * Offset of the match within the text passed to `lookupAt` (0 for `lookup`,
-   * which is forward-only from the window start). With `matchLength` this gives
-   * the matched word's span `[matchStart, matchStart + matchLength)`, which the
+   * Offset of the match within the text passed to `lookupAt`. With `matchLength` this
+   * gives the matched word's span `[matchStart, matchStart + matchLength)`, which the
    * caller uses to build a DOM range for the tapped word (e.g. to highlight it).
    */
   matchStart: number
   /** Number of characters from `matchStart` that were matched. */
   matchLength: number
-  /** Human-readable deinflection reasons, outermost first. */
+  /** Deinflection reasons of the **first** entry (= `entries[0].reasons`), kept for
+   *  callers that render one reason row per result. Prefer `DictEntry.reasons`. */
   reasons: string[]
   entries: DictEntry[]
 }

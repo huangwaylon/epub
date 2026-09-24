@@ -63,3 +63,52 @@ export function placeAnchored(
 
   return { left, top }
 }
+
+/** A rectangle in top-window coordinates (a tapped glyph, a matched word). */
+export interface AnchorRect {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+/**
+ * Place a `w`×`h` card next to the word the reader tapped, never over it.
+ *
+ * - **Horizontal text:** above the word's line, else below it (`placeAnchored` on the
+ *   word rect — not the tap point, so a tall line or ruby never ends up under the card).
+ * - **Vertical text (縦書き):** *beside* the column — to the left if the card fits there
+ *   (the direction the reader's eye travels next in vertical-rl is leftward, but the
+ *   column itself and those to its right stay readable), else to the right — vertically
+ *   centred on the word and clamped inside the safe area. Above/below would cover the
+ *   rest of the very column being read.
+ */
+export function placeNearWord(
+  rect: AnchorRect,
+  w: number,
+  h: number,
+  vertical: boolean,
+  opts: { gap?: number; margin?: number } = {},
+): { left: number; top: number } {
+  if (!vertical) return placeAnchored((rect.left + rect.right) / 2, rect.top, rect.bottom, w, h, opts)
+  const gap = opts.gap ?? 12
+  const base = opts.margin ?? 10
+  const ins = safeInsets()
+  const mTop = base + ins.top
+  const mBottom = base + ins.bottom
+  const mLeft = base + ins.left
+  const mRight = base + ins.right
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+
+  let left: number
+  if (rect.left - gap - w >= mLeft) left = rect.left - gap - w
+  else if (rect.right + gap + w <= vw - mRight) left = rect.right + gap
+  // Neither side fits (a very narrow screen): take the roomier side and clamp.
+  else left = rect.left - mLeft >= vw - mRight - rect.right ? mLeft : vw - mRight - w
+  left = Math.max(mLeft, Math.min(vw - w - mRight, left))
+
+  let top = (rect.top + rect.bottom) / 2 - h / 2
+  top = Math.max(mTop, Math.min(vh - h - mBottom, top))
+  return { left, top }
+}

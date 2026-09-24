@@ -16,23 +16,22 @@
   } = $props()
 
   let bar = $state<HTMLDivElement>()
-  let pos = $state({ left: 0, top: 0 })
+  // Measured and placed synchronously in the flush that mounts it (before paint), so the
+  // toolbar never shows a first frame at 0,0 (mirrors DictionaryPopup).
+  let pos = $state<{ left: number; top: number } | null>(null)
   $effect(() => {
-    if (!open) return
+    if (!open) {
+      pos = null
+      return
+    }
+    if (!bar) return
     const r = rect
-    // Cancel on re-trigger / close so a stale frame can't reposition a toolbar that's
-    // already gone (mirrors DictionaryPopup).
-    const id = requestAnimationFrame(() => {
-      const w = bar?.offsetWidth ?? 200
-      const h = bar?.offsetHeight ?? 48
-      pos = placeAnchored(r.left + r.width / 2, r.top, r.top + r.height, w, h)
-    })
-    return () => cancelAnimationFrame(id)
+    pos = placeAnchored(r.left + r.width / 2, r.top, r.top + r.height, bar.offsetWidth, bar.offsetHeight)
   })
 </script>
 
 {#if open}
-  <div bind:this={bar} class="toolbar" style="left:{pos.left}px; top:{pos.top}px" role="toolbar">
+  <div bind:this={bar} class="toolbar" style="left:{pos?.left ?? 0}px; top:{pos?.top ?? 0}px;{pos ? '' : ' visibility:hidden'}" role="toolbar">
     <button class="act" onclick={onHighlight}>
       <span class="swatch" style="--c:{HIGHLIGHT_HEX}"></span>
       Highlight

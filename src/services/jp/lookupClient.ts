@@ -2,8 +2,8 @@
  * Main-thread client for the dictionary lookup worker (`lookup.worker.ts`). Owns the
  * Worker, correlates request/response by id, and exposes the same `lookupAt` shape
  * the reader already used — so moving the heavy pipeline off-thread is transparent to
- * callers. The worker is created lazily on first use (or `warmupLookup`), keeping the
- * ~19 MB kuromoji engine and jpdict-idb out of the startup bundle entirely.
+ * callers. The worker is created lazily on first use (or `warmupLookup`), keeping
+ * kuromoji and jpdict-idb out of the startup bundle entirely.
  *
  * The whole lookup engine lives only in the worker bundle — there is no main-thread
  * fallback copy, which would otherwise duplicate kuromoji + jpdict-idb + the
@@ -12,38 +12,40 @@
  * constructed, lookups resolve to `null` (the popup shows no result) rather than
  * crashing, and the rest of the reader is unaffected.
  *
- * Two things live here rather than in the worker precisely *because* the worker is
- * disposable (it is shed on every backgrounding): `RESULT_CACHE`, so recent answers
- * outlive it, and `lookupReady()`, so the UI can tell a still-loading segmenter from a
- * genuine no-match.
+ * The worker is disposable — the reader sheds it after 60 s in the background and on
+ * exit, and iOS may kill it under memory pressure — so two things live here instead:
+ * `RESULT_CACHE`, so recent answers outlive it, and `pingLookup()`, so the reader can
+ * detect (and replace) a worker that died without telling anyone.
+ *
+ * Public API: `lookupAt`, `warmupLookup`, `pingLookup`, `disposeLookup`.
  */
 import type { LookupResult } from './lookupTypes'
 
 export type { Sense, DictEntry, LookupResult } from './lookupTypes'
 
+/** A worker reply: `{ id, result, ready? }` (see lookup.worker.ts). */
+interface Reply {
+  result: unknown
+  ready?: boolean
+}
+
 let worker: Worker | null = null
 let seq = 0
-// Resolvers for in-flight requests, keyed by id. Lookups resolve with a LookupResult
-// (or null); warmup and the readiness probe resolve with a boolean — all flow back
-// through the worker's `{ id, result }` message, so a single map serves them. The
-// optional second argument carries the reply's `ready` flag (see `RESULT_CACHE`).
-const pending = new Map<number, (r: any, ready?: boolean) => void>()
+/** Resolvers for in-flight requests, keyed by id. `null` ⇒ the worker went away. */
+const pending = new Map<number, (reply: Reply | null) => void>()
 
 /** Lookup results the worker produced with kuromoji **ready** — i.e. from the accurate
- *  morphological path — cached here on the main thread so they survive `disposeLookup()`.
- *
- *  `lookup.ts` has its own (larger) LRU, but it lives *inside* the worker and the worker
- *  is shed on every backgrounding, so on iOS that cache is destroyed constantly. Keeping
- *  a copy out here means a re-tap of a recently-defined word answers instantly — without
- *  even constructing a worker, let alone waiting on the kuromoji rebuild that would
+ *  morphological path — cached here on the main thread so they survive `disposeLookup()`
+ *  and a worker crash. A re-tap of a recently-defined word answers instantly, without
+ *  even constructing a worker, let alone waiting on a kuromoji rebuild that would
  *  otherwise push the tap onto the greedy fallback.
  *
- *  Only ready-derived results are stored, which is what makes this safe: a greedy
- *  fallback result can never be served in place of a morphological one, so this cache
- *  needs no equivalent of the worker LRU's readiness bit. Smaller than the worker's LRU
- *  (200) because it is never torn down and holds main-thread memory for the session. */
+ *  Only ready-derived results are stored (the worker tags each reply with the readiness
+ *  captured when it chose its path), which is what makes this safe: a greedy fallback
+ *  result can never be served in place of a morphological one. This is the only result
+ *  cache in the pipeline. */
 const RESULT_CACHE = new Map<string, LookupResult | null>()
-const RESULT_CACHE_MAX = 100
+const RESULT_CACHE_MAX = 200
 
 function cacheKey(text: string, tapOffset: number): string {
   return `${tapOffset} ${text}`
@@ -55,6 +57,12 @@ function cacheGet(key: string): LookupResult | null | undefined {
   RESULT_CACHE.delete(key) // re-insert to mark most-recently-used
   RESULT_CACHE.set(key, v!)
   return v
+}
+
+/** Drop every cached result — called when the dictionary data changes (a finished
+ *  download), since a "no match" cached before it may now have an answer. */
+export function clearLookupCache(): void {
+  RESULT_CACHE.clear()
 }
 
 function cacheSet(key: string, value: LookupResult | null): void {
@@ -70,23 +78,20 @@ let constructFailures = 0
 const MAX_CONSTRUCT_FAILURES = 3
 
 /** A tap-to-define round-trip (kuromoji segmentation + jpdict-idb lookup) is sub-100ms
- *  warm; this generous ceiling only fires when the worker is effectively gone (see
- *  `lookupAt`), never on a slow-but-alive lookup. */
+ *  warm; this generous ceiling only fires when the worker is effectively gone, never on
+ *  a slow-but-alive lookup. */
 const LOOKUP_TIMEOUT_MS = 8000
 
-/** The cold kuromoji trie build reads the ~19 MB IPADIC dict and can run several
- *  seconds over a slow network on first download, so it gets a far more generous ceiling
- *  than a lookup. It exists only so a *dead* worker (OOM-killed mid-build without firing
- *  `onerror` — the documented iOS failure mode) can't hang the warmup promise forever:
- *  that would pin the dictionary-download "Caching…" UI and leave a dead worker that
- *  never self-heals (no later `lookupAt` timeout would fire if nothing taps). */
+/** The kuromoji build fetches ~11 MB of dict (from the Cache API once `cacheIpadic` has
+ *  run, else the network) and parses it. The ceiling exists only so a *dead* worker
+ *  (OOM-killed mid-build without firing `onerror` — the documented iOS failure mode)
+ *  can't hang the warmup promise, and whatever UI awaits it, forever. */
 const WARMUP_TIMEOUT_MS = 30000
 
-/** The readiness probe is answered synchronously by the worker, so any real delay means
- *  the worker is either mid-trie-build (CPU-bound, so it can't drain its message queue)
- *  or gone. Either way the honest answer is "not ready", and short — a caller is asking
- *  in order to update UI. */
-const READY_TIMEOUT_MS = 2000
+/** Default `pingLookup` ceiling. The worker answers a ping as soon as its event loop is
+ *  free; even mid-build its work is broken into async steps (fetch, native inflate, a
+ *  ~tens-of-ms parse), so a live worker answers well inside this. */
+const PING_TIMEOUT_MS = 2000
 
 /** Drop the current worker, failing anything in flight (resolve null, no crash). */
 function dropWorker(): void {
@@ -97,8 +102,9 @@ function dropWorker(): void {
   } catch {
     /* ignore */
   }
-  for (const [, resolve] of pending) resolve(null)
+  const waiting = [...pending.values()]
   pending.clear()
+  for (const resolve of waiting) resolve(null)
 }
 
 function getWorker(): Worker | null {
@@ -107,11 +113,11 @@ function getWorker(): Worker | null {
   try {
     worker = new Worker(new URL('./lookup.worker.ts', import.meta.url), { type: 'module' })
     constructFailures = 0
-    worker.onmessage = (e: MessageEvent<{ id: number; result: LookupResult | boolean | null; ready?: boolean }>) => {
+    worker.onmessage = (e: MessageEvent<{ id: number } & Reply>) => {
       const resolve = pending.get(e.data.id)
       if (resolve) {
         pending.delete(e.data.id)
-        resolve(e.data.result ?? null, e.data.ready)
+        resolve(e.data)
       }
     }
     // A runtime error kills this worker instance but is recoverable: drop it (so the
@@ -126,133 +132,92 @@ function getWorker(): Worker | null {
   return worker
 }
 
-/** Eagerly spin up the worker and build kuromoji (e.g. on book open, or right after the
- *  dictionary download) so the first tap-to-define hits the fast morphological path — and
- *  so the ~19 MB IPADIC dict is fetched and SW-runtime-cached *while still online*.
- *  Resolves `true` once the build (and thus the dict fetch) completes, `false` if the
- *  worker is unavailable or the build failed. Callers that report an "offline-ready"
- *  state should `await` this; a plain perf warm can ignore the result. */
-export function warmupLookup(): Promise<boolean> {
-  const w = getWorker()
-  if (!w) return Promise.resolve(false)
-  return new Promise<boolean>((resolve) => {
-    const id = ++seq
-    // iOS can reclaim a backgrounded/under-pressure worker *without* firing `onerror` —
-    // and the trie build is the longest, most memory-hungry op, so the likeliest to be
-    // OOM-killed. Without a guard the warmup promise (and its `await`ers — the "Caching…"
-    // state) would hang and the dead worker would never be replaced. Bail to false and
-    // drop the worker so the next call rebuilds a fresh one, mirroring `lookupAt`.
-    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
-      if (pending.delete(id)) {
-        dropWorker()
-        resolve(false)
-      }
-    }, WARMUP_TIMEOUT_MS)
-    const settle = (r: any) => {
-      if (timer !== undefined) {
-        clearTimeout(timer)
-        timer = undefined
-      }
-      resolve(r === true)
-    }
-    pending.set(id, settle)
-    try {
-      w.postMessage({ type: 'warmup', id })
-    } catch {
-      pending.delete(id)
-      settle(false)
-    }
-  })
-}
-
 /**
- * Whether the worker's kuromoji segmenter is built, i.e. whether a lookup right now
- * resolves word boundaries morphologically or falls back to greedy leftmost-covering.
- * Lets the UI distinguish "segmentation is still loading, this answer may improve" from
- * "there is genuinely no dictionary match".
- *
- * Purely a status query: it never *constructs* a worker (no worker ⇒ `false`) and, unlike
- * `lookupAt`, a timeout here does not drop the worker — a slow reply most likely means the
- * worker is busy in the middle of the very trie build we're asking about.
+ * Post one request and resolve with its reply — or `null` if it can't be sent, the
+ * worker dies, or no reply arrives within `timeoutMs`. iOS can reclaim a
+ * backgrounded/under-pressure worker *without* firing `onerror`; the request would then
+ * never get a reply, so every request is time-boxed, and a timeout drops the (presumed
+ * dead) worker so the next call builds a fresh one.
  */
-export function lookupReady(): Promise<boolean> {
-  const w = worker
-  if (!w) return Promise.resolve(false)
-  return new Promise<boolean>((resolve) => {
+function request(w: Worker, msg: Record<string, unknown>, timeoutMs: number): Promise<Reply | null> {
+  return new Promise<Reply | null>((resolve) => {
     const id = ++seq
-    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
-      if (pending.delete(id)) resolve(false)
-    }, READY_TIMEOUT_MS)
-    const settle = (r: any) => {
-      if (timer !== undefined) {
-        clearTimeout(timer)
-        timer = undefined
-      }
-      resolve(r === true)
-    }
-    pending.set(id, settle)
-    try {
-      w.postMessage({ type: 'ready', id })
-    } catch {
-      pending.delete(id)
-      settle(false)
-    }
-  })
-}
-
-/**
- * Tear down the lookup worker (and the ~tens-of-MB resident kuromoji trie it holds),
- * failing any in-flight lookups. Called when the reader unmounts so that memory isn't
- * pinned while no book is open — important on a memory-constrained iPad PWA. The worker
- * is rebuilt lazily (and re-warmed via `warmupLookup`) from the SW-cached dict on the
- * next book open, with no network.
- *
- * `RESULT_CACHE` deliberately survives this: it is a few hundred KB of plain data, not
- * the trie, and it is exactly what makes the first taps after a foreground fast and
- * correct while the worker rebuilds.
- */
-export function disposeLookup(): void {
-  dropWorker()
-  constructFailures = 0
-  seq = 0
-}
-
-export function lookupAt(text: string, tapOffset: number): Promise<LookupResult | null> {
-  const key = cacheKey(text, tapOffset)
-  const cached = cacheGet(key)
-  if (cached !== undefined) return Promise.resolve(cached)
-  const w = getWorker()
-  if (!w) return Promise.resolve(null)
-  return new Promise<LookupResult | null>((resolve) => {
-    const id = ++seq
-    // iOS can reclaim a backgrounded/under-pressure worker *without* firing `onerror`;
-    // the request would then never get a reply and this promise would hang, leaving the
-    // popup spinning forever and the resolver pinned in `pending`. Guard every lookup
-    // with a timeout that bails to null and drops the (presumed dead) worker, so the
-    // next tap lazily rebuilds a fresh one.
-    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (pending.delete(id)) {
         dropWorker()
         resolve(null)
       }
-    }, LOOKUP_TIMEOUT_MS)
-    const settle = (r: LookupResult | null, ready?: boolean) => {
-      if (timer !== undefined) {
-        clearTimeout(timer)
-        timer = undefined
-      }
-      // Cache only what the morphological path produced (including a definitive "no
-      // match"); a greedy-fallback answer is provisional and must be recomputed once
-      // the segmenter is up.
-      if (ready) cacheSet(key, r)
-      resolve(r)
-    }
-    pending.set(id, settle)
+    }, timeoutMs)
+    pending.set(id, (reply) => {
+      clearTimeout(timer)
+      resolve(reply)
+    })
     try {
-      w.postMessage({ type: 'lookup', id, text, tapOffset })
+      w.postMessage({ ...msg, id })
     } catch {
       pending.delete(id)
-      settle(null)
+      clearTimeout(timer)
+      resolve(null)
     }
   })
+}
+
+/** Eagerly spin up the worker, build kuromoji and open its IndexedDB connection (e.g. on
+ *  book open, or right after the dictionary download) so the first tap-to-define hits
+ *  the fast morphological path. Resolves `true` once the build completes, `false` if the
+ *  worker is unavailable or the build failed. A plain perf warm can ignore the result. */
+export async function warmupLookup(): Promise<boolean> {
+  const w = getWorker()
+  if (!w) return false
+  const reply = await request(w, { type: 'warmup' }, WARMUP_TIMEOUT_MS)
+  return reply?.result === true
+}
+
+/**
+ * Cheap liveness probe for the reader to call on resume. Resolves `true` if a worker
+ * exists and answered within `timeoutMs`. Resolves `false` if there is no worker (it was
+ * shed or never built) **or** it failed to answer — in which case it has been dropped, so
+ * the next `lookupAt`/`warmupLookup` builds a fresh one. Never constructs a worker itself.
+ *
+ * Typical use: `if (!(await pingLookup())) void warmupLookup()`.
+ */
+export async function pingLookup(timeoutMs = PING_TIMEOUT_MS): Promise<boolean> {
+  const w = worker
+  if (!w) return false
+  const reply = await request(w, { type: 'ping' }, timeoutMs)
+  return reply?.result === true
+}
+
+/**
+ * Tear down the lookup worker (and the ~30 MB resident kuromoji dictionary it holds),
+ * failing any in-flight lookups. Called when the reader unmounts, and after a sustained
+ * backgrounding, so that memory isn't pinned while it isn't needed — important on a
+ * memory-constrained iPad PWA. The worker is rebuilt lazily from the cached dict, with
+ * no network.
+ *
+ * `RESULT_CACHE` deliberately survives this: it is plain data, not the trie, and it is
+ * exactly what makes the first taps after a foreground fast and correct while the worker
+ * rebuilds.
+ */
+export function disposeLookup(): void {
+  dropWorker()
+  constructFailures = 0
+}
+
+/** Look up the word covering `text[tapOffset]`. Resolves `null` for no match, and also
+ *  (rather than throwing) when the worker is unavailable or unresponsive. */
+export async function lookupAt(text: string, tapOffset: number): Promise<LookupResult | null> {
+  const key = cacheKey(text, tapOffset)
+  const cached = cacheGet(key)
+  if (cached !== undefined) return cached
+  const w = getWorker()
+  if (!w) return null
+  const reply = await request(w, { type: 'lookup', text, tapOffset }, LOOKUP_TIMEOUT_MS)
+  if (!reply) return null
+  const result = (reply.result as LookupResult | null) ?? null
+  // Cache only what the morphological path produced (including a definitive "no
+  // match"); a greedy-fallback answer is provisional and must be recomputed once the
+  // segmenter is up.
+  if (reply.ready === true) cacheSet(key, result)
+  return result
 }

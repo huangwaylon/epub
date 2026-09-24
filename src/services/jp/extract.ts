@@ -13,7 +13,8 @@
  */
 
 export interface Extracted {
-  /** Contiguous Japanese run around the tap (rt/rp excluded, clause-bounded). */
+  /** Contiguous Japanese run around the tap (rt/rp excluded; bounded by punctuation,
+   *  non-Japanese characters, paragraph / <br> breaks and `MAX_BEFORE`/`MAX_AFTER`). */
   text: string
   /** Index within `text` of the tapped character. */
   tapOffset: number
@@ -37,16 +38,65 @@ export interface CharPosition {
 const MAX_BEFORE = 12
 const MAX_AFTER = 16
 
-/** Characters that can be part of a Japanese word: kana, CJK ideographs, the
- *  long-vowel mark (ー) and the iteration mark (々). Anything else — punctuation,
- *  spaces, latin, digits — is a word boundary that bounds the lookup run.
- *  Ranges: hiragana+katakana (U+3040–30FF), CJK Ext-A + Unified (U+3400–9FFF),
- *  and CJK Compatibility Ideographs (U+F900–FAFF). NOTE: the compat-block start
- *  glyph below is U+F900, which is visually identical to the CJK-Unified U+8C48 —
- *  do not retype it. Using U+8C48 here would span U+8C48–FAFF and wrongly include
- *  the UTF-16 surrogate range (U+D800–DFFF), matching lone surrogate halves. (The
- *  run is iterated per UTF-16 unit, so astral CJK — Ext-B+ — is out of scope.) */
-const WORD_CHAR = /[぀-ヿ㐀-鿿豈-﫿ー々]/
+/** Characters that can be part of a Japanese word. Anything else — punctuation, spaces,
+ *  latin, digits — is a word boundary that bounds the lookup run.
+ *
+ *  - U+3040–30FA, U+30FC–30FF: hiragana + katakana, incl. ー (U+30FC) and the kana
+ *    iteration marks ゝゞヽヾ. **Excludes ・ (U+30FB, katakana middle dot)**: it separates
+ *    words (ジョン・スミス, ソフト・ウェア), so letting it into the run made a tap on one
+ *    name part segment — and highlight — across the dot.
+ *  - U+3005–3007: 々 (iteration mark), 〆 (shime, as in 〆切), 〇 (ideographic zero, as
+ *    in 二〇二四年) — all used as kanji but outside the CJK blocks.
+ *  - U+3400–9FFF: CJK Ext-A + Unified. U+F900–FAFF: CJK Compatibility Ideographs.
+ *
+ *  Written with escapes on purpose: the compat-block start glyph (U+F900) is visually
+ *  identical to CJK-Unified U+8C48, and a retyped U+8C48 would span U+8C48–FAFF — the
+ *  UTF-16 surrogate range included, matching lone surrogate halves. (The run is
+ *  iterated per UTF-16 unit, so astral CJK — Ext-B+ — is out of scope.) */
+const WORD_CHAR = /[\u3040-\u30FA\u30FC-\u30FF\u3005-\u3007\u3400-\u9FFF\uF900-\uFAFF]/
+
+/** Elements a run never continues across (nor across the boundary of the block holding
+ *  it): block containers and `<br>`, which start a new line, plus `<img>`, which replaces
+ *  text (an inline gaiji image is a character the run can't see, so joining the text on
+ *  either side of it would invent a word). Tag names, not computed `display` — EPUB
+ *  content is overwhelmingly semantic XHTML, and this runs per text node on the tap path. */
+const BLOCK_TAGS = new Set([
+  'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'BODY', 'BR', 'CAPTION', 'DD', 'DETAILS',
+  'DIV', 'DL', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2',
+  'H3', 'H4', 'H5', 'H6', 'HEADER', 'HR', 'HTML', 'IMG', 'LI', 'MAIN', 'NAV', 'OL', 'P',
+  'PRE', 'SECTION', 'SUMMARY', 'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
+])
+
+const isBlock = (el: Element): boolean => BLOCK_TAGS.has(el.tagName.toUpperCase())
+
+/** The nearest block-level ancestor of `node` (ruby, span, a, em… are skipped). */
+function blockOf(node: Node): Element | null {
+  let el = node.parentElement
+  while (el && !isBlock(el)) el = el.parentElement
+  return el
+}
+
+/**
+ * Whether a line break separates text node `a` from the text node `b` that follows it
+ * in document order: they sit in different blocks (paragraph → paragraph, heading →
+ * paragraph, a block closing mid-parent), or a `<br>` / block element lies between them.
+ * The TreeWalker that gathers the run only sees text, so without this the run from the
+ * end of one paragraph flowed straight into the next — 縦書き puts them in adjacent
+ * columns — and segmentation / highlighting could span the paragraph break.
+ */
+function breakBetween(doc: Document, a: Text, b: Text): boolean {
+  if (blockOf(a) !== blockOf(b)) return true
+  const w = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT)
+  try {
+    w.currentNode = a
+  } catch {
+    return false
+  }
+  for (let n = w.nextNode(); n && n !== b; n = w.nextNode()) {
+    if (n.nodeType === Node.ELEMENT_NODE && isBlock(n as Element)) return true
+  }
+  return false
+}
 
 function caretPosition(doc: Document, x: number, y: number): { node: Node; offset: number } | null {
   const anyDoc = doc as any
@@ -339,18 +389,19 @@ export function extractTextAt(doc: Document, x: number, y: number): Extracted | 
 
   const walker = textWalker(doc)
 
-  // Forward run, starting at (and including) the tapped char. Track each char's
-  // DOM location so the caller can map a matched span back to a Range. Every loop is
-  // capped at MAX_AFTER: leadingRun keeps at most that many anyway, so scanning a whole
+  // Forward run, starting at (and including) the tapped char, stopping at a paragraph /
+  // <br> boundary (`breakBetween`). Track each char's DOM location so the caller can map
+  // a matched span back to a Range. Every loop is capped at MAX_AFTER: leadingRun keeps at most that many anyway, so scanning a whole
   // long paragraph's Text node would just allocate thousands of cells to discard them.
   let afterCells: CharPosition[] = []
   for (let k = tapOffset; k < tapNode.data.length && afterCells.length < MAX_AFTER; k++)
     afterCells.push({ node: tapNode, offset: k })
   walker.currentNode = tapNode
-  while (afterCells.length < MAX_AFTER) {
+  for (let last = tapNode; afterCells.length < MAX_AFTER; ) {
     const n = walker.nextNode() as Text | null
-    if (!n) break
+    if (!n || breakBetween(doc, last, n)) break
     for (let k = 0; k < n.data.length && afterCells.length < MAX_AFTER; k++) afterCells.push({ node: n, offset: k })
+    last = n
   }
   afterCells = leadingRun(afterCells, MAX_AFTER)
 
@@ -360,9 +411,10 @@ export function extractTextAt(doc: Document, x: number, y: number): Extracted | 
   let beforeCells: CharPosition[] = []
   for (let k = Math.max(0, tapOffset - MAX_BEFORE); k < tapOffset; k++) beforeCells.push({ node: tapNode, offset: k })
   walker.currentNode = tapNode
-  while (beforeCells.length < MAX_BEFORE) {
+  for (let next = tapNode; beforeCells.length < MAX_BEFORE; ) {
     const n = walker.previousNode() as Text | null
-    if (!n) break
+    if (!n || breakBetween(doc, n, next)) break
+    next = n
     const need = MAX_BEFORE - beforeCells.length
     const pre: CharPosition[] = []
     for (let k = Math.max(0, n.data.length - need); k < n.data.length; k++) pre.push({ node: n, offset: k })
@@ -393,9 +445,4 @@ export function rangeForSpan(doc: Document, positions: CharPosition[], start: nu
   } catch {
     return null
   }
-}
-
-/** Quick test for whether a string starts with a character worth looking up. */
-export function looksJapanese(s: string): boolean {
-  return WORD_CHAR.test(s.charAt(0))
 }

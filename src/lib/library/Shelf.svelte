@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import type { BookMeta } from '../../services/types'
   import { library, refreshLibrary, importFiles, deleteBook, markOpened } from '../../stores/library.svelte'
-  import { openReader } from '../../stores/nav.svelte'
+  import { openReader, warmReader } from '../../stores/nav.svelte'
   import { longpress } from '../actions/longpress'
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
@@ -32,9 +32,11 @@
     input.value = ''
   }
 
-  async function open(b: BookMeta) {
-    await markOpened(b.id)
+  function open(b: BookMeta) {
+    // Navigate first; the "last opened" stamp (shelf order) is written in the background.
+    menuFor = null
     openReader(b.id)
+    void markOpened(b.id).catch(() => {})
   }
 
   async function confirmDelete(b: BookMeta) {
@@ -90,6 +92,7 @@
         <button
           class="card"
           onclick={() => open(book)}
+          onpointerdown={warmReader}
           use:longpress={{ onlongpress: () => (menuFor = book) }}
           oncontextmenu={(e) => {
             e.preventDefault()
@@ -261,6 +264,14 @@
     display: flex;
     flex-direction: column;
     gap: 9px;
+    /* Skip layout/paint for off-screen covers on a long shelf; `auto` remembers each
+       card's last rendered height once it has been on screen. That implies paint
+       containment, so pad the box (and cancel it with a negative margin) to keep
+       the cover's shadow from being clipped. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 150px auto 280px;
+    padding: 10px;
+    margin: -10px;
   }
   .card:active {
     transform: scale(0.97);

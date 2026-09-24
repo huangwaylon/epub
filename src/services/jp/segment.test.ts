@@ -1,40 +1,43 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 /**
- * Tokens shaped like kuromoji's `IpadicFeatures` — only the fields `tokenStartAt`
- * actually reads (`surface_form`, `word_position`). `word_position` is 1-based.
+ * Unit tests for segment.ts's gating and span mapping against a fake kuromoji. (The real
+ * dictionary — and equivalence with stock `tokenize()` — is covered by
+ * segment.golden.test.ts.)
+ *
+ * The fake tokenizer exposes only what `tokenSpans` reads: `getLattice(sentence)` and
+ * `viterbi_searcher.search(lattice)`, returning best-path nodes shaped like kuromoji's
+ * `ViterbiNode` (`start_pos` is 1-based within the sentence).
  */
-type FakeToken = { surface_form: string; word_position: number }
+type FakeNode = { start_pos: number; surface_form: string }
 
-/**
- * Build a contiguous token list from surface forms, assigning each a correct
- * 1-based `word_position` (so the first token starts at position 1 / offset 0).
- */
-function tokensOf(...surfaces: string[]): FakeToken[] {
+/** Best-path nodes for a sentence made of these surface forms. */
+function pathOf(...surfaces: string[]): FakeNode[] {
   let pos = 1
   return surfaces.map((surface_form) => {
-    const token = { surface_form, word_position: pos }
+    const node = { start_pos: pos, surface_form }
     pos += surface_form.length
-    return token
+    return node
   })
 }
 
 /**
- * The current tokenizer behaviour the kuromoji mock should use. Each test sets
- * this before importing the module so the mocked `build` callback resolves with a
- * tokenizer whose `tokenize` delegates here. `null` simulates a failed build (the
- * `build` callback is invoked with an error).
+ * The current segmentation behaviour: sentence → best path. `null` simulates a failed
+ * build (the `build` callback is invoked with an error).
  */
-let tokenizeImpl: ((text: string) => FakeToken[]) | null = null
+let pathImpl: ((sentence: string) => FakeNode[]) | null = null
 
 vi.mock('@sglkc/kuromoji', () => ({
   builder: () => ({
     build(cb: (err: Error | null, tok: unknown) => void) {
-      if (!tokenizeImpl) {
+      if (!pathImpl) {
         cb(new Error('kuromoji build failed (test)'), null)
         return
       }
-      cb(null, { tokenize: (text: string) => tokenizeImpl!(text) })
+      cb(null, {
+        getLattice: (sentence: string) => sentence,
+        viterbi_searcher: { search: (sentence: string) => pathImpl!(sentence) },
+      })
     },
   }),
 }))
@@ -46,19 +49,19 @@ async function loadModule() {
 
 beforeEach(() => {
   vi.resetModules()
-  tokenizeImpl = null
+  pathImpl = null
 })
 
 describe('segment — segmenterReady / ensureSegmenter gating', () => {
-  it('reports not-ready and returns null from tokenStartAt before ensureSegmenter resolves', async () => {
-    tokenizeImpl = () => tokensOf('猫', 'が')
-    const { segmenterReady, tokenStartAt } = await loadModule()
+  it('reports not-ready and returns null from tokenSpanAt before ensureSegmenter resolves', async () => {
+    pathImpl = () => pathOf('猫', 'が')
+    const { segmenterReady, tokenSpanAt } = await loadModule()
     expect(segmenterReady()).toBe(false)
-    expect(tokenStartAt('猫が', 0)).toBe(null)
+    expect(tokenSpanAt('猫が', 0)).toBe(null)
   })
 
   it('segmenterReady flips to true only after ensureSegmenter resolves', async () => {
-    tokenizeImpl = () => tokensOf('猫')
+    pathImpl = () => pathOf('猫')
     const { segmenterReady, ensureSegmenter } = await loadModule()
     expect(segmenterReady()).toBe(false)
     await ensureSegmenter()
@@ -66,64 +69,59 @@ describe('segment — segmenterReady / ensureSegmenter gating', () => {
   })
 
   it('clears buildPromise on rejection so a retry can rebuild', async () => {
-    // First build fails (tokenizeImpl null -> build cb invoked with an error).
-    tokenizeImpl = null
+    pathImpl = null
     const { ensureSegmenter, segmenterReady } = await loadModule()
     await expect(ensureSegmenter()).rejects.toThrow(/kuromoji build failed/)
     expect(segmenterReady()).toBe(false)
 
-    // A later call retries the build; this time it succeeds.
-    tokenizeImpl = () => tokensOf('猫')
+    pathImpl = () => pathOf('猫')
     await expect(ensureSegmenter()).resolves.toBeDefined()
     expect(segmenterReady()).toBe(true)
   })
 })
 
-describe('tokenStartAt — after the tokenizer is loaded', () => {
-  it('returns the token start for a mid-word tap (word_position - 1)', async () => {
+describe('tokenSpanAt — after the tokenizer is loaded', () => {
+  it('returns the whole token span for a mid-word tap', async () => {
     // 食べる(0..2) | が(3) | 好き(4..5)
-    tokenizeImpl = () => tokensOf('食べる', 'が', '好き')
-    const { ensureSegmenter, tokenStartAt } = await loadModule()
+    pathImpl = () => pathOf('食べる', 'が', '好き')
+    const { ensureSegmenter, tokenSpanAt } = await loadModule()
     await ensureSegmenter()
-    // Tap on the middle char 'べ' of 食べる -> start of 食べる is 0.
-    expect(tokenStartAt('食べるが好き', 1)).toBe(0)
+    expect(tokenSpanAt('食べるが好き', 1)).toEqual({ start: 0, end: 3 })
   })
 
   it('resolves boundary taps: first char, last char, and the next token start', async () => {
-    // 食べる occupies offsets 0,1,2; が occupies offset 3; 好き occupies 4,5.
-    tokenizeImpl = () => tokensOf('食べる', 'が', '好き')
-    const { ensureSegmenter, tokenStartAt } = await loadModule()
+    pathImpl = () => pathOf('食べる', 'が', '好き')
+    const { ensureSegmenter, tokenSpanAt } = await loadModule()
     await ensureSegmenter()
     const text = '食べるが好き'
-    expect(tokenStartAt(text, 0)).toBe(0) // first char of 食べる
-    expect(tokenStartAt(text, 2)).toBe(0) // last char of 食べる (start + len - 1)
-    expect(tokenStartAt(text, 3)).toBe(3) // first char of the next token が
-    expect(tokenStartAt(text, 4)).toBe(4) // first char of 好き
-    expect(tokenStartAt(text, 5)).toBe(4) // last char of 好き
+    expect(tokenSpanAt(text, 0)).toEqual({ start: 0, end: 3 })
+    expect(tokenSpanAt(text, 2)).toEqual({ start: 0, end: 3 })
+    expect(tokenSpanAt(text, 3)).toEqual({ start: 3, end: 4 })
+    expect(tokenSpanAt(text, 4)).toEqual({ start: 4, end: 6 })
+    expect(tokenSpanAt(text, 5)).toEqual({ start: 4, end: 6 })
   })
 
-  it('converts 1-based word_position to 0-based for a token not at index 0', async () => {
-    // First token 私(offset 0), then は(offset 1), then 学生(offsets 2,3).
-    tokenizeImpl = () => tokensOf('私', 'は', '学生')
-    const { ensureSegmenter, tokenStartAt } = await loadModule()
+  it('offsets later sentences by their real position (split after 、/。)', async () => {
+    // kuromoji segments each sentence separately; start_pos restarts at 1 in each.
+    pathImpl = (s) => (s === '猫が、' ? pathOf('猫', 'が', '、') : pathOf('好き'))
+    const { ensureSegmenter, tokenSpanAt } = await loadModule()
     await ensureSegmenter()
-    // 学生 has word_position 3 -> 0-based start 2. Tap the 2nd char '生' (offset 3).
-    expect(tokenStartAt('私は学生', 3)).toBe(2)
+    expect(tokenSpanAt('猫が、好き', 4)).toEqual({ start: 3, end: 5 })
   })
 
   it('returns null when the tap offset is outside every token', async () => {
-    tokenizeImpl = () => tokensOf('猫', 'が')
-    const { ensureSegmenter, tokenStartAt } = await loadModule()
+    pathImpl = () => pathOf('猫', 'が')
+    const { ensureSegmenter, tokenSpanAt } = await loadModule()
     await ensureSegmenter()
-    expect(tokenStartAt('猫が', 5)).toBe(null)
+    expect(tokenSpanAt('猫が', 5)).toBe(null)
   })
 
-  it('returns null when tokenize() throws', async () => {
-    tokenizeImpl = () => {
-      throw new Error('tokenize blew up')
+  it('returns null when segmentation throws', async () => {
+    pathImpl = () => {
+      throw new Error('lattice blew up')
     }
-    const { ensureSegmenter, tokenStartAt } = await loadModule()
+    const { ensureSegmenter, tokenSpanAt } = await loadModule()
     await ensureSegmenter()
-    expect(tokenStartAt('猫が', 0)).toBe(null)
+    expect(tokenSpanAt('猫が', 0)).toBe(null)
   })
 })

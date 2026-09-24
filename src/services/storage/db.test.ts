@@ -131,3 +131,32 @@ describe('storage/db deleteBookCascade', () => {
     expect((await mod.getAnnotations('b2')).map((a) => a.id)).toEqual(['a3'])
   })
 })
+
+describe('storage/db getAllProgress', () => {
+  it('returns every progress row in one read', async () => {
+    await mod.putProgress({ bookId: 'b1', cfi: 'c1', fraction: 0.2, updatedAt: 1 })
+    await mod.putProgress({ bookId: 'b2', cfi: 'c2', fraction: 0.7, updatedAt: 1 })
+    const all = await mod.getAllProgress()
+    expect(all.map((p) => p.bookId).sort()).toEqual(['b1', 'b2'])
+  })
+})
+
+describe('storage/db connection lifecycle', () => {
+  it('reuses one connection while it is healthy', async () => {
+    expect(await mod.db()).toBe(await mod.db())
+  })
+
+  it('reopens after a newer version asks this connection to close (blocking)', async () => {
+    const first = await mod.db()
+    // Another "tab" opening a newer schema fires `versionchange` → our blocking handler.
+    const upgrade = indexedDB.open('tsuzuri', 99)
+    await new Promise<void>((resolve, reject) => {
+      upgrade.onsuccess = () => {
+        upgrade.result.close()
+        resolve()
+      }
+      upgrade.onerror = () => reject(upgrade.error)
+    })
+    expect(await mod.db().catch(() => null)).not.toBe(first)
+  })
+})

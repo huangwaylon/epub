@@ -18,6 +18,7 @@ const win = {
 }
 
 let placeAnchored: typeof import('./anchoredPosition').placeAnchored
+let placeNearWord: typeof import('./anchoredPosition').placeNearWord
 
 beforeAll(async () => {
   vi.stubGlobal('window', win)
@@ -25,7 +26,7 @@ beforeAll(async () => {
   vi.stubGlobal('getComputedStyle', () => ({
     getPropertyValue: (name: string) => insets[name] ?? '',
   }))
-  ;({ placeAnchored } = await import('./anchoredPosition'))
+  ;({ placeAnchored, placeNearWord } = await import('./anchoredPosition'))
 })
 
 beforeEach(() => {
@@ -76,5 +77,39 @@ describe('placeAnchored', () => {
   it('respects a custom margin', () => {
     const { left } = placeAnchored(0, 400, 420, 300, 160, { margin: 30 })
     expect(left).toBe(30)
+  })
+})
+
+describe('placeNearWord', () => {
+  const word = { left: 600, top: 300, right: 624, bottom: 372 } // a 3-glyph vertical word
+
+  it('horizontal: above the word rect, centred on it', () => {
+    const p = placeNearWord(word, 300, 160, false, { gap: 16 })
+    expect(p.top).toBe(300 - 160 - 16)
+    expect(p.left).toBe(612 - 150)
+  })
+
+  it('horizontal: flips below the word rect when there is no room above', () => {
+    const p = placeNearWord({ left: 600, top: 60, right: 680, bottom: 90 }, 300, 160, false, { gap: 16 })
+    expect(p.top).toBe(90 + 16)
+  })
+
+  it('vertical: to the left of the column when it fits, centred on the word', () => {
+    const p = placeNearWord(word, 300, 160, true, { gap: 16 })
+    expect(p.left).toBe(600 - 16 - 300)
+    expect(p.top).toBe(336 - 80)
+  })
+
+  it('vertical: to the right when the left side has no room', () => {
+    const near = { left: 200, top: 300, right: 224, bottom: 372 }
+    const p = placeNearWord(near, 300, 160, true, { gap: 16 })
+    expect(p.left).toBe(224 + 16)
+  })
+
+  it('vertical: never covers the column when either side fits; clamps top/bottom', () => {
+    const low = { left: 600, top: 790, right: 624, bottom: 830 }
+    const p = placeNearWord(low, 300, 160, true, { gap: 16 })
+    expect(p.left + 300).toBeLessThanOrEqual(600)
+    expect(p.top).toBe(834 - 160 - 10)
   })
 })

@@ -2,21 +2,41 @@
 import '../vendor/foliate-js/view.js'
 // @ts-ignore — vendored JS module, no type declarations
 import { Overlayer } from '../vendor/foliate-js/overlayer.js'
-// @ts-ignore — vendored JS module, no type declarations
-import { compare as compareCFI } from '../vendor/foliate-js/epubcfi.js'
 import { HIGHLIGHT_HEX, type ReaderSettings } from './types'
 import { viewportSize } from './viewport'
+import { nearestFirst } from './cfi'
+
+/**
+ * Start fetching the chunks foliate loads lazily inside `view.open()` — the zip reader,
+ * the EPUB parser and the paginator. Each is a separate dynamic `import()` *inside* the
+ * previous step (unzip → parse → pick renderer), so on a cold open they were fetched one
+ * after another: a serial chunk waterfall on the critical path. Requesting them all up
+ * front (same specifiers, so Vite resolves the same chunks and the module map dedupes
+ * them) turns that into one parallel round-trip. No vendor edit; safe to call repeatedly.
+ */
+export function prefetchEngine(): void {
+  const swallow = () => {} // a failed prefetch just leaves the real import to retry
+  // @ts-ignore — vendored JS module, no type declarations
+  void import('../vendor/foliate-js/vendor/zip.js').catch(swallow)
+  // @ts-ignore — vendored JS module, no type declarations
+  void import('../vendor/foliate-js/epub.js').catch(swallow)
+  // @ts-ignore — vendored JS module, no type declarations
+  void import('../vendor/foliate-js/paginator.js').catch(swallow)
+}
 
 /** What we read off foliate's `relocate` event. */
 export interface RelocateDetail {
   cfi: string
   fraction: number
-  tocItem?: { label?: string; href?: string }
+  /** `id` is foliate's unique per-item TOC id (assigned when the book opens). */
+  tocItem?: { id?: number; label?: string; href?: string }
   range?: Range
 }
 
 /** A table-of-contents entry as exposed by foliate's `book.toc`. */
 export interface TocItem {
+  /** Unique within the book's TOC — foliate numbers every item on open. */
+  id?: number
   label?: string
   href?: string
   subitems?: TocItem[]
@@ -77,6 +97,8 @@ export interface ReaderCallbacks {
   onSelectionCleared?: () => void
   /** A tap landed on an existing highlight (foliate's overlay hit-test). */
   onShowAnnotation?: (value: string, range: Range) => void
+  /** A keydown inside a content document (iframe key events never reach the window). */
+  onKey?: (e: KeyboardEvent) => void
 }
 
 const TAP_MOVE_TOLERANCE = 16
@@ -93,6 +115,16 @@ const TAP_MAX_MS = 700
 const SWIPE_MIN_DISTANCE = 45
 /** One phase (out / in) of the horizontal page-turn slide. */
 const TURN_PHASE_MS = 150
+/**
+ * A touch swipe is decided in `pointermove`, the moment the finger crosses
+ * `SWIPE_MIN_DISTANCE`, rather than on lift — but only within this long of the press.
+ * A quick flick is unambiguous; a press that has lingered may be an iOS long-press that
+ * is about to become a text selection, so that stays with the `pointerup` decision.
+ */
+const SWIPE_DECIDE_MS = 500
+/** First/last page: a short nudge-and-return instead of sliding out to nothing. */
+const BOUNCE_PX = 28
+const BOUNCE_MS = 110
 /** How many highlights to (re)draw per task when a section's overlays are seeded. */
 const HIGHLIGHT_DRAW_CHUNK = 24
 
@@ -115,7 +147,8 @@ function appearanceCSS(s: ReaderSettings): string {
   // dark mode. Paint the root with the resolved paper colour (so it matches the app
   // chrome and the margins exactly) and set color-scheme so form controls/scrollbars
   // follow the theme too.
-  const scheme = s.theme === 'dark' ? 'dark' : 'light'
+  // Key off the *resolved* palette on <html data-theme>: the preference may be 'auto'.
+  const scheme = (document.documentElement.dataset.theme || s.theme) === 'dark' ? 'dark' : 'light'
 
   let wm = ''
   if (s.writingMode === 'vertical') wm = 'writing-mode: vertical-rl !important;'
@@ -191,6 +224,8 @@ export class ReaderController {
   /** Guards the page-turn slide so re-entrant taps don't overlap animations. */
   #turning = false
   #pendingDir: 'left' | 'right' | null = null
+  /** Set by destroy(); every async path re-checks it after each await. */
+  #destroyed = false
 
   constructor(container: HTMLElement, settings: ReaderSettings, callbacks: ReaderCallbacks) {
     this.#settings = settings
@@ -200,9 +235,20 @@ export class ReaderController {
     container.appendChild(this.view)
   }
 
+  /** Whether the open book is laid out vertically (縦書き) — the dictionary popup sits
+   *  beside the tapped column rather than above it. */
+  get vertical(): boolean {
+    return this.#vertical
+  }
+
   async open(file: File, lastCFI?: string): Promise<void> {
+    // Where we're about to land, as a hint for the nearest-first highlight sweep that runs
+    // on the opening section's `create-overlay` — before the first `relocate` reports it.
+    if (lastCFI) this.lastCFI = lastCFI
     await this.view.open(file)
+    if (this.#destroyed) return this.#closeBook() // left mid-open: don't leak the Book
     this.bookDir = this.view.book?.dir === 'rtl' ? 'rtl' : 'ltr'
+    this.#vertical = this.#expectVertical()
     this.#wireView()
 
     this.applyAppearance(this.#settings)
@@ -215,7 +261,30 @@ export class ReaderController {
     // pinch-zoom in #onResize so a zoom gesture doesn't re-derive the page box.
     globalThis.visualViewport?.addEventListener('resize', this.#onResize)
     await this.view.init({ lastLocation: lastCFI || undefined, showTextStart: true })
+    if (this.#destroyed) return
     this.#nudgeLayout()
+  }
+
+  /**
+   * Best guess, before anything renders, of whether the book will lay out vertically.
+   *
+   * `applyLayout` runs before `view.init` so the first paint has the right geometry — but
+   * the real writing mode is only known once a section document loads. With the old
+   * `#vertical = false` default, every 縦書き book's first `load` flipped the flag and
+   * re-ran `applyLayout`, whose `max-inline-size` change forces a paginator `render()` —
+   * a full columnize of the section, inside foliate's `afterLoad`, with the *stale*
+   * horizontal axis, immediately thrown away by foliate's own render a moment later.
+   * Guessing right skips that render; guessing wrong costs exactly what it always did (the
+   * `load` handler still corrects it). An explicit setting is authoritative; on 'auto', an
+   * rtl spine + Japanese language is overwhelmingly a 縦書き novel.
+   */
+  #expectVertical(): boolean {
+    const wm = this.#settings.writingMode
+    if (wm !== 'auto') return wm === 'vertical'
+    if (this.bookDir !== 'rtl') return false
+    const lang = this.view.book?.metadata?.language
+    const first = String((Array.isArray(lang) ? lang[0] : lang) ?? '')
+    return /^ja(?:-|_|$)/i.test(first)
   }
 
   /**
@@ -246,10 +315,12 @@ export class ReaderController {
       this.#applyIntendedWritingMode(doc)
       // Detect the writing mode from the rendered document so we can pick a
       // measure that suits it (vertical wants tall columns; horizontal a short line).
+      // Read the same element foliate's `getDirection` does (`body`), so our measure and
+      // the paginator's axis can never disagree about a book that sets it on body only.
       let vertical = false
       try {
-        const wm = doc.defaultView.getComputedStyle(doc.documentElement).writingMode || ''
-        vertical = wm.startsWith('vertical')
+        const el = doc.body ?? doc.documentElement
+        vertical = (doc.defaultView.getComputedStyle(el).writingMode || '').startsWith('vertical')
       } catch {
         /* ignore */
       }
@@ -437,12 +508,14 @@ export class ReaderController {
       return
     this.#lastLayout = { vertical: this.#vertical, cols, margin, block, inline }
 
-    r.setAttribute('margin', `${margin}px`)
-    r.setAttribute('gap', '6%')
-    r.setAttribute('max-column-count', `${cols}`)
-    r.setAttribute('max-block-size', `${block}px`)
-    // Set last: changing max-inline-size forces a foliate render(), so the other
-    // attributes above are already in place when it does.
+    // Touch only what changed (each write restyles the paginator's grid) — except
+    // `max-inline-size`, which is set whenever *anything* changed, and last: its
+    // attributeChangedCallback is the one that explicitly calls render(), so it is what
+    // guarantees exactly one relayout with every other attribute already in place.
+    if (!last || last.margin !== margin) r.setAttribute('margin', `${margin}px`)
+    if (!last) r.setAttribute('gap', '6%')
+    if (!last || last.cols !== cols) r.setAttribute('max-column-count', `${cols}`)
+    if (!last || last.block !== block) r.setAttribute('max-block-size', `${block}px`)
     r.setAttribute('max-inline-size', `${inline}px`)
   }
 
@@ -467,6 +540,23 @@ export class ReaderController {
    * Writing-mode changes must be re-detected from the content document, so we
    * re-open the book at the current location. Infrequent, so a reload is fine.
    *
+   * **Serialized.** Each call queues behind the one in flight, and a call that is
+   * superseded before it starts is skipped — so tapping 横書き/縦書き/Auto in quick
+   * succession runs at most the current re-open plus the latest request. Unserialized,
+   * two re-opens interleaved their `close()`/`open()` awaits and the loser's freshly
+   * created paginator was never closed (an orphaned renderer: iframe document, two
+   * ResizeObservers, touch listeners, the Book's blob URLs).
+   */
+  reopenForWritingMode(file: File): Promise<void> {
+    const gen = ++this.#reopenGen
+    const run = () => (gen === this.#reopenGen && !this.#destroyed ? this.#reopen(file) : undefined)
+    this.#reopenChain = this.#reopenChain.then(run, run)
+    return this.#reopenChain
+  }
+  #reopenGen = 0
+  #reopenChain: Promise<void> = Promise.resolve()
+
+  /**
    * `view.close()` first: foliate's `open()` creates a fresh `<foliate-paginator>`
    * and appends it without removing the previous one, so a bare re-open orphans the
    * old renderer — its iframe document, two ResizeObservers, and non-passive touch
@@ -475,24 +565,24 @@ export class ReaderController {
    * listeners live on the persistent host (see `#wireView`), so they keep working
    * with the new renderer — no re-wiring needed.
    */
-  async reopenForWritingMode(file: File): Promise<void> {
+  async #reopen(file: File): Promise<void> {
     const at = this.lastCFI
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
+    if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
+    this.#redrawTimer = undefined
+    this.#redrawGen++
+    this.#pendingDir = null
+    // The old renderer's documents are about to go; drop their listeners and timers now
+    // rather than waiting for the next section load to notice they're dead.
+    this.#abortDocListeners()
     // foliate's close() destroys the renderer but not the Book, whose Loader holds an
     // object URL per resolved resource (images, rewritten CSS). Destroy the old Book so
     // those blob URLs are revoked instead of leaking on every writing-mode toggle.
-    const old = this.view.book
-    try {
-      this.view.close()
-    } catch {
-      /* ignore */
-    }
-    try {
-      old?.destroy?.()
-    } catch {
-      /* ignore */
-    }
+    this.#closeBook()
     await this.view.open(file)
+    if (this.#destroyed) return this.#closeBook()
+    this.bookDir = this.view.book?.dir === 'rtl' ? 'rtl' : 'ltr'
+    this.#vertical = this.#expectVertical()
     // The fresh paginator starts with foliate's default geometry attributes, so the
     // idempotency cache from the old renderer no longer reflects reality — clear it
     // so applyLayout actually re-applies our attributes to the new renderer.
@@ -500,7 +590,30 @@ export class ReaderController {
     this.applyAppearance(this.#settings)
     this.applyLayout(this.#settings)
     await this.view.init({ lastLocation: at || undefined, showTextStart: true })
+    if (this.#destroyed) return
     this.#nudgeLayout()
+  }
+
+  /** Close the renderer and destroy the Book (revoking its resource blob URLs). */
+  #closeBook(): void {
+    const book = this.view.book
+    try {
+      this.view.close()
+    } catch {
+      /* ignore */
+    }
+    try {
+      book?.destroy?.()
+    } catch {
+      /* ignore */
+    }
+  }
+
+  #abortDocListeners(): void {
+    for (const t of this.#selTimers.values()) clearTimeout(t)
+    this.#selTimers.clear()
+    for (const ac of this.#docACs.values()) ac.abort()
+    this.#docACs.clear()
   }
 
   /**
@@ -529,6 +642,14 @@ export class ReaderController {
     this.#cb.onTurn?.()
     return this.#turn('right')
   }
+  /** The page *after* this one in reading order (Space) — left in an rtl book. */
+  goForward() {
+    return this.bookDir === 'rtl' ? this.goLeft() : this.goRight()
+  }
+  /** The page *before* this one in reading order (Shift-Space). */
+  goBackward() {
+    return this.bookDir === 'rtl' ? this.goRight() : this.goLeft()
+  }
 
   async #turn(dir: 'left' | 'right'): Promise<void> {
     if (this.#turning) {
@@ -537,12 +658,27 @@ export class ReaderController {
     }
     this.#turning = true
     try {
-      await this.#slide(dir)
+      // At the first/last page there is nothing to slide to: sliding the page out and the
+      // same page back in read as a glitch. A short nudge says "that's the end" instead.
+      if (this.#atEdge(dir)) await this.#bounce(dir)
+      else await this.#slide(dir)
     } finally {
       this.#turning = false
       const next = this.#pendingDir
       this.#pendingDir = null
-      if (next) void this.#turn(next)
+      if (next && !this.#destroyed) void this.#turn(next)
+    }
+  }
+
+  /** Whether turning `dir` has nowhere to go (foliate: `goLeft` is `next` in an rtl book). */
+  #atEdge(dir: 'left' | 'right'): boolean {
+    const r = this.view.renderer
+    if (!r) return false
+    const forward = (dir === 'left') === (this.bookDir === 'rtl')
+    try {
+      return !!(forward ? r.atEnd : r.atStart)
+    } catch {
+      return false
     }
   }
 
@@ -552,7 +688,8 @@ export class ReaderController {
     const enter = dir === 'left' ? '-100%' : '100%' // new page enters from this edge
     // Phase 1: slide the current page out (transitionend-driven so the phases stay
     // tight even under load — a drifting timer here would show a blank-paper gap).
-    await this.#transition(`transform ${TURN_PHASE_MS}ms cubic-bezier(.4, 0, 1, 1)`, `translateX(${exit})`)
+    await this.#transition(TURN_PHASE_MS, 'cubic-bezier(.4, 0, 1, 1)', `translateX(${exit})`)
+    if (this.#destroyed) return
     // Jump to the target page while off-screen (instant — `animated` is off).
     el.style.transition = 'none'
     try {
@@ -560,16 +697,26 @@ export class ReaderController {
     } catch {
       /* view may be tearing down */
     }
+    if (this.#destroyed) return
     el.style.transform = `translateX(${enter})`
-    void el.offsetWidth // flush the off-screen position before transitioning back
-    // Phase 2: slide the new page in.
-    await this.#transition(`transform ${TURN_PHASE_MS}ms cubic-bezier(0, 0, .2, 1)`, 'translateX(0)')
+    // Phase 2: slide the new page in (`#transition` flushes the off-screen position first).
+    await this.#transition(TURN_PHASE_MS, 'cubic-bezier(0, 0, .2, 1)', 'translateX(0)')
+    el.style.transition = ''
+    el.style.transform = ''
+  }
+
+  async #bounce(dir: 'left' | 'right'): Promise<void> {
+    const el = this.view
+    const px = dir === 'left' ? BOUNCE_PX : -BOUNCE_PX // follow the finger a little, then return
+    await this.#transition(BOUNCE_MS, 'cubic-bezier(.3, 0, .5, 1)', `translateX(${px}px)`)
+    if (this.#destroyed) return
+    await this.#transition(BOUNCE_MS * 1.4, 'cubic-bezier(.2, 0, .2, 1)', 'translateX(0)')
     el.style.transition = ''
     el.style.transform = ''
   }
 
   /** Apply a transform transition and resolve when it ends (with a safety timeout). */
-  #transition(transition: string, transform: string): Promise<void> {
+  #transition(ms: number, easing: string, transform: string): Promise<void> {
     const el = this.view
     return new Promise((resolve) => {
       let done = false
@@ -589,14 +736,17 @@ export class ReaderController {
       // Register on the controller's abort signal so destroy() mid-turn removes the
       // listener (and the closure's reference to the view) deterministically.
       el.addEventListener('transitionend', onEnd, { signal: this.#ac.signal })
-      el.style.transition = transition
-      requestAnimationFrame(() => {
-        el.style.transform = transform
-      })
+      el.style.transition = `transform ${ms}ms ${easing}`
+      // Force a style flush so the transition (and, for phase 2, the off-screen start
+      // position) is committed before the new transform — it then animates from here. The
+      // old code waited a whole requestAnimationFrame per phase for the same effect: up to
+      // ~16ms of dead time twice per turn.
+      void el.offsetWidth
+      el.style.transform = transform
       // Fallback if transitionend doesn't fire. Tracked on the instance so a destroy()
       // mid-turn clears it (the abort removes the transitionend listener but can't cancel
-      // a bare setTimeout), rather than firing ~270ms after teardown holding `el`.
-      this.#slideTimer = window.setTimeout(finish, TURN_PHASE_MS + 120)
+      // a bare setTimeout), rather than firing after teardown holding `el`.
+      this.#slideTimer = window.setTimeout(finish, ms + 120)
     })
   }
   /** Safety-timeout handle for the in-flight page-turn slide (cleared on destroy). */
@@ -649,61 +799,64 @@ export class ReaderController {
     await this.view.deleteAnnotation({ value: cfi })
   }
 
-  /** Seed the highlight set (e.g. on book open) so they draw as sections load. */
-  setHighlights(cfis: string[]): void {
-    this.#highlights.clear()
+  /**
+   * Seed the highlight set (the book's stored highlights). Call it **before** `open()`:
+   * there is nothing to draw yet, and the opening section's `create-overlay` (fired during
+   * `view.init`) then paints exactly that section's share on the normal per-section path.
+   * Every other section draws on its own `create-overlay`. Called after open, it draws
+   * only the currently loaded section(s) — never a sweep of the whole book, which parsed
+   * and no-op'd an `addAnnotation` for every highlight on the book-open critical path.
+   */
+  setHighlights(cfis: Iterable<string>): void {
+    this.#highlights = new Set(cfis)
     this.#highlightIndex.clear()
-    for (const cfi of cfis) this.#highlights.add(cfi)
-    // Draw whatever lives in the already-loaded section now: the opening section's
-    // `create-overlay` fires during `view.init` — *before* this seed runs — so the
-    // per-section redraw path won't cover it on its own. addAnnotation no-ops for the
-    // (as-yet unloaded) sections, which later draw via their own `create-overlay`.
-    //
-    // We deliberately do NOT pre-resolve every CFI's spine index here. Doing so parsed
-    // every highlight CFI synchronously on the book-open critical path (then addAnnotation
-    // parsed each again) — ~2× the CFI parsing right when the first page should paint,
-    // and it grows with every auto-highlighted vocab word. `#highlightIndex` is instead
-    // filled lazily by `reapplyHighlights(index)` as each section loads.
-    void this.reapplyHighlights()
+    const loaded = this.#loadedIndices()
+    if (loaded.size) this.#drawSections(loaded)
+  }
+
+  #loadedIndices(): Set<number> {
+    const out = new Set<number>()
+    try {
+      for (const c of this.view.renderer?.getContents?.() ?? []) if (typeof c.index === 'number') out.add(c.index)
+    } catch {
+      /* renderer not ready */
+    }
+    return out
   }
 
   /**
    * Ask foliate to (re)draw highlights; no-ops for unloaded sections. When a section
    * `index` is given (the `create-overlay` path) only that section's highlights are
    * redrawn — so a page-turn into a new section costs O(highlights-in-that-section),
-   * not O(all-highlights-in-the-book). With no index (the initial seed) it sweeps all.
-   *
-   * Because tap-to-define highlights **every** looked-up word, that per-section set grows
+   * not O(all-highlights-in-the-book). With no index it redraws the loaded section(s).
+   */
+  reapplyHighlights(index?: number): void {
+    this.#drawSections(index === undefined ? this.#loadedIndices() : new Set([index]))
+  }
+
+  /**
+   * Because tap-to-define highlights **every** looked-up word, a section's set grows
    * without bound over a book, and each draw is real work (parse the CFI, re-anchor it to
    * a Range over the live document, measure its client rects, build an SVG node). Painting
    * them in one loop froze the main thread on every section change once a reader had a few
-   * hundred words. So: sort by distance from the current position and paint in small
+   * hundred words. So: order them nearest-first around the current position (`nearestFirst`
+   * — parse once, sort in document order, binary-search, walk outward) and paint in small
    * chunks, yielding between them. The page the reader is actually looking at fills in on
    * the first chunk; the rest of the section trickles in without ever blocking a swipe.
    * A generation counter makes a newer sweep abandon the one in flight.
    */
-  reapplyHighlights(index?: number): void {
+  #drawSections(indices: Set<number>): void {
     const gen = ++this.#redrawGen
-    const cfis: string[] = []
+    if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
+    this.#redrawTimer = undefined
+    if (!indices.size) return
+    let cfis: string[] = []
     for (const cfi of this.#highlights) {
-      if (index !== undefined && this.#indexForCFI(cfi) !== index) continue
-      cfis.push(cfi)
+      const i = this.#indexForCFI(cfi)
+      if (i !== undefined && indices.has(i)) cfis.push(cfi)
     }
     if (!cfis.length) return
-    const here = this.lastCFI
-    if (here && cfis.length > HIGHLIGHT_DRAW_CHUNK) {
-      const dist = new Map<string, number>()
-      for (const cfi of cfis) {
-        let d = 0
-        try {
-          d = Math.abs(compareCFI(cfi, here))
-        } catch {
-          d = Number.MAX_SAFE_INTEGER
-        }
-        dist.set(cfi, d)
-      }
-      cfis.sort((a, b) => (dist.get(a) ?? 0) - (dist.get(b) ?? 0))
-    }
+    if (this.lastCFI && cfis.length > HIGHLIGHT_DRAW_CHUNK) cfis = nearestFirst(cfis, this.lastCFI)
     const drawChunk = (from: number) => {
       if (gen !== this.#redrawGen) return
       const to = Math.min(from + HIGHLIGHT_DRAW_CHUNK, cfis.length)
@@ -711,7 +864,6 @@ export class ReaderController {
       if (to < cfis.length) this.#redrawTimer = window.setTimeout(() => drawChunk(to), 0)
       else this.#redrawTimer = undefined
     }
-    if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
     drawChunk(0)
   }
   /** Invalidates an in-flight chunked highlight sweep. */
@@ -727,6 +879,8 @@ export class ReaderController {
   }
 
   destroy() {
+    this.#destroyed = true
+    this.#reopenGen++ // a queued writing-mode re-open must not start
     window.removeEventListener('resize', this.#onResize)
     globalThis.visualViewport?.removeEventListener('resize', this.#onResize)
     if (this.#resizeTimer) clearTimeout(this.#resizeTimer)
@@ -734,25 +888,13 @@ export class ReaderController {
     if (this.#slideTimer) clearTimeout(this.#slideTimer)
     if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
     this.#redrawGen++
-    for (const t of this.#selTimers.values()) clearTimeout(t)
-    this.#selTimers.clear()
     this.#pendingDir = null
-    for (const ac of this.#docACs.values()) ac.abort()
-    this.#docACs.clear()
+    this.#abortDocListeners()
     this.#ac.abort() // removes every host gesture + foliate-view listener at once
-    const book = this.view.book
-    try {
-      this.view.close()
-    } catch {
-      /* ignore */
-    }
     // Revoke the EPUB's resource blob URLs (close() tears down the renderer but not
-    // the Book, whose Loader cache holds them until destroy()).
-    try {
-      book?.destroy?.()
-    } catch {
-      /* ignore */
-    }
+    // the Book, whose Loader cache holds them until destroy()). An open() still in
+    // flight re-checks #destroyed and closes whatever it went on to create.
+    this.#closeBook()
     this.view.remove()
   }
 
@@ -763,10 +905,23 @@ export class ReaderController {
    * Listeners are registered with `signal` — the controller-wide `#ac` for the host, or a
    * per-document controller for content documents (see `#attachTaps`) — so teardown is a
    * single abort either way.
+   *
+   * **Touch swipes turn on the move, not the lift.** As soon as a quick touch drag crosses
+   * `SWIPE_MIN_DISTANCE` (horizontal-dominant, within `SWIPE_DECIDE_MS` of the press, one
+   * finger, no live text selection, not pinch-zoomed) the turn fires and the gesture is
+   * consumed, so its `pointerup` is ignored — the page starts moving while the finger is
+   * still travelling, like Books. Everything else keeps the `pointerup` decision: mouse
+   * and pen (a mouse drag across text is a drag-*select*), a press that lingered (an iOS
+   * long-press that is becoming a selection), or a drag with a selection live (its handles).
    */
   #trackGestures(
     target: Document | HTMLElement,
-    opts: { shouldIgnoreUp?: (e: PointerEvent) => boolean; onTap: (e: PointerEvent) => void },
+    opts: {
+      shouldIgnoreUp?: (e: PointerEvent) => boolean
+      /** False while a swipe must not be decided early (e.g. a text selection is live). */
+      canSwipeEarly?: () => boolean
+      onTap: (e: PointerEvent) => void
+    },
     signal: AbortSignal = this.#ac.signal,
   ) {
     let downX = 0
@@ -774,13 +929,27 @@ export class ReaderController {
     let downT = 0
     let moved = false
     let active = false
+    /** A second contact joined this gesture (pinch, palm): never decide a swipe early. */
+    let multi = false
+
+    const swipe = (dx: number) => {
+      // "Page follows the finger": dragging left reveals the page on the right (goRight);
+      // dragging right reveals the page on the left (goLeft). Both are direction-aware.
+      if (dx < 0) void this.goRight()
+      else void this.goLeft()
+    }
+    const zoomed = () => (globalThis.visualViewport?.scale ?? 1) > 1.01
 
     target.addEventListener(
       'pointerdown',
       (ev: Event) => {
         const e = ev as PointerEvent
-        if (!e.isPrimary) return
+        if (!e.isPrimary) {
+          multi = true
+          return
+        }
         active = true
+        multi = false
         downX = e.clientX
         downY = e.clientY
         downT = e.timeStamp
@@ -796,8 +965,22 @@ export class ReaderController {
         // second contact anywhere on the glass (a thumb resting on the bezel, a palm
         // graze) is measured against the *first* finger's down point, so its distant
         // coordinates instantly mark the gesture as "moved" and the tap is dropped.
-        if (!e.isPrimary) return
-        if (active && Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE_TOLERANCE) moved = true
+        if (!e.isPrimary || !active) return
+        const dx = e.clientX - downX
+        const dy = e.clientY - downY
+        if (!moved && Math.hypot(dx, dy) > TAP_MOVE_TOLERANCE) moved = true
+        if (
+          e.pointerType === 'touch' &&
+          !multi &&
+          Math.abs(dx) >= SWIPE_MIN_DISTANCE &&
+          Math.abs(dx) > Math.abs(dy) &&
+          e.timeStamp - downT <= SWIPE_DECIDE_MS &&
+          !zoomed() &&
+          (opts.canSwipeEarly?.() ?? true)
+        ) {
+          active = false // consumed: the lift is neither a tap nor a second turn
+          swipe(dx)
+        }
       },
       { passive: true, signal },
     )
@@ -831,19 +1014,16 @@ export class ReaderController {
         // page or define. The paginator already blocks its own turn on pinch; mirror
         // that here via the visual-viewport scale so an iPad pinch can't trigger a
         // spurious page turn.
-        if ((globalThis.visualViewport?.scale ?? 1) > 1.01) return
+        if (zoomed()) return
 
         const dx = e.clientX - downX
         const dy = e.clientY - downY
 
         // Horizontal swipe → turn the page. goLeft/goRight are direction-aware, so
         // the swipe reads correctly in LTR, RTL, and vertical (縦書き) books, and the
-        // turn always animates as a horizontal slide. "Page follows the finger":
-        // dragging left reveals the page on the right (goRight); dragging right
-        // reveals the page on the left (goLeft).
+        // turn always animates as a horizontal slide.
         if (Math.abs(dx) >= SWIPE_MIN_DISTANCE && Math.abs(dx) > Math.abs(dy)) {
-          if (dx < 0) void this.goRight()
-          else void this.goLeft()
+          swipe(dx)
           return
         }
 
@@ -915,6 +1095,9 @@ export class ReaderController {
           }
           return false
         },
+        // Never decide a swipe mid-move while a selection is live: the finger may be
+        // dragging one of its handles.
+        canSwipeEarly: () => doc.getSelection()?.type !== 'Range',
         onTap: (e) => {
           const frame = doc.defaultView?.frameElement as HTMLElement | null
           const rect = frame?.getBoundingClientRect()
@@ -925,6 +1108,10 @@ export class ReaderController {
       },
       signal,
     )
+
+    // Key events inside the iframe never reach the top window; forward them so page-turn
+    // and Escape shortcuts work wherever focus is.
+    doc.addEventListener('keydown', (e) => this.#cb.onKey?.(e), { signal })
 
     // Surface finished text selections for the highlight / translate toolbar.
     doc.addEventListener(

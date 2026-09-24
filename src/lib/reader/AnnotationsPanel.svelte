@@ -1,8 +1,13 @@
 <script lang="ts">
-  import { annotations, removeAnnotation } from '../../stores/annotations.svelte'
-  import { HIGHLIGHT_HEX } from '../../services/types'
+  import { annotations } from '../../stores/annotations.svelte'
+  import { HIGHLIGHT_HEX, type Annotation } from '../../services/types'
   import Icon from '../components/Icon.svelte'
-  let { onnavigate }: { onnavigate: (cfi: string) => void } = $props()
+  // `onremove` is owned by the reader: deleting a highlight must also unpaint its overlay
+  // (which only the reader controller can do), not just drop the stored record.
+  let {
+    onnavigate,
+    onremove,
+  }: { onnavigate: (cfi: string) => void; onremove: (a: Annotation) => void } = $props()
 
   let tab = $state<'highlights' | 'bookmarks'>('highlights')
 
@@ -49,7 +54,7 @@
             {#if a.sectionLabel && a.kind === 'highlight'}<span class="sec">{a.sectionLabel}</span>{/if}
           </span>
         </button>
-        <button class="del" aria-label="Delete" onclick={() => removeAnnotation(a.id)}>
+        <button class="del" aria-label={a.kind === 'highlight' ? 'Delete highlight' : 'Delete bookmark'} onclick={() => onremove(a)}>
           <Icon name="trash" size={18} />
         </button>
       </li>

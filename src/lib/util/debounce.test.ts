@@ -65,4 +65,36 @@ describe('debounce', () => {
     vi.advanceTimersByTime(10)
     expect(fn).toHaveBeenCalledWith(1, 'two', { three: true })
   })
+
+  it('flush() runs a pending call immediately, once, with the latest args', () => {
+    const fn = vi.fn()
+    const d = debounce(fn, 100)
+    d('a')
+    d('b')
+    d.flush()
+    expect(fn).toHaveBeenCalledTimes(1)
+    expect(fn).toHaveBeenCalledWith('b')
+    vi.advanceTimersByTime(200) // the cleared timer must not fire a second time
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('flush() is a no-op with nothing pending (or after the call already fired)', () => {
+    const fn = vi.fn()
+    const d = debounce(fn, 100)
+    d.flush()
+    expect(fn).not.toHaveBeenCalled()
+    d()
+    vi.advanceTimersByTime(100)
+    d.flush()
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('flush() after cancel() does nothing', () => {
+    const fn = vi.fn()
+    const d = debounce(fn, 100)
+    d()
+    d.cancel()
+    d.flush()
+    expect(fn).not.toHaveBeenCalled()
+  })
 })

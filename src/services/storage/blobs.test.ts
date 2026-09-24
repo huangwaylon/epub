@@ -3,10 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IDBFactory } from 'fake-indexeddb'
 
 /**
- * blobs.ts memoises its OPFS probe (`opfsProbe`) at module scope, so each
- * availability scenario needs a fresh module instance. We `vi.resetModules()`
- * and dynamically import `./blobs` *after* stubbing `globalThis.navigator`, so
- * the probe latches against the navigator we want for that test.
+ * blobs.ts decides OPFS support by feature check (`navigator.storage.getDirectory`
+ * + `FileSystemFileHandle.prototype.createWritable`), so each scenario stubs those
+ * globals, then imports a fresh module instance (`vi.resetModules()`).
  */
 
 const EPUB_TYPE = 'application/epub+zip'
@@ -77,8 +76,11 @@ function makeFakeOpfs(behaviour: {
   return { booksDir, root, getDirectory, getFileHandle, removeEntry, files }
 }
 
-function stubNavigator(storage: unknown) {
+function stubNavigator(storage: unknown, { createWritable = true } = {}) {
   vi.stubGlobal('navigator', storage === undefined ? {} : { storage })
+  // The engine-level capability the feature check reads (absent in Node).
+  const proto = createWritable ? { createWritable() {} } : {}
+  vi.stubGlobal('FileSystemFileHandle', Object.assign(function () {}, { prototype: proto }))
 }
 
 async function loadBlobs() {
@@ -165,21 +167,44 @@ describe('blobs IndexedDB fallback path', () => {
     expect(file!.name).toBe('fb2.epub')
   })
 
-  it('falls back when the probe file lacks createWritable', async () => {
-    const fake = makeFakeOpfs({ noCreateWritable: true })
-    // Probe must also lack createWritable for canUseOpfs to return false.
-    fake.booksDir.getFileHandle.mockImplementation(async (name: string, opts?: { create?: boolean }) => {
-      if (!opts?.create) throw new DOMException('not found', 'NotFoundError')
-      return { getFile: vi.fn(async () => new File([], name)) } as any
-    })
-    stubNavigator({ getDirectory: fake.getDirectory })
+  it('falls back when the engine lacks createWritable', async () => {
+    const fake = makeFakeOpfs()
+    stubNavigator({ getDirectory: fake.getDirectory }, { createWritable: false })
     const { putBook, getBookFile } = await loadBlobs()
 
     const payload = new Uint8Array([3, 3, 3])
     await putBook('fb3', new Blob([payload]))
+    expect(fake.getFileHandle).not.toHaveBeenCalled()
     const file = await getBookFile('fb3')
     expect(file).not.toBeNull()
     expect(new Uint8Array(await file!.arrayBuffer())).toEqual(payload)
+  })
+
+  it('falls back to IndexedDB when an OPFS write fails for a non-quota reason', async () => {
+    const fake = makeFakeOpfs({ noCreateWritable: true })
+    stubNavigator({ getDirectory: fake.getDirectory })
+    const { putBook, getBookFile } = await loadBlobs()
+
+    const payload = new Uint8Array([4, 4])
+    await putBook('fb4', new Blob([payload]))
+    // The zero-length OPFS file is removed and the bytes land in the fallback store.
+    expect(fake.files.has('fb4.epub')).toBe(false)
+    const file = await getBookFile('fb4')
+    expect(new Uint8Array(await file!.arrayBuffer())).toEqual(payload)
+  })
+
+  it('getBookFile falls through to the IndexedDB copy on an OPFS miss', async () => {
+    // Stored while OPFS was unavailable…
+    stubNavigator(undefined)
+    const first = await loadBlobs()
+    await first.putBook('fb5', new Blob([new Uint8Array([5])]))
+    // …then read back on an engine where OPFS works (same IndexedDB).
+    const fake = makeFakeOpfs()
+    stubNavigator({ getDirectory: fake.getDirectory })
+    const { getBookFile, hasBook } = await loadBlobs()
+    expect(await getBookFile('fb5')).not.toBeNull()
+    expect(await hasBook('fb5')).toBe(true)
+    expect(await hasBook('nope')).toBe(false)
   })
 })
 

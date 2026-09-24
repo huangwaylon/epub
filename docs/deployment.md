@@ -93,15 +93,18 @@ Implications:
 ## 4. What ships
 
 The `dist/` artifact contains the app shell (JS/CSS/HTML), the PWA manifest, the
-service worker, the icons, **and the kuromoji IPADIC dictionary**
-(`kuromoji/dict/*.dat.gz`, ~19 MB).
+service worker, the icons, the iPad launch screens (`splash/`, 36 PNGs, ~320 KB),
+**and the kuromoji IPADIC dictionary** (`kuromoji/dict/*.dat.gz`, ~19 MB).
 
-Workbox precaches `**/*.{js,css,html,svg,png}`, capped at 6 MB/file, with
-`globIgnores` excluding PDF.js (`**/pdfjs/**`), kuromoji (`**/kuromoji/**`), and
-unreachable foliate format loaders (`mobi-*`, `fb2-*`, `comic-book-*`, `tts-*`,
-`search-*`). So the dict is **not** in the install precache; it is **runtime-cached**
-(CacheFirst, no expiry — immutable build-versioned data) on
-first dictionary download / tap-to-define, so segmentation works offline thereafter.
+Workbox precaches `**/*.{js,css,html}` plus `favicon.svg` and the Apple touch icon,
+capped at 6 MB/file (~420 KiB, 20 entries as of 2026-09), with `globIgnores` excluding
+kuromoji (`**/kuromoji/**`) and the unreachable foliate format loaders
+(`assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js` — the `foliate-` chunk prefix is
+set by `chunkFileNames` in `vite.config.ts`). Manifest icons (`includeManifestIcons:
+false`) and splash screens are fetched by iOS at install, not precached. So the dict is
+**not** in the install precache; it is **runtime-cached** (`kuromoji-ipadic-v2`,
+CacheFirst, no expiry — immutable build-versioned data) on first dictionary download /
+tap-to-define, so segmentation works offline thereafter.
 Details: [`storage-pwa-ios.md`](./storage-pwa-ios.md) §6.
 
 The dict is staged into `public/kuromoji/dict/` from `node_modules` by

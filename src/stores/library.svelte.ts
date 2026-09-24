@@ -1,6 +1,6 @@
 import type { BookMeta, ReadingProgress } from '../services/types'
 import { importEpub, listBooks, removeBook, touchBook } from '../services/library'
-import { getProgress } from '../services/storage/db'
+import { getAllProgress } from '../services/storage/db'
 
 /** Reactive shelf state: the list of books plus their reading progress. */
 export const library = $state<{
@@ -39,14 +39,18 @@ function progressEqual(a: ReadingProgress | undefined, b: ReadingProgress | unde
   return a.cfi === b.cfi && a.fraction === b.fraction && a.updatedAt === b.updatedAt
 }
 
+/** Bumped per refresh; a refresh whose reads finish after a newer one started drops
+ *  its (stale) snapshot instead of overwriting the newer state. */
+let refreshGen = 0
+
 export async function refreshLibrary(): Promise<void> {
-  const books = await listBooks()
+  const gen = ++refreshGen
+  const [books, all] = await Promise.all([listBooks(), getAllProgress()])
+  if (gen !== refreshGen) return
   const progress: Record<string, ReadingProgress | undefined> = {}
-  await Promise.all(
-    books.map(async (b) => {
-      progress[b.id] = await getProgress(b.id)
-    }),
-  )
+  const ids = new Set(books.map((b) => b.id))
+  for (const p of all) if (ids.has(p.bookId)) progress[p.bookId] = p
+  for (const id of ids) if (!(id in progress)) progress[id] = undefined
 
   // Reconcile against the current list so unchanged books keep their existing
   // reactive object identity. Replacing the whole array (as before) handed every
@@ -82,6 +86,8 @@ export async function importFiles(files: FileList | File[]): Promise<void> {
     for (const file of list) {
       try {
         await importEpub(file)
+        // Show each book as soon as it lands rather than after the whole batch.
+        if (list.length > 1) refreshLibrary().catch(() => {})
       } catch (err) {
         failures += 1
         console.error('Import failed for', file.name, err)
