@@ -160,11 +160,11 @@ change the generators. Both depend on `sharp` (CI-stripped, [§1](#1-prerequisit
      next, drag right → previous; animates as a horizontal slide). foliate's own touch
      turn is patched out ([§7](#7-coding-conventions)).
    - **Tap-to-define** — tap a Japanese glyph → `DictionaryPopup` (and the word
-     highlights yellow as a vocab record). **A glyph tap always defines**, including
-     inside the top/bottom edge band and while a card is already open (the card
-     re-targets, so word-after-word is one tap each). A **blank** tap in the edge band
-     toggles chrome; a blank tap dismisses an open card, else hides visible chrome; a
-     blank-centre tap with nothing open does nothing. **Tap never turns the page.**
+     highlights yellow as a vocab record). With a card open, **any** tap (even on
+     another word) only dismisses it — no new lookup or highlight. Otherwise a glyph tap
+     defines, including inside the top/bottom edge band. A **blank** tap in the edge band
+     toggles chrome, else hides visible chrome; a blank-centre tap with nothing open does
+     nothing. **Tap never turns the page.**
      Tapping a highlighted word reopens its definition with a remove option — and the
      word shown must **not** contain furigana (決けっ心 is the regression).
    - Tap the **first and last glyph of a column** (the strip the nav bars overlap) —

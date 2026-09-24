@@ -344,8 +344,16 @@ observed behaviour that can shift between WebKit versions.
 - **Rotation jitter** — iOS fires a burst of `resize`/`visualViewport` events while
   `window.innerWidth/Height` lag the settled visual viewport.
 
-`viewportSize()` prefers `visualViewport` (reliable even at cold launch) but falls back to the
-layout viewport while pinch-zoomed (where `visualViewport` reports the shrunken zoomed box).
+`viewportSize()` prefers `visualViewport` but falls back to the layout viewport while
+pinch-zoomed (where `visualViewport` reports the shrunken zoomed box). `visualViewport` is
+**not** reliable at cold launch on iPhone: a freshly opened Home Screen app reported it ~100px
+short (a gap below the reader's bottom bar until a rotation — observed on device, 2026-09). So
+when running standalone (`navigator.standalone` / `display-mode: standalone`) and the window's
+width equals a full screen side (±2px — i.e. not an iPad Split View / Slide Over / Stage
+Manager window), `fullScreenHeight()` lifts the height to the screen's other side (`screen`
+dimensions don't swap on rotation in iOS, so orientation is read from the width). It only ever
+raises an under-report, never shrinks. Tests: `viewport.test.ts`. The dictionary card's
+placement (`anchoredPosition.ts`) uses the same `viewportSize()`.
 Writes are rAF-coalesced, gated by a 2px threshold, and re-asserted on `load` + a 300 ms timeout
 to cover the settle window. **Only the fixed `.reader` overlay consumes `var(--app-height, 100dvh)`**;
 the in-flow shell (`html`/`body`/`#app`) stays on `100dvh`, because feeding the var into in-flow

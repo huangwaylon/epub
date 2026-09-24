@@ -266,6 +266,7 @@
     // inside a longer highlight (a drag-selected phrase, or a vocab span from an older
     // segmentation) would add a nested word highlight that Remove clears while the outer
     // yellow stays. Guarded by the tap's key, so it can never land on a newer card.
+    if (Date.now() - tapDismissedAt < 500) return
     if (Date.now() - tapDefinedAt < 500) {
       if (dictState.open && dictState.lastKey === tapDefinedKey && !dictState.cfi) {
         dictState.cfi = value
@@ -351,27 +352,31 @@
   // looked-up word is highlighted.
   let tapDefinedAt = 0
   let tapDefinedKey = ''
+  /** When a tap last dismissed the card — its highlight `click` must not reopen it. */
+  let tapDismissedAt = 0
 
   /**
-   * Tap routing. A tap that lands on a Japanese glyph **always** defines it — the reading
-   * gesture wins over every piece of chrome, because the alternative (checking the nav-bar
-   * band and the open card first) made the first and last characters of every line
-   * un-lookupable and cost a wasted tap for each new word. Everything else — blank paper,
-   * the margins, the edge band — keeps its old meaning.
+   * Tap routing. With the definition card open, a tap anywhere only dismisses it. With it
+   * closed, a tap on a Japanese glyph defines it — winning over the nav-bar band, since the
+   * band overlaps the first and last characters of every line, which would otherwise be
+   * un-lookupable. Blank paper, the margins and the edge band drive the chrome.
    */
   function onTap(info: TapInfo) {
-    // 1. On a word → look it up. Works with the card already open (it re-targets to the
-    //    new word) and inside the top/bottom band, where live text overlaps the band.
+    // 1. Any tap while the definition card is open → just dismiss it — even on another
+    //    word. Re-targeting on a text tap made "tap away to close" impossible: it defined
+    //    (and highlighted) whatever text the tap happened to land on. The same-gesture
+    //    highlight `click` is told to stand down too (`tapDismissedAt`).
+    if (dictState.open) {
+      tapDismissedAt = Date.now()
+      closeOverlays()
+      return
+    }
+    // 2. On a word → look it up, even inside the top/bottom band, where live text overlaps
+    //    the band.
     if (info.doc && tryDefine(info)) {
       tapDefinedAt = Date.now()
       tapDefinedKey = dictState.lastKey
       chromeVisible = false // don't leave the bars covering the card
-      return
-    }
-    // 2. Blank tap while the definition popup is open → dismiss it, and nothing else, so
-    //    clearing the card never also flashes the chrome.
-    if (dictState.open) {
-      closeOverlays()
       return
     }
     // 3. Blank tap in the top or bottom edge band (over the nav bars) → toggle the chrome.

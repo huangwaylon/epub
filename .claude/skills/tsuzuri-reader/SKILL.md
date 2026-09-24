@@ -43,10 +43,10 @@ column-fill quirk, and extension recipes. This skill is the quick procedure.
   these **honor `book.dir` (rtl)**, so the swipe turns the correct way in LTR / RTL / 縦書き
   and always animates as a horizontal slide (fired via the `onTurn` callback). Otherwise a
   clean tap (move < 16px `TAP_MOVE_TOLERANCE`, < 700ms `TAP_MAX_MS`) routes through the callbacks' `onTap` →
-  `onTap` in `Reader.svelte`, in order: (1) if the tap lands on an actual glyph
-  (`resolveGlyph` in `extract.ts`, and `info.doc` non-null) define the word — **first**, ahead
-  of all chrome, so it works inside the edge band and re-targets an open card; (2) else if a
-  card is open, dismiss it (`closeOverlays`); (3) else if the tap's top-window `py` is in the
+  `onTap` in `Reader.svelte`, in order: (1) if a card is open, dismiss it
+  (`closeOverlays`) — whatever the tap hit, even another word; (2) else if the tap lands on an
+  actual glyph (`resolveGlyph` in `extract.ts`, and `info.doc` non-null) define the word,
+  ahead of the chrome, so it works inside the edge band; (3) else if the tap's top-window `py` is in the
   top/bottom edge band (`inChromeToggleBand`, ≈ nav-bar height) toggle chrome — the only way a
   tap reveals the bars; (4) else if chrome is visible, hide it — a blank-centre tap does
   **nothing** (never toggles chrome, never turns the page). Margin/host taps carry

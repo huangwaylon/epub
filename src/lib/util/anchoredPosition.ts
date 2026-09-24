@@ -1,3 +1,4 @@
+import { viewportSize } from '../../services/viewport'
 /**
  * Position a floating layer (the dictionary popup, a selection toolbar) of size
  * `w`×`h` near an anchor: prefer above it, flip below when there isn't room, and
@@ -48,8 +49,8 @@ export function placeAnchored(
   const mBottom = base + ins.bottom
   const mLeft = base + ins.left
   const mRight = base + ins.right
-  const vw = window.innerWidth
-  const vh = window.innerHeight
+  // The iOS-corrected viewport (a cold standalone launch under-reports innerHeight).
+  const { w: vw, h: vh } = viewportSize()
 
   let left = centerX - w / 2
   left = Math.max(mLeft, Math.min(vw - w - mRight, left))
@@ -98,8 +99,8 @@ export function placeNearWord(
   const mBottom = base + ins.bottom
   const mLeft = base + ins.left
   const mRight = base + ins.right
-  const vw = window.innerWidth
-  const vh = window.innerHeight
+  // The iOS-corrected viewport (a cold standalone launch under-reports innerHeight).
+  const { w: vw, h: vh } = viewportSize()
 
   let left: number
   if (rect.left - gap - w >= mLeft) left = rect.left - gap - w

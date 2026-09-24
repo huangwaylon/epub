@@ -342,8 +342,8 @@ the `onchange(kind)` callback so the reader re-applies the right aspect — see
 - **Popup & toolbar are NOT sheets:** `DictionaryPopup` and `SelectionToolbar` are **floating**
   (`position:fixed`), positioned in a `$effect`/rAF via `placeAnchored`. No scrim, don't close on
   Escape; the **reader** owns their `open` state. While the dictionary popup is open it's the
-  highest-priority *blank* tap target: a blank tap only dismisses it; a tap on another glyph
-  re-targets it (see [reader-engine.md](reader-engine.md) §8). Also dismissed by a page turn (`onTurn` closes overlays)
+  highest-priority tap target: **any** tap — blank or on another word — only dismisses it
+  (see [reader-engine.md](reader-engine.md) §8). Also dismissed by a page turn (`onTurn` closes overlays)
   and its own × button. (Tap/turn gesture details: **[reader-engine.md](reader-engine.md)**.)
 - **Theme before first paint:** `main.ts` `await`s `initSettings()` before `mount(App, …)`, so
   `applyTheme()` has set `<html data-theme>` before the first frame (no light→dark flash). `index.html`

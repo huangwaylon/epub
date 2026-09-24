@@ -658,15 +658,16 @@ before ever opening a book still gets morphological segmentation.
 `ReaderController` raises a `TapInfo` (`{ doc, ix, iy, px, py }` — `ix/iy` iframe-local for the
 caret APIs, `px/py` top-window for popup positioning) → `onTap` → `handleTap`, synchronously (there
 is no defer). A tap never turns the page (pagination is by horizontal **swipe** — see
-[reader-engine.md](reader-engine.md)). **A glyph hit outranks all chrome:**
+[reader-engine.md](reader-engine.md)). **With a card open, any tap dismisses it; otherwise a glyph hit outranks the chrome:**
 
 ```ts
 function handleTap(info) {
-  // 1. On a word → define it. Wins over an open card (it re-targets) AND over the edge band.
+  // 1. Card open → any tap (even on another word) only dismisses it.
+  if (dictState.open) { tapDismissedAt = Date.now(); closeOverlays(); return }
+  // 2. On a word → define it. Wins over the edge band.
   if (info.doc && tryDefine(info)) {
     tapDefinedAt = Date.now(); chromeVisible = false; return
   }
-  if (dictState.open) { closeOverlays(); return }                  // 2. blank tap → dismiss card
   if (inChromeToggleBand(info.py, viewportSize().h)) {             // 3. blank tap in band → chrome
     chromeVisible = !chromeVisible; return
   }

@@ -219,18 +219,18 @@ touch page-turn is patched out (`paginator.js`), so all navigation is ours.
   so the turn goes the right way in LTR, RTL, and 縦書き; they animate as a horizontal
   slide and fire `onTurn`.
 - **Tap** (clean, quick, no swipe) → `onTap` → `Reader.onTap`, in priority order:
-  1. On a Japanese glyph → `tryDefine(info)` defines it (and, with
-     `settings.highlightLookups`, highlights it) — even inside the edge band and even
-     with a card open (the card re-targets).
-  2. Else, blank tap with the dictionary popup open → dismiss it. Nothing else.
+  1. The dictionary popup is open → dismiss it, wherever the tap landed (even on another
+     word). Nothing else.
+  2. On a Japanese glyph → `tryDefine(info)` defines it (and, with
+     `settings.highlightLookups`, highlights it) — even inside the edge band.
   3. Else, blank tap in the **top/bottom edge band** (`inChromeToggleBand`,
      ~12% of viewport height, 80–160px) → toggle the chrome bars.
   4. Else, chrome visible → hide it; otherwise (blank centre) do nothing.
 
   **A tap never turns the page, and a blank-centre tap does nothing** (there are no
-  tap edge-rails). A tap that lands on a glyph **defines it in preference to every piece
-  of chrome** — including inside the edge band and with a card already open; blank taps are
-  what drive the chrome. Taps run immediately (no defer); a highlight hit-test
+  tap edge-rails). With a card open, any tap only dismisses it. Otherwise a tap on a glyph
+  **defines it in preference to the chrome** — including inside the edge band; blank taps
+  are what drive the chrome. Taps run immediately (no defer); a highlight hit-test
   (`show-annotation`) arriving on the same gesture stands down instead.
 
 `tryDefine`: `extract.extractTextAt(doc, ix, iy)` returns `{text, tapOffset}` (null on

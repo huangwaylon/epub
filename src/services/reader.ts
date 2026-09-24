@@ -113,8 +113,12 @@ const TAP_MOVE_TOLERANCE = 16
 const TAP_MAX_MS = 700
 /** Minimum horizontal travel (px) for a drag to count as a page-turn swipe. */
 const SWIPE_MIN_DISTANCE = 45
-/** One phase (out / in) of the horizontal page-turn slide. */
-const TURN_PHASE_MS = 150
+/** Page turn: the old page drifts toward the finger and fades out, then the new page
+ *  drifts in from the side the finger came from and fades up. */
+const TURN_OUT_MS = 90
+const TURN_IN_MS = 170
+/** How far (px) each page drifts during a turn — a hint of direction, not a fly-away. */
+const TURN_SHIFT_PX = 36
 /**
  * A touch swipe is decided in `pointermove`, the moment the finger crosses
  * `SWIPE_MIN_DISTANCE`, rather than on lift — but only within this long of the press.
@@ -127,6 +131,11 @@ const BOUNCE_PX = 28
 const BOUNCE_MS = 110
 /** How many highlights to (re)draw per task when a section's overlays are seeded. */
 const HIGHLIGHT_DRAW_CHUNK = 24
+
+/** The user asked the OS for reduced motion (page turns then cross-fade in place). */
+function reducedMotion(): boolean {
+  return globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+}
 
 /**
  * Builds the stylesheet foliate injects into each content document. Reads the
@@ -684,13 +693,15 @@ export class ReaderController {
 
   async #slide(dir: 'left' | 'right'): Promise<void> {
     const el = this.view
-    const exit = dir === 'left' ? '100%' : '-100%' // old page slides off this edge
-    const enter = dir === 'left' ? '-100%' : '100%' // new page enters from this edge
-    // Phase 1: slide the current page out (transitionend-driven so the phases stay
-    // tight even under load — a drifting timer here would show a blank-paper gap).
-    await this.#transition(TURN_PHASE_MS, 'cubic-bezier(.4, 0, 1, 1)', `translateX(${exit})`)
+    // `dir` is the way the content moves (goLeft ⇐ the finger dragged right). Both pages
+    // travel that same way: the old one drifts on and fades, the new one arrives from the
+    // opposite side — a short push, never a full-width fly-out over blank paper (which read
+    // as the next page coming *from* the side it was actually leaving toward).
+    const sign = dir === 'left' ? 1 : -1
+    const shift = reducedMotion() ? 0 : TURN_SHIFT_PX
+    await this.#transition(TURN_OUT_MS, 'cubic-bezier(.4, 0, 1, 1)', `translateX(${sign * shift}px)`, 0)
     if (this.#destroyed) return
-    // Jump to the target page while off-screen (instant — `animated` is off).
+    // Jump to the target page while it's invisible (instant — `animated` is off).
     el.style.transition = 'none'
     try {
       await (dir === 'left' ? this.view.goLeft() : this.view.goRight())
@@ -698,11 +709,16 @@ export class ReaderController {
       /* view may be tearing down */
     }
     if (this.#destroyed) return
-    el.style.transform = `translateX(${enter})`
-    // Phase 2: slide the new page in (`#transition` flushes the off-screen position first).
-    await this.#transition(TURN_PHASE_MS, 'cubic-bezier(0, 0, .2, 1)', 'translateX(0)')
+    el.style.transform = `translateX(${-sign * shift}px)`
+    // Commit the start position *while transitions are off*. Without this flush the
+    // browser first sees it inside the next transition, so the new page animated from the
+    // exit side back through the start position — arriving from the side it had just left
+    // (the "next page flies in from the wrong side" bug of the old full-width slide).
+    void el.offsetWidth
+    await this.#transition(TURN_IN_MS, 'cubic-bezier(0, 0, .2, 1)', 'translateX(0)', 1)
     el.style.transition = ''
     el.style.transform = ''
+    el.style.opacity = ''
   }
 
   async #bounce(dir: 'left' | 'right'): Promise<void> {
@@ -716,7 +732,7 @@ export class ReaderController {
   }
 
   /** Apply a transform transition and resolve when it ends (with a safety timeout). */
-  #transition(ms: number, easing: string, transform: string): Promise<void> {
+  #transition(ms: number, easing: string, transform: string, opacity?: number): Promise<void> {
     const el = this.view
     return new Promise((resolve) => {
       let done = false
@@ -731,18 +747,22 @@ export class ReaderController {
         resolve()
       }
       const onEnd = (e: TransitionEvent) => {
-        if (e.propertyName === 'transform') finish()
+        // Opacity always changes when it's animated; a zero-shift (reduced-motion) turn
+        // has no transform change, so no transform `transitionend` would ever arrive.
+        if (e.propertyName === (opacity === undefined ? 'transform' : 'opacity')) finish()
       }
       // Register on the controller's abort signal so destroy() mid-turn removes the
       // listener (and the closure's reference to the view) deterministically.
       el.addEventListener('transitionend', onEnd, { signal: this.#ac.signal })
-      el.style.transition = `transform ${ms}ms ${easing}`
+      el.style.transition =
+        opacity === undefined ? `transform ${ms}ms ${easing}` : `transform ${ms}ms ${easing}, opacity ${ms}ms ${easing}`
       // Force a style flush so the transition (and, for phase 2, the off-screen start
       // position) is committed before the new transform — it then animates from here. The
       // old code waited a whole requestAnimationFrame per phase for the same effect: up to
       // ~16ms of dead time twice per turn.
       void el.offsetWidth
       el.style.transform = transform
+      if (opacity !== undefined) el.style.opacity = String(opacity)
       // Fallback if transitionend doesn't fire. Tracked on the instance so a destroy()
       // mid-turn clears it (the abort removes the transitionend listener but can't cancel
       // a bare setTimeout), rather than firing after teardown holding `el`.

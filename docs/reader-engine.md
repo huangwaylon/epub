@@ -538,7 +538,7 @@ controller already registered for this same `doc` and (b) any whose document's
 | `TAP_MAX_MS` | **700ms** | max tap duration — see below |
 | `SWIPE_MIN_DISTANCE` | 45px | min horizontal travel for a page-turn swipe |
 | `SWIPE_DECIDE_MS` | 500ms | a touch swipe may be decided mid-move only this soon after the press (below) |
-| `TURN_PHASE_MS` | 150ms | one phase (out / in) of the slide ([§8a](#slide)) |
+| `TURN_OUT_MS` / `TURN_IN_MS` / `TURN_SHIFT_PX` | 90ms / 170ms / 36px | the page-turn push: out-fade, in-fade, drift distance ([§8a](#slide)) |
 | `BOUNCE_PX` / `BOUNCE_MS` | 28px / 110ms | the first/last-page nudge ([§8a](#slide)) |
 
 (`HIGHLIGHT_DRAW_CHUNK = 24`, the other `reader.ts` module constant, belongs to the
@@ -628,18 +628,20 @@ Pinch-zoom is the fourth hazard, handled in CSS rather than JS: see
 <a id="tap-routing"></a>
 ### Tap routing in Reader.svelte
 
-`onTap` → `handleTap`, in this order. **Glyph first** — the reading gesture outranks
-every piece of chrome:
+`onTap`, in this order:
 
-1. **On a Japanese glyph → define it.** If `info.doc && tryDefine(info)`: record `tapDefinedAt = Date.now()` ([§8a](#defer)), set
-   `chromeVisible = false` (never leave the bars covering the card), `return`. This wins
-   **even inside the nav-bar band and even with a card already open** — the open card
-   simply re-targets to the new word, so consecutive lookups cost one tap each.
-   `tryDefine` bails on a null `doc` (margin tap) and on blank space, because
-   `extractTextAt` returns `null` unless the point resolves to a word character
-   ([japanese.md](japanese.md) §6).
-2. **Blank tap, card open → dismiss it** (`closeOverlays()`), and nothing else, so
-   clearing the card never also flashes the chrome.
+1. **Card open → dismiss it** (`closeOverlays()`), wherever the tap landed — **even on
+   another word** — and nothing else: no lookup, no highlight, no chrome flash. It records
+   `tapDismissedAt`, so a highlight `click` (`show-annotation`) riding the same gesture
+   stands down instead of reopening a card. (It used to re-target the card to the tapped
+   word, which made "tap away to close" impossible: it defined and highlighted whatever
+   text the tap landed on.)
+2. **On a Japanese glyph → define it.** If `info.doc && tryDefine(info)`: record
+   `tapDefinedAt = Date.now()` ([§8a](#defer)), set `chromeVisible = false` (never leave
+   the bars covering the card), `return`. This wins **even inside the nav-bar band**,
+   which overlaps the first/last glyphs of every column. `tryDefine` bails on a null `doc`
+   (margin tap) and on blank space, because `extractTextAt` returns `null` unless the point
+   resolves to a word character ([japanese.md](japanese.md) §6).
 3. **Blank tap in the top/bottom band → toggle chrome.** `inChromeToggleBand(info.py,
    viewportSize().h)`: the band is `clamp(80, vh*0.12, 160)` of the **visual viewport**
    height (`viewportSize().h`, *not* `window.innerHeight`), via the pure
@@ -667,7 +669,7 @@ sibling overlays and never reach the foliate-view detector. While the chrome is
 hidden a `pointer-events:none` `.page-pct` pill shows the reading %.
 
 <a id="slide"></a>
-### 8a. Page-turn animation — horizontal slide (`#turn` / `#slide`)
+### 8a. Page-turn animation — horizontal push (`#turn` / `#slide`)
 
 *(Authoritative; §1, §7, §14 reference this.)* foliate stacks 縦書き pages on the
 **vertical** axis, so its own `animated` turn slides up/down — wrong for a Japanese
@@ -675,13 +677,20 @@ book. So we leave `animated` **off**, patch its touch turn out (§1/§7), and dr
 the visual ourselves like Books on iPad. `goLeft`/`goRight` fire `onTurn`, then
 `#turn(dir)` → `#slide(dir)`:
 
-1. Slide the whole `<foliate-view>` out to one edge
-   (`transform: translateX(±100%)`, `TURN_PHASE_MS`).
-2. Jump to the target page while off-screen — `await view.goLeft()/goRight()`,
-   instant because `animated` is off (direction-aware, correct for LTR + RTL).
-3. Slide the new page in from the opposite edge to `translateX(0)`.
+1. The whole `<foliate-view>` drifts `TURN_SHIFT_PX` (36px) the way the finger moved and
+   fades to 0 (`TURN_OUT_MS`, 90 ms).
+2. Jump to the target page while invisible — `await view.goLeft()/goRight()`, instant
+   because `animated` is off (direction-aware, correct for LTR + RTL).
+3. Place the new page 36px on the **opposite** side, **flush that start position with
+   transitions off** (`void el.offsetWidth`), then drift it to rest while fading up
+   (`TURN_IN_MS`, 170 ms). Reduced motion: no drift, cross-fade only.
 
-One continuous horizontal push. Both phases are **`transitionend`-driven**
+Both pages travel the same way the content moves — a short push. It replaced a
+full-width `translateX(±100%)` fly-out/fly-in over blank paper, which users found
+confusing, and which also had a bug: the new page's off-screen start was only flushed
+*inside* the entry transition, so it animated from the exit side — i.e. the next page
+flew in from the side it had just left toward. Each phase finishes on `opacity`'s
+`transitionend` (it always changes; a zero-drift turn has no transform change). Both phases are **`transitionend`-driven**
 (`#transition(ms, easing, transform)`, with an `ms + 120` fallback) so timer drift can't
 leave a blank-paper gap; the fallback `setTimeout` is held on `#slideTimer` so a
 `destroy()` mid-turn clears it (`#ac.abort()` removes the listener but can't cancel
@@ -697,7 +706,7 @@ for a forward turn, `atStart` for a backward one — forward is `goLeft` in an r
 (`BOUNCE_MS` out, 1.4× back), rather than sliding the page out and the *same* page back
 in. A literal page-**curl**
 isn't possible (closed-shadow-DOM iframe can't be rasterised), and only one page
-renders at a time, so the vacated strip shows the paper background (intended).
+renders at a time — hence a fade rather than two pages sliding side by side.
 `goTo()` is **not** animated.
 
 <a id="defer"></a>
