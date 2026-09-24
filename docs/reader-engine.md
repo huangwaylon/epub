@@ -40,7 +40,7 @@ source; references are by symbol/file, not line number.
 | `src/lib/util/chromeBand.ts` | `inChromeToggleBand(py, vh)` — pure edge-band test (§8) |
 | `src/services/cfi.ts` | Pure CFI helpers: `nearestFirst` (highlight draw order, §10), `cfiWithinPage` (bookmarks, §12) |
 | `src/lib/util/anchoredPosition.ts` | `placeAnchored` / `placeNearWord` — popup + toolbar placement (§12) |
-| `src/services/viewport.ts` | Publishes `--app-height`; exports `viewportSize()` |
+| `src/services/viewport.ts` | Publishes `--app-height` / `--doc-height`; exports `viewportSize()` |
 | `src/vendor/foliate-js/view.js` | Registers `<foliate-view>` (class `View`) |
 | `src/vendor/foliate-js/paginator.js` | CSS-multicolumn renderer (`<foliate-paginator>`) |
 | `src/vendor/foliate-js/overlayer.js` | SVG annotation overlays (`Overlayer.highlight`) |
@@ -892,14 +892,12 @@ without a rotation; it re-runs `applyLayout`, **not** a bare `render()`, which w
 reuse the stale `max-inline-size`); **`#onResize`** (§6) on both `window` and
 `visualViewport` is the reliable backstop, skipped while pinch-zoomed.
 
-**`--app-height` (consumer contract).** The fixed `.reader` overlay sizes off
-`var(--app-height, 100dvh)`, because a fresh standalone launch lays out `inset:0` /
-`100dvh` against an under-reported layout viewport, leaving a gap below a
-bottom-anchored bar that otherwise only clears on rotation. `viewportSize()` (§6)
-reads the same source that publishes `--app-height`. The **publisher** mechanics
-(`initViewport`, the rAF/2px/load+300ms write gating, why only this fixed
-out-of-flow element may consume the var) live in
-[storage-pwa-ios.md](storage-pwa-ios.md) §7.
+**`--app-height` / `--doc-height` (consumer contract).** The fixed `.reader` overlay sizes
+off `var(--app-height, 100dvh)` and the document (`html`/`body`/`#app`) off
+`var(--doc-height, 100dvh)`: a cold standalone iPhone launch reports a layout viewport short
+by the status-bar inset, and WebKit won't paint the overlay below the document box, so both
+must be screen-tall. `viewportSize()` (§6) reads the same source. The **publisher**
+mechanics live in [storage-pwa-ios.md](storage-pwa-ios.md) §7.
 
 ---
 

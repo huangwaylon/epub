@@ -335,30 +335,32 @@ observed behaviour that can shift between WebKit versions.
 
 ### iOS viewport — `src/services/viewport.ts`
 
-`initViewport()` (called once from `src/main.ts`) publishes the visual viewport height as
-`--app-height` on `:root` to fix two iOS standalone-PWA behaviours:
+**The iOS bug.** A freshly opened Home Screen app on iPhone lays out as if the window were
+shorter by the status-bar inset — 852 → 793 px on a 393×852 phone. `100dvh`, `innerHeight` and
+`visualViewport.height` all report the short value until a rotation. WebKit also paints
+nothing below the *document's* box, so a screen-tall fixed overlay is clipped at 793 px (the
+reader's bottom bar cut off, with the under-page background below it); sizing the overlay to
+the reported viewport instead leaves a gap below the bar.
 
-- **Cold-launch under-report** — a fresh launch lays out before the standalone window metrics
-  and `safe-area-inset-*` settle, leaving a `100dvh` fixed shell briefly too short, so a
-  bottom-anchored bar shows a gap that otherwise only clears on rotation.
-- **Rotation jitter** — iOS fires a burst of `resize`/`visualViewport` events while
-  `window.innerWidth/Height` lag the settled visual viewport.
+**The fix.** `fullScreenHeight(width)` returns the screen height when running standalone
+(`navigator.standalone` / `display-mode: standalone`) **and** the window's width equals a full
+screen side (±2px — not an iPad Split View / Slide Over / Stage Manager window). `screen`
+dimensions don't swap on rotation in iOS, so orientation is read from the width. It relies on
+`black-translucent` + `viewport-fit=cover` (the web view extends under the status bar).
+`initViewport()` (called once from `src/main.ts`) publishes:
 
-`viewportSize()` prefers `visualViewport` but falls back to the layout viewport while
-pinch-zoomed (where `visualViewport` reports the shrunken zoomed box). `visualViewport` is
-**not** reliable at cold launch on iPhone: a freshly opened Home Screen app reported it ~100px
-short (a gap below the reader's bottom bar until a rotation — observed on device, 2026-09). So
-when running standalone (`navigator.standalone` / `display-mode: standalone`) and the window's
-width equals a full screen side (±2px — i.e. not an iPad Split View / Slide Over / Stage
-Manager window), `fullScreenHeight()` lifts the height to the screen's other side (`screen`
-dimensions don't swap on rotation in iOS, so orientation is read from the width). It only ever
-raises an under-report, never shrinks. Tests: `viewport.test.ts`. The dictionary card's
-placement (`anchoredPosition.ts`) uses the same `viewportSize()`.
-Writes are rAF-coalesced, gated by a 2px threshold, and re-asserted on `load` + a 300 ms timeout
-to cover the settle window. **Only the fixed `.reader` overlay consumes `var(--app-height, 100dvh)`**;
-the in-flow shell (`html`/`body`/`#app`) stays on `100dvh`, because feeding the var into in-flow
-layout made iOS re-report a different visual viewport height — a resize→rewrite loop that
-oscillated the bottom bar. The **consumer side and reader layout are documented in
+- `--doc-height` — the screen height, or unset → `html`, `body`, `#app` (`app.css`, fallback
+  `100dvh`). Makes the document itself screen-tall so WebKit paints the full screen. A `scroll`
+  listener pins the (overflow-hidden) root at 0 in case anything scrolls it programmatically.
+- `--app-height` — `viewportSize().h` (the visual viewport, lifted to `fullScreenHeight`) → the
+  fixed `.reader` overlay and the loading/error screens.
+
+Both depend only on the screen size and the window **width**, which document layout can't
+change — so, unlike an earlier `visualViewport`-driven in-flow height, they can't oscillate.
+`viewportSize()` falls back to the layout viewport while pinch-zoomed, and is also used by the
+dictionary card's placement (`anchoredPosition.ts`). Writes are rAF-coalesced, gated by a 2px
+threshold, and re-asserted on `load` + 300 ms. Tests: `viewport.test.ts`.
+The **consumer side and reader layout are documented in
 [`docs/reader-engine.md`](./reader-engine.md)** (§11).
 
 ---

@@ -1,50 +1,54 @@
 # CLAUDE.md — Tsuzuri (綴)
 
 A **paginated EPUB reader for Japanese books**, built as an **installable iOS PWA**
-(Add to Home Screen, Safari, iOS 26+, iPhone + iPad — primarily **iPad in
-landscape**). Reads on-device EPUBs offline, paginated like Apple Books, with
-vertical 縦書き support, integrated **10ten-style tap-to-define**, **highlights**
-and **bookmarks**. A horizontal **swipe** turns the page (always horizontal, in
-the correct direction for every writing mode, as a short push: the page drifts with the
-finger and cross-fades to the next, which arrives from the side the finger came from); a **tap** on a Japanese word
-defines it — and highlights it yellow as a vocab record. **While a definition card is
-open, any tap only dismisses it** — even one on another word (no new lookup, no
-highlight). Otherwise a glyph tap wins over the chrome: it defines even inside the
-top/bottom nav-bar edge band. A tap that lands on **blank** paper is what drives the
-chrome: in the edge band it toggles the bars, otherwise it hides visible bars, and a
-blank-**centre** tap with nothing open does nothing (there are no tap edge-rails).
-Tapping a highlighted word reopens its definition with a remove option; the bottom
-progress bar is a **drag-to-scrub** control. Highlights are always yellow (no colour
-picker); the **Highlights & Bookmarks** panel groups them by chapter, and deletions (books,
-highlights, bookmarks) are undoable from a toast. On iPad the **Display** settings open as
-a glass popover under the Aa button so text changes are judged live. Fully client-side; **deployed to GitHub Pages** at
-https://huangwaylon.github.io/epub/ (see [docs/deployment.md](docs/deployment.md)).
+(Safari → Add to Home Screen, iOS 26+, iPhone + iPad, primarily **iPad landscape**).
+Offline, paginated like Apple Books, vertical 縦書き support, **10ten-style
+tap-to-define**, highlights and bookmarks. Fully client-side; deployed to GitHub Pages at
+https://huangwaylon.github.io/epub/ ([docs/deployment.md](docs/deployment.md)).
 
-> This file is the orientation map. **Depth lives in [`docs/`](docs/); task
-> procedures live in [`.claude/skills/`](.claude/skills/).** Read the relevant
-> subsystem doc before changing that subsystem.
+> This file is the orientation map. Depth lives in [`docs/`](docs/); task procedures live
+> in [`.claude/skills/`](.claude/skills/). Read the subsystem doc before changing it.
+
+## Interaction model (the product contract)
+- **Swipe** (horizontal) turns the page — always horizontal, direction-correct for every
+  writing mode. Animated as a short push: the page drifts ~36px with the finger and
+  cross-fades; the next page arrives from the side the finger came from. First/last page
+  bounces. ←/→ and Space/Shift-Space also turn; Esc closes the card/chrome.
+- **Tap on a Japanese word** defines it and highlights it yellow (a vocab record; toggle
+  "Highlight looked-up words" in Display). Works inside the top/bottom nav-bar band.
+- **While a definition card is open, any tap only dismisses it** — even on another word.
+- **Blank tap** in the top/bottom edge band toggles the bars; elsewhere it hides visible
+  bars; a blank-centre tap with nothing open does nothing. A tap never turns the page.
+- Tapping a highlight reopens its definition (without furigana) with **Remove highlight**.
+- Bottom progress bar is **drag-to-scrub** (previews the target chapter).
+- Highlights are always yellow. **Highlights & Bookmarks** panel groups by chapter;
+  deleting a book/highlight/bookmark is undoable from a toast. On iPad, **Display**
+  settings open as a glass popover under the Aa button.
 
 ## Stack
-Svelte 5 (runes) · TypeScript · Vite + `vite-plugin-pwa`. Rendering by
-**foliate-js** (vendored, MIT, in `src/vendor/foliate-js`). Japanese dictionary by
-the **10ten** ecosystem: `@birchill/jpdict-idb` + `@birchill/normal-jp` (npm) and a
-**vendored, GPL-3.0** deinflection engine (`src/services/jp/deinflect.ts`). Word
-**segmentation** by **kuromoji** (`@sglkc/kuromoji`, MeCab-style IPADIC; Apache-2.0).
-Storage: **OPFS** (EPUB bytes) + **IndexedDB** via `idb` (everything structured).
-The app is **backend-free** — the offline dictionary is the only language feature.
-Four runtime deps: jpdict-idb, normal-jp, kuromoji, idb (the IPADIC dict is gunzipped
-with the native `DecompressionStream`; fflate is dev-only, for the test-book script).
+Svelte 5 (runes) · TypeScript · Vite + `vite-plugin-pwa`. Rendering: **foliate-js**
+(vendored, MIT, `src/vendor/foliate-js`). Dictionary: **10ten** ecosystem —
+`@birchill/jpdict-idb` + `@birchill/normal-jp` + a **vendored GPL-3.0** deinflector
+(`src/services/jp/deinflect.ts`). Segmentation: **kuromoji** (`@sglkc/kuromoji`, IPADIC).
+Storage: **OPFS** (EPUB bytes, IndexedDB fallback) + **IndexedDB** via `idb`.
+Runtime deps: jpdict-idb, normal-jp, kuromoji, idb. Backend-free.
 
-## Architecture (layers, strict downward deps)
+## Architecture (strict downward deps)
 ```
-UI (src/lib/**, Svelte)  →  stores (src/stores/*.svelte.ts, rune singletons)
-                         →  services (src/services/**, framework-agnostic)
-                         →  vendored engines (src/vendor/foliate-js)
+UI (src/lib/**, Svelte) → stores (src/stores/*.svelte.ts) → services (src/services/**,
+framework-agnostic) → vendored engines (src/vendor/foliate-js)
 ```
-- **Entry:** `src/main.ts` mounts **without awaiting IndexedDB** — an inline script in `index.html` sets `data-theme` from a localStorage mirror of the settings (`tsuzuri:settings`) before first paint, then `initSettings` hydrates from IDB (the source of truth). `initViewport`, `requestPersistence`, `registerSW` (update check on return to foreground, ≤ hourly) → `src/App.svelte` routes between **Shelf** and **Reader** via the `nav` store; the route is persisted to sessionStorage so an update-reload reopens the book. Theme defaults to **`'auto'`** (follows the system; `appearance.resolved` is the resolved light/sepia/dark).
-- **Lazy loading:** the Shelf's critical path has no foliate — `library.ts` imports `view.js` on demand and the Reader chunk is loaded via a retryable `loadReader()` (warmed ~1.5 s after mount and on cover press); the reader prefetches foliate's zip/epub/paginator chunks at mount so book open isn't a serial chunk waterfall.
-- **Reader core:** a single `ReaderController` (`src/services/reader.ts`) owns the `<foliate-view>` element; `src/lib/reader/Reader.svelte` wires it to the UI.
-- **Full map & data flows:** **[docs/architecture.md](docs/architecture.md)**.
+- **Entry:** `src/main.ts` mounts immediately (no IndexedDB await). An inline script in
+  `index.html` sets `data-theme` from a localStorage mirror (`tsuzuri:settings`) before
+  first paint; `initSettings` then hydrates from IDB (source of truth). Theme defaults to
+  `'auto'` (`appearance.resolved` = light/sepia/dark). SW update check on foreground (≤ hourly).
+- **Routing:** `App.svelte` switches Shelf ↔ Reader via the `nav` store. The route is saved
+  to sessionStorage only right before a deliberate reload (SW update, "Try again").
+- **Lazy loading:** the Shelf never loads foliate (`library.ts` imports `view.js` on
+  demand). The Reader chunk loads via retryable `loadReader()` (warmed after mount and on
+  cover press) and prefetches foliate's zip/epub/paginator chunks at mount.
+- **Reader core:** one `ReaderController` (`src/services/reader.ts`) owns `<foliate-view>`;
+  `src/lib/reader/Reader.svelte` wires it to the UI. Full map: [architecture.md](docs/architecture.md).
 
 ## Where things are
 | Area | Code | Doc |
@@ -52,59 +56,99 @@ UI (src/lib/**, Svelte)  →  stores (src/stores/*.svelte.ts, rune singletons)
 | System map, data flows, stores | `src/stores`, `src/main.ts`, `src/App.svelte` | [architecture.md](docs/architecture.md) |
 | Reader / foliate / pagination / taps / highlights | `src/services/reader.ts`, `src/lib/reader/*`, `src/vendor/foliate-js` | [reader-engine.md](docs/reader-engine.md) |
 | Dictionary, deinflection, lookup, word extraction | `src/services/jp/*` | [japanese.md](docs/japanese.md) |
-| Storage, data model, PWA, iOS constraints | `src/services/storage/*`, `src/services/types.ts`, `vite.config.ts`, `index.html` | [storage-pwa-ios.md](docs/storage-pwa-ios.md) |
-| Svelte conventions, design tokens (spacing/type/radii/glass/motion — §2), components, responsive/iPad | `src/app.css`, `src/lib/components/*`, `src/stores/settings.svelte.ts` | [ui-and-design.md](docs/ui-and-design.md) |
-| Deployment / CI / GitHub Pages / base path | `.github/workflows/deploy.yml`, `vite.config.ts` (`base`) | [deployment.md](docs/deployment.md) |
-| Setup, scripts, workflows, verification, worked examples | `package.json`, `scripts/*` | [development.md](docs/development.md) |
+| Storage, data model, PWA, iOS viewport | `src/services/storage/*`, `src/services/viewport.ts`, `vite.config.ts`, `index.html` | [storage-pwa-ios.md](docs/storage-pwa-ios.md) |
+| Design tokens, components, responsive/iPad | `src/app.css`, `src/lib/components/*` | [ui-and-design.md](docs/ui-and-design.md) |
+| Deployment / CI / base path | `.github/workflows/deploy.yml`, `vite.config.ts` | [deployment.md](docs/deployment.md) |
+| Setup, scripts, verification recipes | `package.json`, `scripts/*` | [development.md](docs/development.md) |
 
 ## Run & verify
 ```sh
 npm install
-npm run dev      # Vite, also exposed on the LAN for on-device testing
-npm run check    # svelte-check + tsc   (run after edits)
-npm test         # vitest (deinflection, glyph resolution/extraction, lookup pipeline, worker client)
-npm run build    # production build → dist/
+npm run dev      # Vite, exposed on the LAN for on-device testing
+npm run check    # svelte-check + tsc (run after edits)
+npm test         # vitest
+npm run build    # production build → dist/ (base /epub/)
 ```
-- **Test book:** `node scripts/make-test-epub.mjs` → `test-books/tsuki-to-neko.epub` (vertical 縦書き JP EPUB with ruby + conjugated verbs, multi-page).
-- **Verify in a browser** with the **chrome-devtools MCP at iPad-landscape (1194×834)**: new page → resize → import the test EPUB (upload to the "Import book" button) → open → download the dictionary in Settings → check vertical RTL pagination, swipe-to-turn (a horizontal swipe turns the page both directions as a short horizontal push — the new page arrives from the side the finger came from), tap-to-define (tap a Japanese word defines **and highlights it yellow** — including on the first/last glyph of a column, which the nav-bar band overlaps; with a card open, a tap on another word must **only dismiss** it; tapping a highlight reopens its definition with a **Remove highlight** option and must show the word **without** furigana; a tap on **blank** paper in the top/bottom band toggles chrome, elsewhere it dismisses the card or hides the bars, and a blank-centre tap with nothing open does nothing — no tap edge-rails), drag-select → highlight (yellow) / copy, the **drag-to-scrub** bottom progress bar, bookmark. Console should show only the benign foliate iframe `allow-scripts and allow-same-origin` sandbox warning. Full recipe, plus the DEV `window.__tsuzuri` tap-accuracy harness and on-device (HTTPS tunnel + Add to Home Screen), in [development.md](docs/development.md). The **`/prs`** and **`tsuzuri-verify`** skills also cover this.
-- **Base path:** the dev server runs at `/`; the production build uses the `/epub/` base and deploys to GitHub Pages on push to `main` — see [deployment.md](docs/deployment.md).
+- **Test book:** `node scripts/make-test-epub.mjs` → `test-books/tsuki-to-neko.epub`
+  (vertical JP, ruby, conjugated verbs, multi-page).
+- **Browser check:** chrome-devtools MCP at iPad landscape 1194×834 with touch: import the
+  test EPUB → open → download the dictionary (Settings) → verify the interaction model
+  above (swipe both ways, tap-define incl. first/last glyph of a column, tap-to-dismiss,
+  highlight reopen/remove, drag-select → highlight/copy, scrubber, bookmark). Console should
+  show only foliate's benign iframe `allow-scripts and allow-same-origin` warning. The DEV
+  `window.__tsuzuri` hook exposes the content doc/controller for scripted taps. Recipes:
+  [development.md](docs/development.md), the **tsuzuri-verify** skill.
 
 ## Conventions
-- **Svelte 5 runes.** Stores are `*.svelte.ts` modules exporting a module-level `$state` object; mutate via exported functions (e.g. `updateSettings`). Components read `store.x` directly.
-- **Services are framework-agnostic** — no Svelte imports in `src/services/**`.
-- Components own **scoped styles**; theme is **CSS custom properties** on `<html data-theme>` (see `src/app.css`), and the reader re-injects those same vars into the content iframe.
-- Put **`lang="ja"`** on Japanese text; give icon-only buttons an `aria-label`; pad with `env(safe-area-inset-*)`.
-- Match the surrounding code style. After changes, run `npm run check`.
+- Svelte 5 runes. Stores are `*.svelte.ts` modules exporting module-level `$state`; mutate
+  via exported functions (e.g. `updateSettings`). No Svelte imports in `src/services/**`.
+- Scoped component styles on the tokens in `src/app.css` (spacing, type, radii, glass,
+  motion); theme is CSS custom properties on `<html data-theme>`, re-injected into the
+  content iframe.
+- `lang="ja"` on Japanese text; `aria-label` on icon-only buttons; ≥44pt touch targets;
+  pad with `env(safe-area-inset-*)`.
+- Match surrounding style; run `npm run check` and `npm test` after changes.
 
-## Critical gotchas & constraints (read before editing)
-- **GPL-3.0:** the vendored `src/services/jp/deinflect.ts` makes the whole app GPL-3.0-or-later (license: `src/services/jp/LICENSE-10ten`). To relicense, reimplement deinflection.
-- **kuromoji segmentation:** tap-to-define segments with **kuromoji** (`@sglkc/kuromoji`, MeCab/IPADIC), then looks up JMdict. The whole pipeline runs in a **Web Worker** (`lookup.worker.ts` ↔ `lookupClient.ts`) so it never janks a page-turn — only the DOM parts (`extractTextAt`/`rangeForSpan`) stay on the main thread. The worker is a lazy singleton: warmed at reader mount (and re-created on resume if `pingLookup()` gets no answer), shed only after the app has stayed backgrounded **60 s** (`LOOKUP_IDLE_DISPOSE_MS`; disposing on every hide meant taps during the rebuild silently fell back to greedy segmentation, i.e. the wrong word), disposed on reader exit, non-latching on transient errors. A tap gives an in-flight build a bounded **1.2 s** wait (`settleSegmenter`) rather than answering greedily, and `lookupClient` keeps a small main-thread cache of **ready-derived** results so it survives the worker. Its IPADIC dict — **11 `*.dat.gz`, ~11.3 MB compressed / ~27 MB inflated / ≈33 MB resident** (was 12 files, 19 MB / ~175 MB resident) — is staged to `public/kuromoji/dict/` by `scripts/copy-kuromoji-dict.mjs` (`predev`/`prebuild`; gitignored), which **trims the zero padding** of `tid`/`unk*` to their structural length and **drops `tid_pos`** entirely: segmentation reads token boundaries straight off the lattice/Viterbi path (`segment.ts`), never `tokenize()`'s POS features — a golden test (`segment.golden.test.ts`) pins boundaries to stock kuromoji. The defensive loader (`kuromojiLoader.cjs`, aliased in `vite.config.ts`) inflates with `DecompressionStream`, tolerates servers that auto-decompress, answers `tid_pos` with an empty buffer and replaces kuromoji's 325k-key target map with flat `Int32Array`s. The dict is SW-runtime-cached in **`kuromoji-ipadic-v2`** with **no `expiration` at all** (not even `maxEntries` — a partial shard set builds no trie); the shelf download calls **`cacheIpadic()`** (Cache API pre-fill, no trie build) and the reader download also warms. `main.ts` deletes the obsolete `kuromoji-ipadic` cache. The popup's download state comes from `dictPhase()`. Depth: [japanese.md](docs/japanese.md).
-- **Tap accuracy is geometry, not the caret.** `caretRangeFromPoint`/`caretPositionFromPoint` return the nearest caret *boundary* and advance to the **next** character past each glyph's mid-advance, so trusting their offset mis-resolved the far ~40% of every glyph (~35% wrong word, plus dead taps at a text-node end). `extract.ts` uses the caret only as a **seed** and then picks the character whose measured box actually contains the point (`resolveGlyph`/`charRect`/`hitDistance`; `pointOnGlyph` is gone), and a tap on furigana is redirected to the ruby **base** (`rubyBaseHit`). Don't reintroduce caret-offset trust, and don't `range.toString()` a word that may carry ruby (the `<rt>` gets spliced in: 決けっ心). Depth: [japanese.md](docs/japanese.md) §6.
-- **Don't edit `src/vendor/foliate-js/**`** except as a deliberate, documented patch. Four exist: (1) `view.js` removed `pdf.js` and the PDF branch (`isPDF` remains as harmless dead code); (2) `paginator.js` disables foliate's **own touch page-turn** so our horizontal swipe detector (`#trackGestures` in `reader.ts`) drives pagination — `#onTouchMove` keeps `e.preventDefault()` but drops `scrollBy`, `#onTouchEnd` drops the velocity `snap()`; (3) `paginator.js` `#turnPage` now waits its trailing `100 ms` **only when the turn crossed into a new section** — upstream also waited whenever `animated` is absent, which is our permanent state, so every turn paid 100 ms of blank paper (`view.next()` 106 ms → 5 ms measured; rapid turns are coalesced app-side). (3′) since amended: `#turnPage` resolves **immediately** and, after a section crossing, releases its lock on a 100 ms timer instead of awaiting it; (4) `paginator.js` `View#render` skips while the iframe is between documents (a resize during a section swap or teardown threw `el is null`). All are marked `TSUZURI PATCH`. We leave `animated` **off** and slide page turns horizontally ourselves (foliate's own turn slides vertically for 縦書き); see [reader-engine.md](docs/reader-engine.md) §1/§8a. Content renders in a **closed-shadow-DOM iframe**; reach it only via foliate's `load` event `doc` (or, in DEV, the `window.__tsuzuri` hook used by the tap-accuracy harness).
-- **Vertical (縦書き) column-fill quirk:** foliate can under-measure vertical column height on first paint (dead space at the bottom). Fixed by deriving the vertical caps from the live viewport in `applyLayout`, which is also **idempotent** — it skips redundant renders, killing a rotation-flicker loop; `#nudgeLayout` + the resize listeners are hedges. `#expectVertical()` also pre-sets the writing mode before `view.init` (the `load` handler corrects a wrong guess, reading `body` like foliate), saving a wasted first render. See [reader-engine.md](docs/reader-engine.md) §11.
-- **縦書き books that declare it only in metadata:** calibre-converted novels ship `<meta name="primary-writing-mode" content="vertical-rl">` + `class="vrtl"` on each section root but **no `writing-mode` CSS**, and foliate reads only `rendition:*` metadata — so on `writingMode: 'auto'` they rendered 横書き. `#applyIntendedWritingMode` prepends `html{writing-mode:vertical-rl}` when it sees that explicit `vrtl` marker, before the first paint. Only that marker counts (guessing from `lang` or an rtl spine would break genuinely-horizontal RTL-bound books). See [reader-engine.md](docs/reader-engine.md) §6b.
-- **iOS viewport / `--app-height`:** a cold standalone launch under-reports `100dvh` / `inset:0` — and on iPhone even `visualViewport` comes up ~100px short — leaving a gap below the bottom bar until rotation. `src/services/viewport.ts` (`initViewport`) publishes the visual-viewport height as `--app-height`, **lifted to the screen height** when running standalone at full screen width (`fullScreenHeight`; skipped in iPad Split View/Stage Manager windows), which **only the fixed `.reader` overlay** consumes — applying it to in-flow `html`/`body` fed back into the viewport and oscillated the bar. See [storage-pwa-ios.md](docs/storage-pwa-ios.md).
-- **iOS specifics:** EPUB import is `<input type="file">`-only (no Share Target / file handlers); OPFS for blobs (IndexedDB fallback); installed PWAs are exempt from the 7-day storage eviction. Details in [storage-pwa-ios.md](docs/storage-pwa-ios.md).
-- **Highlight volume is a perf constraint** (tap-to-define highlights *every* looked-up word, and each draw parses a CFI, re-anchors a Range and measures client rects): `reapplyHighlights` paints **24 per task** in `nearestFirst` order (`src/services/cfi.ts`: parse each CFI once, sort in document order, binary-search `lastCFI`, draw outward — the old `Math.abs(compare())` "sort" was a no-op), highlights are seeded **before** `open()` so only the opening section draws at open, with a generation counter that abandons a superseded sweep; the `annotations` store is an immutable `$state.raw` array with rebuilt lookup maps (`isHighlighted(cfi)`), all create/remove paths go through one `addHighlight`/`removeHighlight` pair in `Reader.svelte` (paint first, persist in the background, dedupe on CFI), and a bookmark counts as "on this page" when it falls within the visible page's CFI range. Each content document's listeners also live on their own `AbortController` (`#docACs`), since the paginator swaps in a fresh document per section. See [reader-engine.md](docs/reader-engine.md) §8/§10.
-- **Taps are a hot path — never add latency or a guard that can swallow one.** `TAP_MAX_MS` is **700 ms** (an aimed tap at a 16px glyph, and the careful retry after a miss, routinely exceeded 400 ms), `pointermove`/`pointerup`/`pointercancel` all ignore **non-primary** pointers (a second contact on the glass used to be measured against the first finger's down point and killed the tap), `shouldIgnoreUp` bails only when the press landed *inside* the live selection's rects (WebKit collapses a selection only *after* our `pointerup`), and `touch-action: manipulation` is set on `.reader` and the injected content `body` (a stray double-tap zoom disables every tap **and** swipe until pinched back out). The old 60 ms `pendingTap` defer is gone — `show-annotation` simply stands down behind a just-completed tap (`tapDefinedAt`). A quick one-finger **touch** swipe turns the page as soon as it crosses the threshold (its lift is then ignored); mouse drag-select and selection handles are unaffected. ←/→, Space/Shift-Space turn pages and Esc closes the card/chrome; a swipe at the first/last page bounces. See [reader-engine.md](docs/reader-engine.md) §8.
-- **On-device iOS status — partially verified.**
-  **Measured on real iOS** (iPad Safari, iOS 26.5, 2026-06-28): EPUB import (the `<input
-  type=file>` picker), pagination + vertical 縦書き RTL + furigana, the horizontal-swipe page
-  turn (both directions), the nav-bar edge-band chrome toggle, **tap-to-define** (the caret
-  APIs *do* resolve in the vertical-rl closed-shadow iframe — the earlier doubt was
-  unfounded; a defensive `try/catch` wraps both in `extract.ts`), tap-a-word → yellow
-  highlight → **Notes** panel (now "Highlights & Bookmarks"), bookmarks, and reading-position persistence across relaunch.
-  **Measured in desktop Chrome only (2026-08-08):** the glyph-resolution fix and the
-  page-turn latency patch above. Both are engine-independent in principle, but **inferred,
-  not verified, on iOS** — WebKit has open bugs in vertical-writing caret hit-testing
-  (webkit.org/b/283620, /287007, /263988; iOS layout-test baselines even expect *no* caret
-  for a tap inside a fragmented inline box in `vertical-rl`), and the geometry still takes
-  its *seed* from those APIs. **Still unconfirmed on real iOS:** the 2026-09 perf pass (lean kuromoji memory, swipe-on-move, `DecompressionStream` in the worker, dark-variant splash screens), that fix, the vertical
-  column-fill in **landscape** (portrait shows a residual bottom dead band — a known open
-  issue, deferred pending in-iframe measurement), `--app-height` cold-launch durability, and
-  Add-to-Home-Screen storage durability.
+## Critical constraints (read before editing)
+- **GPL-3.0:** vendored `deinflect.ts` makes the app GPL-3.0-or-later
+  (`src/services/jp/LICENSE-10ten`).
+- **Lookup runs in a Web Worker** (`lookup.worker.ts` ↔ `lookupClient.ts`); only DOM work
+  (`extractTextAt`/`rangeForSpan`) is on the main thread. Worker: warmed at reader mount,
+  re-created on resume if `pingLookup()` fails, shed after 60 s backgrounded, disposed on
+  reader exit. A tap waits ≤1.2 s for an in-flight kuromoji build rather than answering
+  greedily; `lookupClient` caches only ready-derived results (cleared after a download).
+- **kuromoji dict:** 11 trimmed `*.dat.gz` (~11 MB, ≈33 MB resident) staged to
+  `public/kuromoji/dict/` by `scripts/copy-kuromoji-dict.mjs` (gitignored; `tid_pos` is
+  dropped — boundaries come from the lattice, pinned by `segment.golden.test.ts`).
+  `kuromojiLoader.cjs` (aliased in `vite.config.ts`) inflates with `DecompressionStream`
+  and uses flat target maps. SW cache `kuromoji-ipadic-v2`, **no expiration** (a partial
+  shard set builds no trie); `cacheIpadic()` pre-fills it. Depth: [japanese.md](docs/japanese.md).
+- **Lookup ranking:** deinflections must match the entry's word type (10ten
+  `entryMatchesType`); common deinflections lead; an uncommon conjugation parse that
+  overruns the kuromoji token yields to a shorter common match (したように → する).
+- **Tap accuracy is geometry, not the caret.** Caret APIs return a *boundary*; `extract.ts`
+  uses them only as a seed and picks the glyph whose measured box contains the point
+  (`resolveGlyph`); furigana taps redirect to the ruby base. Never trust the caret offset,
+  and never `range.toString()` a word that may carry ruby (決けっ心).
+- **Taps are a hot path** — never add latency or a guard that can swallow one.
+  `TAP_MAX_MS` 700; non-primary pointers ignored; `shouldIgnoreUp` bails only inside the
+  live selection; `touch-action: manipulation` on `.reader` and the content body (a stray
+  double-tap zoom kills taps and swipes). A touch swipe is decided on move once it crosses
+  45px. A highlight `click` on the same gesture stands down (`tapDefinedAt`/`tapDismissedAt`).
+- **Vendored foliate-js:** edit only as a documented `TSUZURI PATCH`. Current patches:
+  (1) `view.js` PDF branch removed; (2) `paginator.js` own touch page-turn disabled (our
+  swipe drives turns); (3) `#turnPage` resolves immediately, holding its lock 100 ms on a
+  timer only after a section crossing; (4) `View#render` skips a document-less iframe.
+  `animated` stays **off**; we animate turns ourselves. Content is in a **closed-shadow
+  iframe** — reach it only via foliate's `load` event `doc` (or DEV `window.__tsuzuri`).
+- **Vertical layout:** `applyLayout` derives vertical caps from the live viewport and is
+  idempotent; `#expectVertical()` pre-sets writing mode before `view.init`. Books that
+  mark 縦書き only via calibre's `class="vrtl"` get `html{writing-mode:vertical-rl}`
+  prepended (`#applyIntendedWritingMode`) — only that explicit marker counts.
+- **iOS viewport:** a cold Home Screen launch reports a layout viewport short by the
+  status-bar inset (852 → 793 on iPhone) until a rotation, and WebKit paints nothing below
+  the document box. `viewport.ts` publishes the **screen** height when standalone at full
+  screen width as `--doc-height` (html/body/#app) and `--app-height` (fixed `.reader`);
+  both depend only on screen size + window width, so they can't feed back into layout.
+  Relies on `black-translucent` + `viewport-fit=cover` in `index.html`.
+- **Highlight volume is a perf constraint:** `reapplyHighlights` paints 24 per task in
+  `nearestFirst` order (`src/services/cfi.ts`), seeded before `open()`, generation-guarded.
+  The `annotations` store is an immutable `$state.raw` array with lookup maps; all
+  create/remove goes through `addHighlight`/`removeHighlight` in `Reader.svelte` (paint
+  first, persist in background, dedupe on CFI). Per-document listeners use `#docACs`.
+- **iOS storage/import:** EPUB import is `<input type="file">` only; OPFS with IndexedDB
+  fallback; installed PWAs are exempt from 7-day eviction.
 
-## Skills (task procedures, in `.claude/skills/`)
-- **tsuzuri-reader** — changing the reader / foliate integration (pagination, vertical text, taps, selection, highlights/CFI, reading margins).
-- **tsuzuri-japanese** — the dictionary / deinflection / lookup / word-extraction pipeline.
-- **tsuzuri-verify** — run and visually verify the app (test EPUB + chrome-devtools at iPad-landscape; on-device).
+## On-device status
+Verified on real iPad (iOS 26.5): import, pagination + 縦書き + furigana, swipe turns,
+edge-band chrome, tap-to-define, highlights, bookmarks, position persistence.
+**Not yet verified on iOS** (Chrome-only): geometric glyph resolution, the lean kuromoji
+worker (`DecompressionStream`, memory), swipe-on-move, the push animation, the cold-launch
+viewport fix, dark splash screens, glass/backdrop-filter cost, landscape vertical
+column-fill, and Home Screen storage durability.
+
+## Skills (`.claude/skills/`)
+- **tsuzuri-reader** — reader / foliate integration (pagination, vertical text, taps,
+  selection, highlights/CFI, margins).
+- **tsuzuri-japanese** — dictionary / deinflection / lookup / word extraction.
+- **tsuzuri-verify** — run and visually verify the app (chrome-devtools; on-device).

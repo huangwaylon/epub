@@ -3,7 +3,7 @@ import { viewportSize } from './viewport'
 
 // Node env, no jsdom: hand-mock the few globals viewportSize reads.
 let standalone = true
-const vv = { width: 393, height: 754, scale: 1 }
+const vv = { width: 393, height: 754, scale: 1, addEventListener() {} }
 
 beforeEach(() => {
   standalone = true
@@ -45,5 +45,42 @@ describe('viewportSize — iOS cold-launch under-report', () => {
     vi.stubGlobal('screen', { width: 1194, height: 834 })
     Object.assign(vv, { width: 700, height: 800 })
     expect(viewportSize()).toEqual({ w: 700, h: 800 })
+  })
+})
+
+describe('initViewport — publishes the heights', () => {
+  it('makes the document screen-tall in a full-screen standalone app, and only then', async () => {
+    const props = new Map<string, string>()
+    const style = {
+      setProperty: (k: string, v: string) => props.set(k, v),
+      removeProperty: (k: string) => props.delete(k),
+    }
+    vi.stubGlobal('document', { documentElement: { style }, readyState: 'complete' })
+    vi.stubGlobal('window', { innerWidth: 393, innerHeight: 793, addEventListener() {}, scrollTo() {} })
+    vi.stubGlobal('requestAnimationFrame', () => 1)
+    vv.height = 793 // the cold-launch under-report (852 − 59px status-bar inset)
+    vi.resetModules()
+    const { initViewport } = await import('./viewport')
+    initViewport()
+    expect(props.get('--doc-height')).toBe('852px')
+    expect(props.get('--app-height')).toBe('852px')
+  })
+
+  it('leaves the document on 100dvh in a Safari tab', async () => {
+    const props = new Map<string, string>()
+    const style = {
+      setProperty: (k: string, v: string) => props.set(k, v),
+      removeProperty: (k: string) => props.delete(k),
+    }
+    vi.stubGlobal('document', { documentElement: { style }, readyState: 'complete' })
+    vi.stubGlobal('window', { innerWidth: 393, innerHeight: 754, addEventListener() {}, scrollTo() {} })
+    vi.stubGlobal('requestAnimationFrame', () => 1)
+    standalone = false
+    vv.height = 754
+    vi.resetModules()
+    const { initViewport } = await import('./viewport')
+    initViewport()
+    expect(props.has('--doc-height')).toBe(false)
+    expect(props.get('--app-height')).toBe('754px')
   })
 })

@@ -178,6 +178,10 @@ body {
   margin: 0;
   height: 100%;
   height: 100dvh;
+  /* Screen height in a full-screen standalone app (viewport.ts): a cold iOS launch
+     under-reports 100dvh by the status-bar inset, and WebKit paints nothing below the
+     document's box — so without this the reader's bottom bar was cut off. */
+  height: var(--doc-height, 100dvh);
   overflow: hidden;
   overscroll-behavior: none;
   background: var(--paper);
@@ -191,6 +195,7 @@ body {
 #app {
   height: 100%;
   height: 100dvh;
+  height: var(--doc-height, 100dvh);
 }
 
 /* Chrome (everything outside the book text) should not be selectable or show the
