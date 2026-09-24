@@ -284,6 +284,12 @@ class View {
     }
     render(layout) {
         if (!layout) return
+        // TSUZURI PATCH (4): a ResizeObserver/resize can call render() while the iframe is
+        // between documents (section swap, rotation, reader teardown) — `documentElement`
+        // or `body` is then null and columnize threw `el is null` (setStylesImportant).
+        // Skip; the section's own `load` path renders once the new document exists.
+        const doc = this.document
+        if (!doc?.documentElement || !doc.body) return
         this.#column = layout.flow !== 'scrolled'
         this.#layout = layout
         if (this.#column) this.columnize(layout)

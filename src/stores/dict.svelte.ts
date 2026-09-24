@@ -4,7 +4,7 @@ export const dict = $state<{
   updating: boolean
   /** 0..1 download progress while updating. */
   progress: number
-  /** True while the ~19 MB kuromoji IPADIC dict is being fetched + SW-cached for
+  /** True while the ~11 MB kuromoji IPADIC dict is being fetched + SW-cached for
    *  offline use, right after the JMdict download. Until this clears, segmentation
    *  isn't guaranteed to work offline yet. */
   warming: boolean

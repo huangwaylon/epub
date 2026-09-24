@@ -84,7 +84,7 @@ position or range, stable across reflow/font/writing-mode changes — see
 | `marginScale` | `number` | `1` | Multiplies the base page margin. |
 | `fontFamily` | `'serif' \| 'sans'` | `'serif'` | |
 | `writingMode` | `WritingModePref` | `'auto'` | |
-| `tapToDefine` | `boolean` | `true` | Tap a JP word to look it up (vs. only toggling chrome). |
+| `highlightLookups` | `boolean` | `true` | Highlight (and record as vocab) every looked-up word; lookup itself is always on. Replaces the retired `tapToDefine`. |
 
 > Settings semantics and UI wiring: [`docs/ui-and-design.md`](./ui-and-design.md).
 
@@ -240,7 +240,7 @@ would just read as "the book never appeared." `Shelf.svelte` triggers import fro
 | `workbox.maximumFileSizeToCacheInBytes` | `6 * 1024 * 1024`. |
 | `workbox.navigateFallback` | `${base}index.html` — SPA works offline for any in-scope route. |
 | `workbox.cleanupOutdatedCaches` | `true` — drops stale caches across deploys. |
-| `workbox.runtimeCaching` | The ~19 MB IPADIC `*.dat.gz` under `/kuromoji/dict/`: `CacheFirst`, `cacheName: 'kuromoji-ipadic-v2'` (bump with the dict contents; `main.ts` deletes the superseded `kuromoji-ipadic` at startup, since `cleanupOutdatedCaches` only prunes precaches), `cacheableResponse.statuses: [0, 200]`. **No `expiration`** — neither `maxAgeSeconds` *nor* `maxEntries`. The dict is build-versioned immutable data and an all-or-nothing set of ~12 shards; any LRU/age purge could evict one shard and leave a partial dict (a failed trie build, with no way to refetch offline). `cleanupOutdatedCaches` handles cross-deploy staleness instead. |
+| `workbox.runtimeCaching` | The ~11 MB IPADIC `*.dat.gz` under `/kuromoji/dict/`: `CacheFirst`, `cacheName: 'kuromoji-ipadic-v2'` (bump with the dict contents; `main.ts` deletes the superseded `kuromoji-ipadic` at startup, since `cleanupOutdatedCaches` only prunes precaches), `cacheableResponse.statuses: [0, 200]`. **No `expiration`** — neither `maxAgeSeconds` *nor* `maxEntries`. The dict is build-versioned immutable data and an all-or-nothing set of 11 shards; any LRU/age purge could evict one shard and leave a partial dict (a failed trie build, with no way to refetch offline). `cleanupOutdatedCaches` handles cross-deploy staleness instead. |
 | `devOptions` | `{ enabled: true, type: 'module' }` — SW runs under `vite dev` (with `server.host: true` exposing the dev server on the LAN) so install/offline can be tested on-device. |
 
 The `base` is `'/epub/'` for `vite build` (GitHub Pages project site) and `'/'` for
@@ -268,7 +268,7 @@ gotcha live in [`docs/deployment.md`](./deployment.md); the dictionary download/
 
 - `viewport-fit=cover` + `maximum-scale=1, user-scalable=no` → edge-to-edge layout under the
   notch/home indicator, no pinch-zoom. Chrome stays clear of indicators via
-  `safe-area-inset-*` (e.g. `--safe-bottom` in `UpdateToast.svelte`).
+  `safe-area-inset-*` (e.g. `--safe-bottom` in `ToastHost.svelte`).
 - `black-translucent` status bar → content renders under the status bar in standalone.
 - **One** `theme-color` meta (no `media` variants — they'd fight the runtime value). The inline
   script sets it and `<html data-theme>` synchronously before first paint from the
@@ -297,7 +297,7 @@ gotcha live in [`docs/deployment.md`](./deployment.md); the dictionary download/
   drops back to the shelf if the book was removed. A cold launch is a new session → shelf.
 - `src/stores/pwa.svelte.ts` — Svelte 5 `$state`:
   `{ needRefresh, offlineReady, update }`, initialised falsy / no-op.
-- `src/lib/components/UpdateToast.svelte` — shows "A new version is ready." + **Refresh**
+- `src/lib/components/ToastHost.svelte` (via the `toast` store) — shows "A new version is ready." + **Refresh**
   (`pwa.update()`) when `needRefresh`; otherwise the one-time "Ready to read offline."
   confirmation when `offlineReady`, auto-dismissed after 4 s via a `$effect` whose cleanup
   clears the timer. Positioned above the bottom safe area

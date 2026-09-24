@@ -1,8 +1,16 @@
+<script lang="ts" module>
+  import { SvelteSet } from 'svelte/reactivity'
+  // Books removed but still inside their Undo window. Module-level so the pending state
+  // survives the Shelf unmounting (opening a book) — the deferred delete still commits.
+  const removing = new SvelteSet<string>()
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { BookMeta } from '../../services/types'
   import { library, refreshLibrary, importFiles, deleteBook, markOpened } from '../../stores/library.svelte'
   import { openReader, warmReader } from '../../stores/nav.svelte'
+  import { showToast } from '../../stores/toast.svelte'
   import { longpress } from '../actions/longpress'
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
@@ -26,6 +34,8 @@
 
   onMount(refreshLibrary)
 
+  const books = $derived(library.books.filter((b) => !removing.has(b.id)))
+
   function pick(e: Event) {
     const input = e.target as HTMLInputElement
     if (input.files?.length) importFiles(input.files)
@@ -39,13 +49,26 @@
     void markOpened(b.id).catch(() => {})
   }
 
-  async function confirmDelete(b: BookMeta) {
+  /** Remove with Undo: the book leaves the shelf at once, and the real delete (bytes +
+   *  progress + annotations) only runs once the Undo window closes. */
+  function remove(b: BookMeta) {
     menuFor = null
-    await deleteBook(b.id)
+    removing.add(b.id)
+    showToast({
+      message: 'Book removed',
+      action: { label: 'Undo', run: () => removing.delete(b.id) },
+      onexpire: () => {
+        void deleteBook(b.id)
+          .catch((err) => console.warn('Could not remove book', err))
+          .finally(() => removing.delete(b.id))
+      },
+    })
   }
 
-  function percent(id: string): number {
-    return Math.round((library.progress[id]?.fraction ?? 0) * 100)
+  /** null = never opened ("New"). */
+  function percent(id: string): number | null {
+    const p = library.progress[id]
+    return p ? Math.round((p.fraction ?? 0) * 100) : null
   }
 </script>
 
@@ -53,41 +76,51 @@
   <header class="bar">
     <h1>蔵書<span class="sub">Library</span></h1>
     <div class="actions">
-      <button class="icon-btn" onclick={() => (settingsOpen = true)} aria-label="Settings">
-        <Icon name="gear" size={22} />
+      <button class="icon-btn raised" onclick={() => (settingsOpen = true)} aria-label="Settings">
+        <Icon name="gear" />
       </button>
-      <button class="icon-btn primary" onclick={() => fileInput.click()} aria-label="Import book">
-        <Icon name="plus" size={22} />
+      <button class="icon-btn btn-primary" onclick={() => fileInput.click()} aria-label="Import book">
+        <Icon name="plus" />
       </button>
     </div>
   </header>
 
-  {#if library.importing > 0}
-    <div class="importing">Importing {library.importing} book{library.importing > 1 ? 's' : ''}…</div>
-  {/if}
   {#if library.importError}
     <div class="import-error" role="alert">
       <span>{library.importError}</span>
-      <button class="dismiss-err" onclick={() => (library.importError = null)} aria-label="Dismiss">
-        <Icon name="x" size={16} />
+      <button class="icon-btn dismiss-err" onclick={() => (library.importError = null)} aria-label="Dismiss">
+        <Icon name="x" size="sm" />
       </button>
     </div>
   {/if}
 
   {#if library.loading}
-    <div class="state"><div class="spinner"></div></div>
-  {:else if library.books.length === 0}
+    <div class="state"><div class="spinner delayed"></div></div>
+  {:else if books.length === 0 && library.importing === 0}
     <div class="state empty">
-      <div class="empty-art"><Icon name="book" size={46} stroke={1.4} /></div>
+      <div class="empty-art"><Icon name="book" size="lg" stroke={1.4} /></div>
       <h2>Your shelf is empty</h2>
       <p>Add an EPUB from Files, iCloud Drive, or anywhere on your device.</p>
-      <button class="cta" onclick={() => fileInput.click()}>
-        <Icon name="plus" size={18} /> Add a book
+      <button class="btn btn-primary cta" onclick={() => fileInput.click()}>
+        <Icon name="plus" size="sm" /> Add a book
       </button>
+      <p class="hint">
+        Tip: tap any Japanese word while reading to look it up. Get the offline dictionary in
+        <button class="link" onclick={() => (settingsOpen = true)}>Settings</button>.
+      </p>
     </div>
   {:else}
-    <div class="grid">
-      {#each library.books as book (book.id)}
+    <div class="grid" aria-busy={library.importing > 0}>
+      {#each { length: library.importing } as _, i (i)}
+        <div class="card skeleton-card" aria-hidden="true">
+          <div class="skeleton cover-skel"></div>
+          <div class="meta">
+            <div class="skeleton line"></div>
+            <div class="skeleton line short"></div>
+          </div>
+        </div>
+      {/each}
+      {#each books as book (book.id)}
         {@const p = percent(book.id)}
         <button
           class="card"
@@ -101,15 +134,16 @@
         >
           <div class="cover-wrap">
             <BookCover {book} />
-            {#if p > 0}
-              <div class="ring" style="--p:{p}">
-                <span>{p}%</span>
-              </div>
-            {/if}
+          </div>
+          <div class="progress" aria-hidden="true">
+            {#if p !== null && p > 0}<div class="progress-fill" style="width:{p}%"></div>{/if}
           </div>
           <div class="meta">
             <div class="title" lang="ja">{book.title}</div>
-            {#if book.author}<div class="author" lang="ja">{book.author}</div>{/if}
+            <div class="sub-line">
+              {#if book.author}<span class="author" lang="ja">{book.author}</span>{/if}
+              <span class="pct" class:new={p === null}>{p === null ? 'New' : p >= 100 ? 'Finished' : `${p}%`}</span>
+            </div>
           </div>
         </button>
       {/each}
@@ -132,10 +166,10 @@
     {@const b = menuFor}
     <div class="menu">
       <button class="row" onclick={() => open(b)}>
-        <Icon name="book" size={20} /> <span>Read</span>
+        <Icon name="book" /> <span>Read</span>
       </button>
-      <button class="row danger" onclick={() => confirmDelete(b)}>
-        <Icon name="trash" size={20} /> <span>Remove from library</span>
+      <button class="row danger" onclick={() => remove(b)}>
+        <Icon name="trash" /> <span>Remove from library</span>
       </button>
     </div>
   {/if}
@@ -145,6 +179,8 @@
 <Sheet bind:open={settingsOpen} title="Settings">
   {#if SettingsComp}
     <SettingsComp />
+  {:else}
+    <div class="state small"><div class="spinner delayed"></div></div>
   {/if}
 </Sheet>
 
@@ -153,28 +189,28 @@
     height: 100%;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
-    padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + 18px)
-      calc(var(--safe-bottom) + 28px) calc(var(--safe-left) + 18px);
+    padding: calc(var(--safe-top) + var(--sp-2)) calc(var(--safe-right) + var(--sp-5))
+      calc(var(--safe-bottom) + var(--sp-7)) calc(var(--safe-left) + var(--sp-5));
   }
   .bar {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
-    padding: 8px 2px 20px;
+    padding: var(--sp-2) 0 var(--sp-5);
   }
   h1 {
     margin: 0;
     font-family: var(--font-serif);
-    font-size: 30px;
+    font-size: var(--fs-display);
     font-weight: 650;
     letter-spacing: 0.02em;
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: var(--sp-3);
   }
   .sub {
     font-family: var(--font-ui);
-    font-size: 13px;
+    font-size: var(--fs-footnote);
     font-weight: 500;
     color: var(--ink-faint);
     letter-spacing: 0.08em;
@@ -182,35 +218,20 @@
   }
   .actions {
     display: flex;
-    gap: 10px;
+    gap: var(--sp-3);
   }
-  .icon-btn {
-    width: 42px;
-    height: 42px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    color: var(--ink-soft);
+  .raised {
     background: var(--paper-raised);
     box-shadow: var(--shadow-1);
-  }
-  .icon-btn.primary {
-    color: #fff;
-    background: var(--accent);
-  }
-  .importing {
-    font-size: 13px;
-    color: var(--ink-soft);
-    padding: 0 2px 14px;
   }
   .import-error {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 14px;
-    padding: 10px 10px 10px 14px;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-4);
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-4);
     border-radius: var(--r-md);
-    font-size: 13px;
+    font-size: var(--fs-footnote);
     color: var(--danger);
     background: color-mix(in srgb, var(--danger) 10%, var(--paper-raised));
     border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
@@ -219,29 +240,22 @@
     flex: 1;
   }
   .dismiss-err {
-    flex: none;
-    width: 28px;
-    height: 28px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
     color: inherit;
   }
 
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
-    gap: 22px 16px;
+    gap: var(--sp-6) var(--sp-4);
   }
   @media (min-width: 768px) {
     .shelf {
-      padding-left: calc(var(--safe-left) + 40px);
-      padding-right: calc(var(--safe-right) + 40px);
+      padding-left: calc(var(--safe-left) + var(--sp-10));
+      padding-right: calc(var(--safe-right) + var(--sp-10));
     }
     /* Centre the shelf content on wide (iPad) screens with larger covers. */
     .bar,
     .grid,
-    .importing,
     .import-error,
     .state {
       max-width: 1120px;
@@ -249,60 +263,55 @@
     }
     .grid {
       grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
-      gap: 38px 28px;
-    }
-    h1 {
-      font-size: 36px;
+      gap: var(--sp-10) var(--sp-7);
     }
     .bar {
-      padding-top: 16px;
-      padding-bottom: 28px;
+      padding-top: var(--sp-4);
+      padding-bottom: var(--sp-7);
     }
   }
   .card {
     text-align: start;
     display: flex;
     flex-direction: column;
-    gap: 9px;
+    gap: var(--sp-2);
     /* Skip layout/paint for off-screen covers on a long shelf; `auto` remembers each
        card's last rendered height once it has been on screen. That implies paint
        containment, so pad the box (and cancel it with a negative margin) to keep
        the cover's shadow from being clipped. */
     content-visibility: auto;
     contain-intrinsic-size: auto 150px auto 280px;
-    padding: 10px;
-    margin: -10px;
-  }
-  .card:active {
-    transform: scale(0.97);
-    transition: transform 0.1s;
+    padding: var(--sp-3);
+    margin: calc(-1 * var(--sp-3));
   }
   .cover-wrap {
-    position: relative;
+    transition: transform var(--dur-fast) var(--ease-out);
   }
-  .ring {
-    position: absolute;
-    right: 6px;
-    bottom: 6px;
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    font-size: 9px;
-    font-weight: 700;
-    color: var(--ink);
-    background:
-      radial-gradient(closest-side, var(--paper-raised) 76%, transparent 77%),
-      conic-gradient(var(--accent) calc(var(--p) * 1%), var(--line-strong) 0);
-    box-shadow: var(--shadow-1);
+  .card:active .cover-wrap {
+    transform: scale(var(--press-scale));
+    transition-duration: var(--dur-instant);
+  }
+  /* Thin reading-progress rule under the cover (empty track for unread books keeps
+     every card the same height). */
+  .progress {
+    height: 3px;
+    border-radius: var(--r-full);
+    background: var(--line);
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
   }
   .meta {
-    padding: 0 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
   .title {
     font-family: var(--font-serif);
-    font-size: 14px;
+    font-size: var(--fs-body);
     font-weight: 600;
     line-height: 1.3;
     display: -webkit-box;
@@ -311,13 +320,43 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .author {
-    margin-top: 2px;
-    font-size: 12px;
+  .sub-line {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    font-size: var(--fs-caption);
     color: var(--ink-faint);
+  }
+  .author {
+    flex: 1;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .pct {
+    flex: none;
+    margin-inline-start: auto;
+    font-variant-numeric: tabular-nums;
+  }
+  .pct.new {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .skeleton-card {
+    pointer-events: none;
+  }
+  .cover-skel {
+    aspect-ratio: 2 / 3;
+    border-radius: var(--r-sm);
+  }
+  .line {
+    height: 12px;
+    margin-top: var(--sp-1);
+  }
+  .line.short {
+    width: 55%;
   }
 
   .state {
@@ -325,9 +364,13 @@
     place-items: center;
     min-height: 60dvh;
   }
+  .state.small {
+    min-height: 160px;
+  }
   .empty {
+    align-content: center;
+    gap: var(--sp-2);
     text-align: center;
-    gap: 6px;
     color: var(--ink-soft);
   }
   .empty-art {
@@ -338,54 +381,55 @@
     border-radius: 50%;
     color: var(--accent);
     background: var(--accent-soft);
-    margin-bottom: 14px;
+    margin-bottom: var(--sp-3);
   }
   .empty h2 {
     margin: 0;
-    font-size: 19px;
+    font-size: var(--fs-title);
+    font-weight: 650;
     color: var(--ink);
   }
   .empty p {
     margin: 0;
-    max-width: 26ch;
-    font-size: 14px;
+    max-width: 30ch;
+    font-size: var(--fs-body);
+    line-height: 1.45;
   }
   .cta {
-    margin-top: 18px;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 11px 20px;
-    border-radius: var(--r-lg);
+    margin-top: var(--sp-4);
+  }
+  .empty .hint {
+    margin-top: var(--sp-6);
+    max-width: 36ch;
+    font-size: var(--fs-footnote);
+    color: var(--ink-faint);
+  }
+  .link {
+    padding: 0;
+    color: var(--accent);
     font-weight: 600;
-    color: #fff;
-    background: var(--accent);
-    box-shadow: var(--shadow-1);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    /* A 44pt target around inline link text. */
+    position: relative;
   }
-  .spinner {
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    border: 3px solid var(--line-strong);
-    border-top-color: var(--accent);
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+  .link::after {
+    content: '';
+    position: absolute;
+    inset: -12px -6px;
   }
 
   .menu {
-    padding-bottom: 8px;
+    padding-bottom: var(--sp-2);
   }
   .row {
     width: 100%;
+    min-height: 52px;
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 15px 6px;
-    font-size: 16px;
+    gap: var(--sp-4);
+    padding: 0 var(--sp-1);
+    font-size: var(--fs-callout);
     border-bottom: 1px solid var(--line);
   }
   .row:last-child {

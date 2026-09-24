@@ -94,7 +94,7 @@ Implications:
 
 The `dist/` artifact contains the app shell (JS/CSS/HTML), the PWA manifest, the
 service worker, the icons, the iPad launch screens (`splash/`, 36 PNGs, ~320 KB),
-**and the kuromoji IPADIC dictionary** (`kuromoji/dict/*.dat.gz`, ~19 MB).
+**and the kuromoji IPADIC dictionary** (`kuromoji/dict/*.dat.gz`, ~11 MB).
 
 Workbox precaches `**/*.{js,css,html}` plus `favicon.svg` and the Apple touch icon,
 capped at 6 MB/file (~420 KiB, 20 entries as of 2026-09), with `globIgnores` excluding

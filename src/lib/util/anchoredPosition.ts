@@ -104,8 +104,9 @@ export function placeNearWord(
   let left: number
   if (rect.left - gap - w >= mLeft) left = rect.left - gap - w
   else if (rect.right + gap + w <= vw - mRight) left = rect.right + gap
-  // Neither side fits (a very narrow screen): take the roomier side and clamp.
-  else left = rect.left - mLeft >= vw - mRight - rect.right ? mLeft : vw - mRight - w
+  // Neither side fits (a phone in portrait): clamping to a side would lay the card over
+  // the word itself, so go above/below the word instead, like horizontal text.
+  else return placeAnchored((rect.left + rect.right) / 2, rect.top, rect.bottom, w, h, opts)
   left = Math.max(mLeft, Math.min(vw - w - mRight, left))
 
   let top = (rect.top + rect.bottom) / 2 - h / 2

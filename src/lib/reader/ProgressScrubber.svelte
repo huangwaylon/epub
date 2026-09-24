@@ -11,10 +11,13 @@
   let {
     fraction = 0,
     sectionLabel = '',
+    labelAt,
     onseek,
   }: {
     fraction?: number
     sectionLabel?: string
+    /** Chapter title at an overall-book fraction — previewed above the % while dragging. */
+    labelAt?: (frac: number) => string
     onseek?: (frac: number) => void
   } = $props()
 
@@ -32,6 +35,7 @@
   // The fraction we render: the live preview while scrubbing, else the real one.
   const shown = $derived(scrubbing ? previewFraction : fraction)
   const pct = $derived(Math.round(shown * 100))
+  const previewLabel = $derived(scrubbing && labelAt ? labelAt(previewFraction) : '')
 
   function fractionFromX(clientX: number): number {
     const r = track?.getBoundingClientRect()
@@ -119,7 +123,10 @@
     </div>
     <div class="thumb" class:show={scrubbing || flashing} style="left:{shown * 100}%"></div>
     {#if scrubbing}
-      <div class="bubble" style="left:{shown * 100}%">{pct}%</div>
+      <div class="bubble" style="--x:{shown}">
+        {#if previewLabel}<span class="chap" lang="ja">{previewLabel}</span>{/if}
+        <span class="bpct">{pct}%</span>
+      </div>
     {/if}
     <!-- 44px invisible hit band carrying all the pointer logic + a11y role. -->
     <div
@@ -149,31 +156,30 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    padding: 0 6px;
+    justify-content: center;
+    gap: 6px;
+    padding: var(--sp-1) var(--sp-2) 2px;
     touch-action: none; /* we own the horizontal drag */
   }
   .lane {
     position: relative;
-    height: 3px;
+    height: 4px;
   }
   .track {
     position: absolute;
     inset: 0;
-    height: 3px;
-    border-radius: 2px;
+    border-radius: var(--r-full);
     background: var(--line-strong);
     overflow: hidden;
-    transition: height 0.15s var(--ease);
+    transition: transform var(--dur-fast) var(--ease-out);
   }
   .scrubber.active .track {
-    height: 5px;
-    top: -1px;
+    transform: scaleY(1.6);
   }
   .fill {
     height: 100%;
     background: var(--accent);
-    transition: width 0.2s var(--ease);
+    transition: width var(--dur-base) var(--ease-out);
   }
   /* While dragging the fill must track the finger 1:1 — no width easing. */
   .fill.live {
@@ -183,9 +189,9 @@
   .thumb {
     position: absolute;
     top: 50%;
-    width: 12px;
-    height: 12px;
-    margin-left: -6px;
+    width: 14px;
+    height: 14px;
+    margin-left: -7px;
     border-radius: 50%;
     background: var(--accent);
     box-shadow:
@@ -194,9 +200,9 @@
     opacity: 0;
     transform: translateY(-50%) scale(0.6);
     transition:
-      opacity 0.18s var(--ease),
-      transform 0.18s var(--ease),
-      left 0.2s var(--ease);
+      opacity var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      left var(--dur-base) var(--ease-out);
     pointer-events: none;
   }
   .thumb.show {
@@ -205,8 +211,8 @@
   }
   .scrubber.active .thumb {
     transition:
-      opacity 0.18s var(--ease),
-      transform 0.18s var(--ease); /* no left easing while dragging */
+      opacity var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out); /* no left easing while dragging */
   }
   /* Mouse/trackpad users get a discoverable resting dot. */
   @media (hover: hover) {
@@ -216,30 +222,48 @@
     }
   }
 
+  /* Preview bubble: chapter title over the target %. Follows the thumb but is clamped so
+     a long title never runs off the capsule's ends. */
   .bubble {
     position: absolute;
     bottom: 100%;
-    margin-bottom: 12px;
-    transform: translateX(-50%);
-    padding: 5px 11px;
+    margin-bottom: var(--sp-5);
+    left: clamp(0px, calc(var(--x) * 100%), 100%);
+    translate: calc(var(--x) * -100%) 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    max-width: min(320px, 70vw);
+    padding: var(--sp-2) var(--sp-3);
     border-radius: var(--r-md);
-    font-size: 15px;
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
     color: var(--ink);
-    background: color-mix(in srgb, var(--paper-raised) 88%, transparent);
-    border: 1px solid var(--line);
-    box-shadow: var(--shadow-2);
-    backdrop-filter: blur(10px) saturate(1.2);
-    -webkit-backdrop-filter: blur(10px) saturate(1.2);
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
+    box-shadow: var(--glass-shadow);
     pointer-events: none;
     white-space: nowrap;
-    animation: pop 0.14s var(--ease);
+    animation: pop var(--dur-fast) var(--ease-out);
+  }
+  .chap {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-serif);
+    font-size: var(--fs-footnote);
+    font-weight: 600;
+    color: var(--ink-soft);
+  }
+  .bpct {
+    font-size: var(--fs-callout);
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
   }
   @keyframes pop {
     from {
       opacity: 0;
-      transform: translateX(-50%) scale(0.96);
+      transform: translateY(4px) scale(0.96);
     }
   }
 
@@ -255,15 +279,16 @@
   .hit:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 4px;
-    border-radius: 4px;
+    border-radius: var(--r-xs);
   }
 
   .ptext {
     display: flex;
     justify-content: space-between;
-    gap: 10px;
-    font-size: 11px;
-    color: var(--ink-faint);
+    gap: var(--sp-3);
+    font-size: var(--fs-caption);
+    line-height: 16px;
+    color: var(--ink-soft);
   }
   .sec {
     overflow: hidden;
@@ -271,6 +296,7 @@
     text-overflow: ellipsis;
   }
   .pct {
+    flex: none;
     font-variant-numeric: tabular-nums;
   }
 </style>

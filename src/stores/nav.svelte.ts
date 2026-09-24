@@ -4,15 +4,18 @@ import type { Component } from 'svelte'
 export type Route = { name: 'shelf' } | { name: 'reader'; bookId: string }
 
 /**
- * The route is mirrored to sessionStorage so a reload inside the same session — above
- * all the service-worker "update ready" reload — lands back in the open book instead
- * of on the shelf. A cold launch is a new session, so it still starts at the shelf.
+ * The route survives exactly one deliberate reload — the service-worker "update ready"
+ * reload (and the reader chunk's "Try again") — via sessionStorage, so the user lands
+ * back in the open book instead of on the shelf. It is written only just before such a
+ * reload and consumed on read: saving it on every navigation would make WebKit's own
+ * reload after a memory-kill reopen the very book that crashed, in a loop.
  */
 const ROUTE_KEY = 'tsuzuri:route'
 
-function savedRoute(): Route {
+function takeSavedRoute(): Route {
   try {
     const r = JSON.parse(sessionStorage.getItem(ROUTE_KEY) ?? 'null') as Route | null
+    sessionStorage.removeItem(ROUTE_KEY)
     if (r?.name === 'reader' && typeof r.bookId === 'string') return r
   } catch {
     /* unavailable / malformed — start at the shelf */
@@ -20,16 +23,20 @@ function savedRoute(): Route {
   return { name: 'shelf' }
 }
 
-function setRoute(route: Route): void {
-  nav.route = route
+/** Remember the current route for the reload that is about to happen. */
+export function rememberRouteForReload(): void {
   try {
-    sessionStorage.setItem(ROUTE_KEY, JSON.stringify(route))
+    sessionStorage.setItem(ROUTE_KEY, JSON.stringify(nav.route))
   } catch {
     /* best effort */
   }
 }
 
-export const nav = $state<{ route: Route }>({ route: savedRoute() })
+function setRoute(route: Route): void {
+  nav.route = route
+}
+
+export const nav = $state<{ route: Route }>({ route: takeSavedRoute() })
 
 export function openReader(bookId: string): void {
   setRoute({ name: 'reader', bookId })

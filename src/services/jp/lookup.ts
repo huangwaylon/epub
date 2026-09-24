@@ -1,6 +1,6 @@
 import { getWords } from '@birchill/jpdict-idb'
 import { toNormalized } from '@birchill/normal-jp'
-import { deinflect, Reason, type CandidateWord } from './deinflect'
+import { deinflect, Reason, WordType, type CandidateWord } from './deinflect'
 import { ensureSegmenter, segmenterReady, tokenSpanAt } from './segment'
 import type { DictEntry, LookupResult, Sense } from './lookupTypes'
 
@@ -137,13 +137,26 @@ const MISC_LABELS: Record<string, string> = {
   yoji: 'four-character idiom',
 }
 
-const INFLECTABLE = /^(v1|v5|vk|vs|vz|vn|vr|adj-i|aux-v)/
-
-/** A deinflected candidate is only valid if the dictionary entry is inflectable. */
+/**
+ * A deinflected candidate is only valid if the entry's part of speech is one of the word
+ * types the deinflection can produce (10ten's `entryMatchesType`). Checking merely "is it
+ * inflectable" let した deinflect to godan 知る (whose past is 知った) via the *ichidan*
+ * rule し+た → しる, and 知る — being common — then led the card.
+ */
 function candidateMatches(word: any, cand: CandidateWord): boolean {
   if (!cand.reasonChains.length) return true // original surface form — always allowed
-  const allPos: string[] = (word.s ?? []).flatMap((s: any) => s.pos ?? [])
-  return allPos.some((p) => INFLECTABLE.test(p))
+  const pos: string[] = (word.s ?? []).flatMap((s: any) => s.pos ?? [])
+  const has = (test: (p: string) => boolean) => pos.some(test)
+  const t = cand.type
+  return (
+    (!!(t & WordType.IchidanVerb) && has((p) => p.startsWith('v1'))) ||
+    (!!(t & WordType.GodanVerb) && has((p) => p.startsWith('v5') || p.startsWith('v4'))) ||
+    (!!(t & WordType.IAdj) && has((p) => p.startsWith('adj-i'))) ||
+    (!!(t & WordType.KuruVerb) && has((p) => p === 'vk')) ||
+    (!!(t & WordType.SuruVerb) && has((p) => p.startsWith('vs-'))) ||
+    (!!(t & WordType.SpecialSuruVerb) && has((p) => p === 'vs-s' || p === 'vz')) ||
+    (!!(t & WordType.NounVS) && has((p) => p === 'vs'))
+  )
 }
 
 function reasonsToLabels(chains: Reason[][]): string[] {
@@ -182,6 +195,11 @@ function toSense(s: any): Sense {
  * - Matched senses come first. Records without match metadata keep the old behaviour
  *   (first kanji, first reading, senses in order).
  */
+/** Any JMdict priority tag (news/ichi/spec/gai…) on a kanji or reading form. */
+function isCommon(w: any): boolean {
+  return [...(w.k ?? []), ...(w.r ?? [])].some((f: any) => Array.isArray(f.p) && f.p.length > 0)
+}
+
 function toEntry(w: any, reasons: string[]): DictEntry {
   const ks: any[] = w.k ?? []
   const rs: any[] = w.r ?? []
@@ -277,10 +295,19 @@ async function matchAt(
     for (const cand of candidates) void queryWords(cand.word)
   }
 
+  // Set when the longest match looks like a spurious conjugation parse: the span is
+  // reachable only by deinflecting, hits nothing but uncommon words and overruns the
+  // kuromoji token — e.g. したよう (し|た|よう) read as the volitional of the obscure
+  // したる, which buried the past of する. The longest shorter length with a *common*
+  // word then wins; if there is none, this one stands. Long *surface* matches (idioms,
+  // compounds kuromoji splits) are never demoted.
+  let fallback: LookupResult | null = null
   for (const { len, candidates } of perLen) {
     const surface: DictEntry[] = []
     const deinflected: DictEntry[] = []
+    const rareDeinflected: DictEntry[] = []
     const seen = new Set<number>()
+    let common = false
     for (const cand of candidates) {
       const words = await queryWords(cand.word)
       for (const w of words) {
@@ -289,21 +316,37 @@ async function matchAt(
           if (seen.has(w.id)) continue // first (i.e. least-inflected) candidate wins
           seen.add(w.id)
         }
+        const isCom = isCommon(w)
+        if (isCom) common = true
         const entry = toEntry(w, reasonsToLabels(cand.reasonChains))
-        ;(cand.reasonChains.length ? deinflected : surface).push(entry)
+        if (cand.reasonChains.length) (isCom ? deinflected : rareDeinflected).push(entry)
+        else surface.push(entry)
       }
     }
+    // Deinflections come from several candidate words (した → する past, したる stem…);
+    // across candidates, common words lead. Within one query jpdict already ranks them.
+    deinflected.push(...rareDeinflected)
     if (!surface.length && !deinflected.length) continue
     const crossesToken = tokenLen !== undefined && len > tokenLen
     const entries = (crossesToken ? [...deinflected, ...surface] : [...surface, ...deinflected]).slice(0, MAX_ENTRIES)
-    return {
+    const result: LookupResult = {
       matchStart: 0, // relative to `window`; lookupAt rebases it onto the full text
       matchLength: len,
       reasons: entries[0].reasons ?? [],
       entries,
     }
+    // A shorter length only wins if it has a *common* word; otherwise keep this one.
+    if (fallback) {
+      if (common) return result
+      continue
+    }
+    if (crossesToken && !surface.length && !common) {
+      fallback = result
+      continue
+    }
+    return result
   }
-  return null
+  return fallback
 }
 
 /** Set once a kuromoji build has failed (typically: offline before the IPADIC dict was

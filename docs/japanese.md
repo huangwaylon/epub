@@ -359,20 +359,23 @@ The cache is filled **two** ways: `cacheIpadic()` writes it directly from the ma
 installed), and any worker build fetches through the SW. Either way, offline segmentation no
 longer depends on having built the trie while online.
 
-### `candidateMatches` — the POS heuristic
-
-```ts
-const INFLECTABLE = /^(v1|v5|vk|vs|vz|vn|vr|adj-i|aux-v)/
-function candidateMatches(word, cand) {
-  if (!cand.reasonChains.length) return true              // surface form — always accepted
-  return (word.s ?? []).flatMap(s => s.pos ?? []).some(p => INFLECTABLE.test(p))
-}
-```
+### `candidateMatches` — word-type check (10ten's `entryMatchesType`)
 
 A surface candidate (empty `reasonChains`, e.g. a noun 猫) is always accepted. A **deinflected**
-candidate is valid only if the entry has an inflectable POS, preventing e.g. treating a noun as a
-deinflected verb. **Coarse**: it only checks the entry *can* inflect, not that its class matches
-`cand.type` — see §10.
+candidate is valid only if one of the entry's POS tags matches a word type in `cand.type`:
+ichidan `v1*`, godan `v5*`/`v4*`, `adj-i*`, kuru `vk`, suru `vs-*`, special suru `vs-s`/`vz`,
+noun-suru `vs`. The old check ("is the entry inflectable at all?") let した deinflect via the
+*ichidan* rule to godan 知る (whose past is 知った), and 知る — common — then led the card.
+
+### Ranking at the winning length — common deinflections first, spurious parses demoted
+
+Within the deinflected group, entries with a JMdict priority tag (`k[].p`/`r[].p`) come before
+uncommon ones (candidates come from different base words, so jpdict's per-query order doesn't
+rank them against each other). And when the **longest** span is reachable *only* by
+deinflecting, hits nothing common and overruns the kuromoji token, it is held as a fallback
+while shorter lengths are tried: the longest shorter length with a common word wins, otherwise
+the fallback stands. That is したよう (し|た|よう) — the volitional of obscure したる — yielding
+to した → する (past). Long *surface* matches are never demoted. Tests in `lookup.test.ts`.
 
 > `candidateMatches`/`toEntry` operate on raw `getWords` records typed `any`, reading `w.id`,
 > `w.k`, `w.r`, `w.s`, `s.pos`/`s.g`/`s.misc` and the `match`/`matchRange` flags directly.
@@ -660,7 +663,7 @@ is no defer). A tap never turns the page (pagination is by horizontal **swipe** 
 ```ts
 function handleTap(info) {
   // 1. On a word → define it. Wins over an open card (it re-targets) AND over the edge band.
-  if (settings.tapToDefine && info.doc && tryDefine(info)) {
+  if (info.doc && tryDefine(info)) {
     tapDefinedAt = Date.now(); chromeVisible = false; return
   }
   if (dictState.open) { closeOverlays(); return }                  // 2. blank tap → dismiss card
@@ -782,10 +785,6 @@ The rest of the pipeline (all Node, no jsdom — see [development.md](developmen
   and add render paths. `getKanji` returns rich `KanjiResult`s.
 - **Graphical pitch accent.** `DictEntry.pitch` is shown as `[n]`; combine with
   `countMora`/`moraSubstring` from `@birchill/normal-jp` to draw a contour.
-- **Tighten `candidateMatches`.** Replace the coarse `INFLECTABLE` regex with a full
-  `WordType`↔JMdict-POS mapping so `cand.type` must match the entry's class (cf. 10ten's
-  `getMatchingCandidates`). Removes false positives where an unrelated inflectable entry shares a
-  deinflected spelling.
 - **Self-host the dictionary data.** Downloads hit `data.10ten.life`; mirror the files and point
   jpdict-idb at your own origin to drop the third-party dependency.
 - **Saved words.** Persist tapped `DictEntry`s for a review/flashcard feature (see

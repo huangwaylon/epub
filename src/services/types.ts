@@ -68,8 +68,9 @@ export interface ReaderSettings {
   marginScale: number // multiplies the base page margin
   fontFamily: 'serif' | 'sans'
   writingMode: WritingModePref
-  /** Tap behaviour: a tap on a Japanese word looks it up (vs. only toggling chrome). */
-  tapToDefine: boolean
+  /** Tap-to-define also highlights the looked-up word yellow (a vocab record). Lookup
+   *  itself is always on. Replaces the retired `tapToDefine` switch. */
+  highlightLookups: boolean
 }
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
@@ -79,5 +80,5 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   marginScale: 1,
   fontFamily: 'serif',
   writingMode: 'auto',
-  tapToDefine: true,
+  highlightLookups: true,
 }

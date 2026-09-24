@@ -40,15 +40,14 @@ reading and dictionary subsystems.
 | **foliate-js** (vendored, **MIT**) | `src/vendor/foliate-js` | EPUB parsing + paginated rendering as a `<foliate-view>` custom element. Vendored so `pdf.js` could be removed and `view.js`/`paginator.js` patched (two "TSUZURI PATCH" edits). |
 | **@birchill/jpdict-idb** | `src/services/jp/dictdb.ts` | Downloads JMdict from data.10ten.life into its own IndexedDB; serves offline `getWords` lookups. |
 | **@birchill/normal-jp** | jp lookup/deinflect | Lookup-window normalisation and kana handling. |
-| **@sglkc/kuromoji** | `src/services/jp/segment.ts` | MeCab/IPADIC morphological analyser → word segmentation for tap-to-define (Apache-2.0). Ships a ~19 MB dict (staged to `public/kuromoji/dict/`, runtime-cached). |
-| **fflate** | `kuromojiLoader.cjs` | Gunzips the IPADIC dict (a defensive loader works around kuromoji's stock loader hanging on auto-gzipped responses). |
+| **@sglkc/kuromoji** | `src/services/jp/segment.ts` | MeCab/IPADIC morphological analyser → word segmentation for tap-to-define (Apache-2.0). Ships a trimmed ~11 MB dict (staged to `public/kuromoji/dict/`, runtime-cached). |
 | **idb** | `src/services/storage/db.ts` | Promise wrapper over IndexedDB for structured data. |
 | **vendored 10ten deinflect (GPL-3.0)** | `src/services/jp/deinflect.ts` | Verb/adjective deinflection copied from 10ten-ja-reader. **⚠ GPL-3.0-or-later — see [§8](#8-key-design-decisions--trade-offs).** License at `src/services/jp/LICENSE-10ten`. |
 | **sharp** (devDep) | `scripts/*.mjs` | Dev tooling only: `gen-icons.mjs` rasterises PWA icons. Stripped from the CI build. |
 | **vitest** (devDep) | `*.test.ts` | Unit tests (deinflection engine). |
 
-**Five runtime npm dependencies:** `@birchill/jpdict-idb`, `@birchill/normal-jp`,
-`@sglkc/kuromoji`, `fflate`, `idb`. foliate-js and the 10ten deinflect engine are
+**Four runtime npm dependencies:** `@birchill/jpdict-idb`, `@birchill/normal-jp`,
+`@sglkc/kuromoji`, `idb`. foliate-js and the 10ten deinflect engine are
 vendored into the tree, not installed.
 
 ---
@@ -108,7 +107,7 @@ static files to GitHub Pages — no backend ([deployment.md](./deployment.md)).
 | Path | Responsibility |
 |---|---|
 | `src/main.ts` | `void initSettings()` (never blocks mount on IDB), `initViewport()`, `validateRestoredRoute()`, `requestPersistence()`, `registerSW()` (wires `pwa` store; hourly-throttled `registration.update()` on return to foreground), drops the old `kuromoji-ipadic` runtime cache, `mount(App)`. |
-| `src/App.svelte` | Two-screen router view: `nav.route.name === 'reader'` → lazily-loaded `Reader` via `nav.loadReader()` (keyed on `bookId`), else `Shelf`; always renders `UpdateToast`. Warms the reader chunk ~1.5 s after mount (idle). While the chunk loads it shows a paper-coloured pending screen (spinner fades in only after 0.4 s); a failed load shows **Try again** + **Back to library**. |
+| `src/App.svelte` | Two-screen router view: `nav.route.name === 'reader'` → lazily-loaded `Reader` via `nav.loadReader()` (keyed on `bookId`), else `Shelf`; always renders `ToastHost`. Warms the reader chunk ~1.5 s after mount (idle). While the chunk loads it shows a paper-coloured pending screen (spinner fades in only after 0.4 s); a failed load shows **Try again** + **Back to library**. |
 | `src/app.css` | Design tokens (CSS vars) for light/sepia/dark via `[data-theme]`; fonts, safe-area insets. |
 | `src/vite-env.d.ts` | Ambient types (incl. `virtual:pwa-register`). |
 
@@ -130,7 +129,7 @@ Owned by [ui-and-design.md](./ui-and-design.md). Briefly: `library/Shelf.svelte`
 callbacks, manages chrome bands, dictionary popup, selection toolbar, scrubber,
 sheets, progress, bookmarks), `reader/ReaderSettings.svelte`, `reader/TocSheet.svelte`,
 `reader/DictionaryPopup.svelte`, `reader/SelectionToolbar.svelte`,
-`reader/AnnotationsPanel.svelte`; `components/*` (Sheet, Segmented, Icon, UpdateToast);
+`reader/AnnotationsPanel.svelte`; `components/*` (Sheet, Segmented, Icon, Toast, ToastHost, LoadingScreen);
 `actions/longpress.ts`; `util/debounce.ts`, `util/anchoredPosition.ts`.
 
 ### Services (`src/services/*.ts`)
@@ -157,9 +156,9 @@ sheets, progress, bookmarks), `reader/ReaderSettings.svelte`, `reader/TocSheet.s
 | `lookup.worker.ts` | The lookup engine, off the main thread: kuromoji segment + deinflect + JMdict reads. Reads the same `jpdict` IndexedDB the main-thread download fills. |
 | `lookup.ts` | The lookup algorithm run by the worker (`lookupAt` segment-and-match; `lookup` forward-only wrapper). |
 | `lookupTypes.ts` | Dependency-free result types (`Sense`, `DictEntry`, `LookupResult`) shared by main thread and worker without pulling in the engine. |
-| `segment.ts` | kuromoji tokenizer singleton (`ensureSegmenter`, lazy ~19 MB dict load, SW-cached). |
+| `segment.ts` | kuromoji tokenizer singleton (`ensureSegmenter`, lazy ~11 MB dict load, SW-cached). |
 | `deinflect.ts` | **Vendored 10ten (GPL-3.0).** `deinflect(word)` → candidate words + reason chains; rule table. |
-| `kuromojiLoader.cjs` | fflate-based gzip loader shim for kuromoji (aliased in `vite.config.ts`). |
+| `kuromojiLoader.cjs` | `DecompressionStream` gzip loader shim + flat target maps for kuromoji (aliased in `vite.config.ts`). |
 | `deinflect.test.ts`, `LICENSE-10ten` | Vitest tests; GPL-3.0 license text. |
 
 ### Vendored engine (`src/vendor/foliate-js/`)
@@ -176,7 +175,7 @@ sheets, progress, bookmarks), `reader/ReaderSettings.svelte`, `reader/TocSheet.s
 ### Scripts
 | Path | Responsibility |
 |---|---|
-| `scripts/copy-kuromoji-dict.mjs` | Stages the ~19 MB IPADIC dict into `public/kuromoji/dict/` (run via `predev`/`prebuild`). |
+| `scripts/copy-kuromoji-dict.mjs` | Stages (and trims) the ~11 MB IPADIC dict into `public/kuromoji/dict/` (run via `predev`/`prebuild`). |
 | `scripts/gen-icons.mjs` | Rasterises inline SVG → `public/icons/*.png` (sharp). |
 | `scripts/make-test-epub.mjs` | Generates a vertical-RTL JP EPUB3 test fixture (fflate + sharp). |
 
@@ -219,13 +218,14 @@ touch page-turn is patched out (`paginator.js`), so all navigation is ours.
   ("page follows the finger"). `goLeft`/`goRight` are foliate's direction-aware nav,
   so the turn goes the right way in LTR, RTL, and 縦書き; they animate as a horizontal
   slide and fire `onTurn`.
-- **Tap** (clean, quick, no swipe) → `onTap` → `Reader.handleTap`, in priority order:
-  1. If the dictionary popup is open → dismiss it (anywhere on screen). Nothing else.
-  2. Else if the tap is in the **top/bottom edge band** (`inChromeToggleBand`,
+- **Tap** (clean, quick, no swipe) → `onTap` → `Reader.onTap`, in priority order:
+  1. On a Japanese glyph → `tryDefine(info)` defines it (and, with
+     `settings.highlightLookups`, highlights it) — even inside the edge band and even
+     with a card open (the card re-targets).
+  2. Else, blank tap with the dictionary popup open → dismiss it. Nothing else.
+  3. Else, blank tap in the **top/bottom edge band** (`inChromeToggleBand`,
      ~12% of viewport height, 80–160px) → toggle the chrome bars.
-  3. Else if the chrome is visible → hide it.
-  4. Else (central reading area, chrome hidden, no popup) → `tryDefine(info)` if
-     `settings.tapToDefine`.
+  4. Else, chrome visible → hide it; otherwise (blank centre) do nothing.
 
   **A tap never turns the page, and a blank-centre tap does nothing** (there are no
   tap edge-rails). A tap that lands on a glyph **defines it in preference to every piece
@@ -272,7 +272,7 @@ together. Because `$state` is deep-reactive, in-place mutation (`items.push`,
 
 | Store | Holds | Persisted via |
 |---|---|---|
-| `settings` | `ReaderSettings` (theme incl. `'auto'`, fontScale, lineHeight, marginScale, fontFamily, writingMode, tapToDefine) | `db.saveSettings`/`loadSettings` (IDB key `reader`, source of truth) + localStorage mirror `tsuzuri:settings` (sync first-paint hint) |
+| `settings` | `ReaderSettings` (theme incl. `'auto'`, fontScale, lineHeight, marginScale, fontFamily, writingMode, highlightLookups) | `db.saveSettings`/`loadSettings` (IDB key `reader`, source of truth) + localStorage mirror `tsuzuri:settings` (sync first-paint hint) |
 | `library` | `books: BookMeta[]`, `progress`, `loading`, `importing`, `importError` | books/progress in IDB; bytes in OPFS |
 | `annotations` | `items: Annotation[]` for the open book | `db` annotations store (`byBook` index) |
 | `dict` | `state` / `updating` / `progress` / `warming` / `error` | reflects jpdict-idb's own IndexedDB |
@@ -302,7 +302,7 @@ sets `<html data-theme>` + the theme-color meta — so first paint is already th
 **Routing** is a two-screen router (`nav.svelte.ts`), mirrored to sessionStorage.
 `App.svelte` renders `<Reader>` (via the retryable `loadReader()`, inside
 `{#key nav.route.bookId}` for a clean remount per book) when in the reader route, else
-`<Shelf>`. `<UpdateToast>` is always mounted. The critical path is one entry chunk
+`<Shelf>`. `<ToastHost>` is always mounted. The critical path is one entry chunk
 (Svelte runtime + stores + shelf); foliate, the reader and the settings sheet are lazy.
 
 ---

@@ -112,4 +112,12 @@ describe('placeNearWord', () => {
     expect(p.left + 300).toBeLessThanOrEqual(600)
     expect(p.top).toBe(834 - 160 - 10)
   })
+
+  it('vertical: on a screen too narrow for either side, goes below/above the word instead of over it', () => {
+    win.innerWidth = 393
+    win.innerHeight = 852
+    const w = { left: 118, top: 86, right: 138, bottom: 110 }
+    const p = placeNearWord(w, 340, 180, true, { gap: 16 })
+    expect(p.top).toBe(110 + 16) // no room above → below the glyph
+  })
 })

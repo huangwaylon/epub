@@ -29,10 +29,23 @@ let hydrated = false
 /** Keys the user changed before IDB hydration finished — those win over the stored copy. */
 const touchedEarly = new Set<keyof ReaderSettings>()
 
+/**
+ * Keep only the fields `DEFAULT_SETTINGS` knows, so a stored copy from an older build
+ * can't carry retired keys back in (they'd be re-persisted forever). The retired
+ * `tapToDefine` switch simply drops: lookup is always on now, and its successor
+ * `highlightLookups` takes its default.
+ */
+function known(saved: object): Partial<ReaderSettings> {
+  const src = saved as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(DEFAULT_SETTINGS)) if (k in src) out[k] = src[k]
+  return out as Partial<ReaderSettings>
+}
+
 function readMirror(): Partial<ReaderSettings> | null {
   try {
     const raw = localStorage.getItem(MIRROR_KEY)
-    return raw ? (JSON.parse(raw) as Partial<ReaderSettings>) : null
+    return raw ? known(JSON.parse(raw)) : null
   } catch {
     return null
   }
@@ -64,7 +77,7 @@ export async function initSettings(): Promise<void> {
   try {
     const saved = await loadSettings()
     if (saved) {
-      const merged: Partial<ReaderSettings> = { ...DEFAULT_SETTINGS, ...saved }
+      const merged: Partial<ReaderSettings> = { ...DEFAULT_SETTINGS, ...known(saved) }
       for (const k of touchedEarly) delete merged[k]
       Object.assign(settings, merged)
     }

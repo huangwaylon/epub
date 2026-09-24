@@ -121,7 +121,16 @@ TsuzuriDictionaryLoader.prototype.loadArrayBuffer = function (url, callback) {
     })
     return
   }
+  // Network (or the service worker) first; if that fails — offline in a worker the SW
+  // doesn't control — fall back to the Cache API copy cacheIpadic() stored.
   fetch(url)
+    .catch(function (err) {
+      if (typeof caches === 'undefined') throw err
+      return caches.match(url).then(function (hit) {
+        if (!hit) throw err
+        return hit
+      })
+    })
     .then(function (response) {
       if (!response.ok) throw new Error('kuromoji dict ' + response.status + ' for ' + url)
       return response.arrayBuffer()

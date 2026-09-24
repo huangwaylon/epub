@@ -34,19 +34,22 @@ Rules this repo follows:
   (`applyTheme`) stay consistent. A `hydrated` flag suppresses the persist write until the initial
   IndexedDB load completes (so defaults don't overwrite saved settings on first run).
 - `DEFAULT_SETTINGS` (`src/services/types.ts`) is the single source of truth for shape + defaults.
+  Stored copies are filtered through `known()` on load, so a retired key (e.g. the old
+  `tapToDefine` switch — lookup is now always on) is dropped instead of re-persisted forever.
 
 The other stores (all in `src/stores/`) follow the same pattern:
 
 | Store | Shape (abridged) | Mutators |
 | --- | --- | --- |
-| `settings.svelte.ts` | `ReaderSettings`: `theme, fontScale, lineHeight, marginScale, fontFamily, writingMode, tapToDefine` | `initSettings`, `updateSettings`, `applyTheme` |
+| `settings.svelte.ts` | `ReaderSettings`: `theme` (`auto`/light/sepia/dark), `fontScale, lineHeight, marginScale, fontFamily, writingMode, highlightLookups` | `initSettings`, `updateSettings`, `applyTheme` |
 | `library.svelte.ts` | `{ books, progress, loading, importing, importError }` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` |
 | `annotations.svelte.ts` | `{ items: Annotation[] }` | `loadAnnotations`, `clearAnnotations`, `saveAnnotation`, `removeAnnotation`, `newId` |
 | `dict.svelte.ts` | `{ state, updating, progress, warming, error? }` (offline JMdict status) | mutated directly by `services/jp/dictdb.ts` + download handlers (set `warming`) |
 | `pwa.svelte.ts` | `{ needRefresh, offlineReady, update() }` | written by SW registration in `main.ts` |
+| `toast.svelte.ts` | `{ current: { id, message, action?, duration?, onexpire? } \| null }` | `showToast`, `actOnToast`, `dismissToast` (one toast at a time; a replaced toast's `onexpire` still runs) |
 | `nav.svelte.ts` | `{ route: Route }` | `openReader`, `openShelf` (see §7) |
 
-> `pwa.*` and `dict.*` are mutated directly from components/services (e.g. `UpdateToast` sets
+> `pwa.*` and `dict.*` are mutated directly from components/services (e.g. `ToastHost` sets
 > `pwa.needRefresh = false`). That's fine for simple, non-persisted flag objects;
 > settings/library/annotations always go through their mutators.
 
@@ -71,60 +74,78 @@ handlers are plain function props (`onclose`, `onchange`, `onnavigate`, …) —
 
 ## 2. Design tokens — `src/app.css`
 
-`app.css` is the single global stylesheet (imported once in `main.ts`): token layers on `:root`,
-three theme blocks, then base/reset. Everything else is scoped component CSS.
+`app.css` is the single global stylesheet (imported once in `main.ts`): base tokens on `:root`,
+three palette blocks, base/reset, then a handful of **shared primitives**. Everything else is
+scoped component CSS that styles itself *only* from these tokens — no ad-hoc font sizes, radii,
+durations or glass recipes.
 
 ### Base tokens (`:root`)
 
 | Group | Tokens | Notes |
 | --- | --- | --- |
-| **Type** | `--font-ui`, `--font-serif`, `--font-jp-sans` | UI = SF/system sans. Serif = Hiragino Mincho ProN → Noto Serif JP → Yu Mincho → Georgia (long-form reading). JP-sans = Hiragino Sans → Noto Sans JP (ゴシック). |
-| **Radii** | `--r-sm: 8px`, `--r-md: 12px`, `--r-lg: 18px`, `--r-xl: 26px` | `--r-xl` is the sheet corner. |
-| **Touch** | `--tap: 44px` | minimum comfortable touch target. |
-| **Shadow** | `--shadow-1` (raised surfaces), `--shadow-2` (sheets/toasts/popups) | |
-| **Motion** | `--ease: cubic-bezier(0.22,0.61,0.36,1)`, `--dur: 0.22s` | shared easing/duration. |
-| **Safe area** | `--safe-top/bottom/left/right: env(safe-area-inset-*, 0px)` | surfaced as vars for layout math (e.g. `calc(var(--safe-bottom) + 8px)`). Requires `viewport-fit=cover` (set in `index.html`). |
+| **Fonts** | `--font-ui`, `--font-serif`, `--font-jp-sans`, `--font-mono` | UI = SF/system sans (the root size stays a fixed 15px — deliberately *not* `-apple-system-body`). Serif = Hiragino Mincho ProN → Noto Serif JP → Yu Mincho → Georgia. No web fonts are downloaded. |
+| **Type scale** | `--fs-caption` 12 · `--fs-footnote` 13 · `--fs-body` 15 · `--fs-callout` 17 · `--fs-title` 20 · `--fs-headword` 24 · `--fs-display` clamp(30→36) | px; **nothing in the app is smaller than 12px**. |
+| **Spacing** | `--sp-1`…`--sp-10` = 4, 8, 12, 16, 20, 24, 28, 32, 36, 40px | 4pt scale for padding/gaps/margins. |
+| **Radii** | `--r-xs` 6 · `--r-sm` 10 · `--r-md` 14 · `--r-lg` 20 · `--r-xl` 28 · `--r-full` 999 | `--r-xl` = sheet corner, `--r-lg` = dictionary card, `--r-full` = capsules/segments/buttons. |
+| **Touch** | `--tap` 44px, `--control-h` 44px | every tappable control is ≥44pt (small visual discs use an `::after` hit extension). |
+| **Icons** | `--icon-sm` 18 · `--icon-md` 22 · `--icon-lg` 48 | mirrored by `Icon`'s `size="sm"\|"md"\|"lg"`. |
+| **Elevation** | `--shadow-1` (raised), `--shadow-2` (floating), `--shadow-3` (sheets/popup) | dark palette deepens `--shadow-2`. |
+| **Glass** | `--glass-bg` (paper-raised @ `--glass-mix` 72%, dark 68%), `--glass-bg-strong` (88%, content-bearing glass), `--glass-filter: blur(24px) saturate(1.6)`, `--glass-edge` (per palette hairline inner edge), `--glass-shadow` | the one Liquid-Glass recipe; `.glass` applies it. |
+| **z-index** | `--z-ribbon` 12 · `--z-readout` 15 · `--z-bars` 20 · `--z-overlay` 30 · `--z-scrim` 40 · `--z-sheet` 41 · `--z-popup` 50 · `--z-toolbar` 52 · `--z-toast` 60 | floating reader overlays sit above sheets intentionally; toasts above everything. |
+| **Motion** | `--dur-instant` 90ms · `--dur-fast` 140 · `--dur-base` 220 · `--dur-slow` 320; `--ease-out`, `--ease-in`, `--ease-spring`; `--press-scale` .97 | all zeroed (and press-scale → 1) under `prefers-reduced-motion`. JS mirror: `DUR` in `lib/util/motion.svelte.ts`. |
+| **Safe area** | `--safe-top/bottom/left/right: env(safe-area-inset-*, 0px)` | requires `viewport-fit=cover` (set in `index.html`). |
 
-### Theme tokens — `:root[data-theme=light|sepia|dark]`
+### Palette tokens — `:root[data-theme=light|sepia|dark]`
 
-The active theme is a `data-theme` attribute on `<html>` (set by `applyTheme()`); `light` is also
-applied to bare `:root` as the default. Each block sets `color-scheme` plus the semantic tokens
-below. Brand identity is the **vermilion `--accent`** ("like a hanko seal").
+The resolved palette is a `data-theme` attribute on `<html>` (`'auto'` resolves to light/dark in
+`applyTheme()`); `light` is also the bare-`:root` default. Brand identity is the **vermilion
+`--accent`** ("like a hanko seal"). Contrast figures are against `--paper`.
 
 | Token | Role | light | sepia | dark |
 | --- | --- | --- | --- | --- |
 | `--paper` | app background | `#f6f3ec` | `#f4ecd8` | `#16140f` |
 | `--paper-raised` | cards, sheets, bars | `#fffdf8` | `#fbf5e6` | `#211e18` |
 | `--ink` | primary text | `#211d17` | `#4a3a29` | `#e7e1d3` |
-| `--ink-soft` | secondary text / icons | `#5d564a` | `#6f5c46` | `#aaa394` |
-| `--ink-faint` | tertiary / hints | `#938b7b` | `#9c876c` | `#756f62` |
-| `--line` | hairline dividers | `rgba(ink,0.10)` | `rgba(ink,0.12)` | `rgba(ink,0.10)` |
-| `--line-strong` | borders, grip, tracks | `rgba(ink,0.16)` | `rgba(ink,0.20)` | `rgba(ink,0.18)` |
-| `--accent` | **vermilion** brand | `#b5552e` | `#a8521f` | `#e0855c` |
-| `--accent-soft` | tinted fills (segmented bg, chips, active states) | `rgba(accent,0.12)` | `0.14` | `0.16` |
-| `--danger` | error text (download failures, destructive rows) | `#c0392b` | `#b23a26` | `#f0897a` |
+| `--ink-soft` | secondary text / icons / hints | `#5d564a` | `#6f5c46` | `#aaa394` |
+| `--ink-faint` | tertiary (section headers, meta) — **≥4.5:1** | `#746c5e` (4.7) | `#78664a` (4.7) | `#8f887a` (5.2) |
+| `--line` / `--line-strong` | hairlines / tracks, grip | ink @ .10/.16 | .12/.20 | .10/.18 |
+| `--accent` | vermilion brand | `#ad4f29` (4.8) | `#a8521f` (4.6) | `#e0855c` (6.7) |
+| `--accent-soft` | tinted fills (chips, tinted buttons, empty-state art) | accent @ .12 | .14 | .16 |
+| `--on-accent` | text/icons on `--accent` | `#fff` | `#fff` | `#1a0f08` (white on this accent is only 2.7:1) |
+| `--control-track` | segmented/stepper/close-disc track, pressed rows | ink @ .06 | .08 | ink @ .08 |
+| `--control-active` | the selected segment | `#fff` | `#fffaf0` | ink @ .18 (lighter than the track — no longer inverted) |
+| `--danger` | errors, destructive rows | `#c0392b` | `#b23a26` | `#f0897a` |
 | `--hl-yellow` | theme-aware UI highlight tint | `#ffe79a` | `#f2d98a` | `#6b5a1f` |
-| `--scrim` | modal backdrop | `rgba(ink,0.32)` | `rgba(.,0.34)` | `rgba(0,0,0,0.5)` |
+| `--scrim` | modal backdrop | ink @ .32 | .34 | black @ .5 |
 
-> **Highlights are a single colour.** `--hl-yellow` is the only highlight token (no green/blue/pink).
-> Separately, `HIGHLIGHT_HEX = '#ffd54a'` (`services/types.ts`) is the one saturated yellow the
-> **reader overlay, `SelectionToolbar`, `DictionaryPopup` footer, and `AnnotationsPanel`** paint,
-> chosen to read well behind text at ~0.3 opacity. There is **no colour picker** — a single tap
-> highlights yellow as a vocab marker.
+> **Highlights are a single colour.** `HIGHLIGHT_HEX = '#ffd54a'` (`services/types.ts`) is the one
+> saturated yellow the reader overlay, `SelectionToolbar`, `DictionaryPopup` and `AnnotationsPanel`
+> paint. There is **no colour picker**.
+
+### Shared primitives (global classes in `app.css`)
+
+| Class | What | Used by |
+| --- | --- | --- |
+| `.btn` (+ `.btn-primary`, `.btn-tinted`) | 44pt capsule text button; plain = accent text, primary = filled accent + `--on-accent`, tinted = accent-soft fill. Press → `--press-scale`. | every text button (Shelf CTA, dict Download, toasts, error screens, Undo) |
+| `.icon-btn` (+ `.on`, `.btn-primary`) | 44pt circular icon button, ink-soft, `.on` = accent | bars, shelf header, Notes delete, steppers, sheet ×, dictionary × |
+| `.glass` | the Liquid-Glass material | reader bar capsules, SelectionToolbar, Toast |
+| `.spinner` (+ `.delayed`, `--spinner-size`) | the one spinner; `.delayed` fades in after 0.4s | shelf loading, settings lazy-load, ShelfSettings "Preparing", popup re-target |
+| `.progress-indeterminate` | thin indeterminate bar | `LoadingScreen`, popup "Preparing the dictionary…" |
+| `.skeleton` | pulsing placeholder block | shelf import cards, first slow lookup |
+| `.settings-stack` / `.settings-section` / `.settings-h` / `.settings-row` / `.settings-hint` | one section style for both settings sheets: uppercase footnote header in ink-faint, `--sp-6` between sections, rows ≥44px with hairline separators, 12px ink-soft hints | `ShelfSettings`, `ReaderSettings` |
+
+**Glass & performance.** `backdrop-filter` re-samples every frame the content beneath moves, so it's
+used only on chrome that is **not on screen during a page slide** (the bars hide on a turn; the
+toolbar/popup close on a turn). The always-visible page-% readout and the bookmark ribbon have no
+backdrop-filter. The dictionary card is deliberately opaque (legibility).
 
 ### `applyTheme()`
 
-In the settings store, `applyTheme()`:
-
-1. sets `document.documentElement.dataset.theme = settings.theme` (drives the `[data-theme]` blocks), then
-2. reads back the resolved `--paper` via `getComputedStyle(...)` and writes it into a dynamic
-   non-`media` `<meta name="theme-color">` (created if absent) so the iOS status/address bar matches.
-
-The reader engine reads these *same* CSS vars to style content inside the EPUB iframe: `appearanceCSS()`
-in `services/reader.ts` pulls `--ink`, `--accent`, `--accent-soft`, `--font-serif`/`--font-jp-sans`
-off `document.documentElement` and injects a stylesheet into each content document, so the rendered
-book always matches the chrome. That injection pipeline lives in
-**[reader-engine.md](reader-engine.md)** — not duplicated here.
+In the settings store, `applyTheme()` resolves `'auto'` against `prefers-color-scheme` (live — it
+re-applies on OS change), publishes `appearance.resolved`, sets `<html data-theme>`, and writes the
+resolved `--paper` into the dynamic `<meta name="theme-color">`. The reader reads the same CSS vars
+to style the EPUB iframe (`appearanceCSS()` in `services/reader.ts` —
+**[reader-engine.md](reader-engine.md)**).
 
 ---
 
@@ -145,7 +166,10 @@ book always matches the chrome. That injection pipeline lives in
   stops the iOS long-press callout from competing with tap-to-define / page turns. (The book body
   *is* selectable; the reader disables only the native callout via injected CSS.)
 - `:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }` — keyboard focus only.
-- `@media (prefers-reduced-motion: reduce)` forces all animation/transition durations to `0.001ms`.
+- `@media (prefers-reduced-motion: reduce)` zeroes the `--dur-*` tokens and forces CSS
+  animation/transition durations to `0.001ms` (loaders become static states). Svelte's JS
+  transitions don't see the media query, so **every** `transition:`/`in:`/`out:` takes its duration
+  through `dur(ms)` from `lib/util/motion.svelte.ts` (a live `motion.reduced` rune → 0).
 
 ---
 
@@ -156,19 +180,22 @@ Primitives in `src/lib/components/`; feature components in `src/lib/library/` an
 
 | Component | Key props | Purpose |
 | --- | --- | --- |
-| `components/Sheet.svelte` | `open?`★, `title?`, `onclose?`, `children: Snippet`, `maxHeight='85dvh'` | Modal container. **Bottom sheet on phones; centered modal card ≥768px** (§6). Scrim + drag-grip + optional header with a 44px close button. Closes on scrim/grip tap, close button, or **Escape**. `role="dialog" aria-modal`; on open moves focus into the sheet (`tabindex="-1"`), restores to the trigger on close. |
-| `components/Segmented.svelte` | `value`★, `options: {value,label?,icon?}[]`, `onchange?` | Generic segmented control (`T extends string\|number`). `--accent-soft` track; active segment raised on `--paper-raised`. `aria-pressed` per option. (Renders `label ?? value`; no icon rendering despite the `icon?` field.) Used for theme/font/writing-mode pickers. |
-| `components/Icon.svelte` | `name`, `size=24`, `stroke=2`, `fill=false` | Inline 24×24 stroke icon from a module-level `PATHS` map. Only the icons in use: `plus`, `gear`, `bookmark`, `list`, `arrow-left`, `x`, `trash`, `search`, `book`, `note`, `copy`, `aa`. One `<path>` with `currentColor`; `fill` toggles solid vs. outline on the **same** path (e.g. active bookmark — no `-fill` entry). `aria-hidden`. |
-| `components/UpdateToast.svelte` | (reads `pwa` store) | Floating pill, `z-index:60`. `pwa.needRefresh` → "Refresh" (`pwa.update()`) or dismiss (`needRefresh=false`); `pwa.offlineReady` → "Ready to read offline" (auto-dismisses after 4s). |
-| `library/BookCover.svelte` | `book: BookMeta` | Renders the cover `Blob` via an `objectURL` (created/revoked in a `$effect`). No cover → generated placeholder whose gradient + spine hue derives from the book id (`$derived hue = Σ charCodes(id[0..5]) % 360`). 2:3 aspect. |
-| `library/Shelf.svelte` | (top-level screen) | Library grid: header (`蔵書 / Library`), import `<input type=file>`, settings gear, per-book progress ring. Long-press / right-click opens a per-book action `Sheet` (Read / Remove). Empty + loading states. Lazy-imports `ShelfSettings` on first Settings open. |
-| `library/ShelfSettings.svelte` | (inside the settings `Sheet`) | App settings: theme `Segmented`, JMdict download (+ progress / "caching for offline" state), storage quota bar, About + version. |
-| `reader/ReaderSettings.svelte` | `onchange: (kind:'appearance'\|'layout'\|'writingmode')=>void` | Display sheet body: theme + font-family (明朝/ゴシック) `Segmented`s, text-size/line-spacing/margin steppers, writing-direction `Segmented` (Auto/横書き/縦書き), and a custom switch for tap-to-look-up. `marginScale` → `'layout'`, the others → `'appearance'`, so the reader re-applies only what changed. |
-| `reader/TocSheet.svelte` | `toc: TocItem[]`, `currentLabel?`, `onnavigate: (href)=>void` | Flattens nested TOC (`$derived`), indents by depth, marks `currentLabel`, disables items with no `href`. |
-| `reader/AnnotationsPanel.svelte` | `onnavigate: (cfi)=>void` | Tabbed Highlights / Bookmarks from the `annotations` store (`$derived` filtered + sorted newest-first). Yellow bar (`HIGHLIGHT_HEX`) or bookmark icon; row → navigate; trash → `removeAnnotation`. |
-| `reader/DictionaryPopup.svelte` | `open?`★, `x`, `y`, `loading?`, `needsDownload?`, `result?: LookupResult\|null`, `highlighted?`, `ondownload?`, `ontogglehighlight?` | **Floating** (`position:fixed`) word-lookup card near the tap, via `placeAnchored` (prefers above, flips below, clamped to viewport + safe area; `gap:16`). Re-positions on `x`/`y` **and** content change. Flex column: scrolling `.body` + sticky `.actions` footer. States: spinner / download-prompt / entries / no-match. Footer shows a single yellow **highlight toggle** (`Highlight` / `Remove highlight`) only when a real result is present. Focusable × close. Not a sheet. |
-| `reader/SelectionToolbar.svelte` | `open?`, `rect`, `onHighlight?`, `onCopy?` | **Floating** pill above a text selection (same `placeAnchored`). One yellow **Highlight** action (18px swatch) + **Copy** (44px hit). No colour picker. Replaces the native iOS callout. |
-| `reader/ProgressScrubber.svelte` | `fraction?`, `sectionLabel?`, `onseek?: (frac)=>void` | Bottom-bar progress control: hairline track + section-label/% readout that becomes a **drag-to-fast-scroll scrubber**. 8px (touch)/4px (mouse) dead-zone before arming, live preview bubble, commit-on-release (`onseek`→`goToFraction`), clean tap = no-op (flashes the thumb). `role="slider"` + arrow/Home/End keys. |
+| `components/Sheet.svelte` | `open?`★, `title?`, `onclose?`, `children`, `maxHeight='85dvh'`, `variant='sheet'\|'popover'`, `anchor?` | Modal container. `sheet`: bottom sheet on phones, centred card ≥768px, dimming scrim. `popover` (live-preview panels — Display): on iPad a **glass popover hung under `anchor`**, on phones a bottom sheet; both with a **clear** scrim so the page stays undimmed. Enter `--dur-slow` ease-out, exit `--dur-base` ease-in (`sheetMotion` in `motion.svelte.ts`: rise/sink on phones, scale+fade on iPad); scrim fades `--dur-base`. Grip + 32px × disc (44pt hit). Closes on scrim/grip, ×, Escape. `role="dialog" aria-modal`; focus moves in and is restored to the trigger. |
+| `components/Segmented.svelte` | `value`★, `options: {value,label?,icon?,count?,lang?,ariaLabel?}[]`, `onchange?`, `label?` | Generic capsule segmented control (`T extends string\|number`). `--control-track` track, `--control-active` raised segment, 44pt options. Renders the `icon`, a `count` badge (accent when active), and `lang` on the label (明朝/ゴシック/横書き/縦書き get `lang="ja"`). `aria-pressed` per option. |
+| `components/Icon.svelte` | `name`, `size='md'` (`'sm'\|'md'\|'lg'` or px), `stroke=2`, `fill=false` | 24×24 stroke icon from `PATHS`: `plus`, `minus`, `gear`, `bookmark`, `list`, `chevron-left`, `chevron-down`, `x`, `trash`, `search`, `book`, `highlighter`, `copy`, `aa`. `fill` solidifies the same path. `aria-hidden`. |
+| `components/Toast.svelte` | `message`, `actionLabel?`, `onaction?`, `ondismiss?`, `lift?` | Presentational glass pill (`--z-toast`); `lift` raises it above the reader's bottom capsule. |
+| `components/ToastHost.svelte` | (reads `toast` + `pwa` stores) | Always mounted by `App`. App toasts (`showToast`) win; otherwise the PWA "A new version is ready · Refresh" / "Ready to read offline" (auto-dismiss 4s) prompts. |
+| `components/LoadingScreen.svelte` | `title?`, `onback?` | Book title in serif over a thin indeterminate bar, fading in after 0.25s. Shared by `App` (reader chunk pending, title from the shelf) and `Reader` (book opening, with a Library button). |
+| `library/BookCover.svelte` | `book` | Cover `Blob` via an `objectURL` (revoked in `$effect` cleanup); else a generated placeholder (hue from the id). 2:3. |
+| `library/Shelf.svelte` | (screen) | `蔵書 / Library` header (settings `.icon-btn` + primary import). Grid of covers with **press feedback** (`--press-scale`), a thin **progress rule** under each cover and `NN%` / `New` / `Finished` in the meta line. **Skeleton cards** while `library.importing`. Empty state (centred, with a dictionary tip linking to Settings). Long-press/right-click → action sheet; **Remove** hides the book at once and shows *Book removed · Undo*; the real `deleteBook` runs when the toast expires (~5s). Pending removals live in a module-level `SvelteSet`, so they survive the Shelf unmounting. |
+| `library/ShelfSettings.svelte` | (in the Settings sheet) | Dictionary status + Download/Retry (`.btn`, 44pt) + progress; "One-time download · works offline". Compact **Appearance** theme picker (Auto/Light/Sepia/Dark). **About**: storage as one text line, version + credits collapsed in a `<details>`. |
+| `reader/ReaderSettings.svelte` | `onchange(kind)` | Display panel: Theme (Auto/Light/Sepia/Dark), Text (明朝/ゴシック + size/line-spacing/margin steppers — 44pt ±, disabled at their limits), Writing direction (Auto/横書き/縦書き), Dictionary → **Highlight looked-up words** switch (`settings.highlightLookups`). `marginScale` → `'layout'`, others → `'appearance'`. |
+| `reader/TocSheet.svelte` | `toc`, `currentId?`, `currentLabel?`, `onnavigate` | Flattened TOC, 44pt rows, current chapter in accent and scrolled into view. |
+| `reader/AnnotationsPanel.svelte` | `onnavigate`, `onremove`, `chapterOrder?` | **Highlights & Bookmarks** (one name, sheet title + button aria-label, `highlighter` icon). `Segmented` tabs with counts; list area has a stable `min-height`. Highlights grouped by chapter in TOC order; single looked-up words render as serif headwords, passages as body text. Delete → the reader removes it and shows *Highlight deleted · Undo* (restores the same record + repaints). |
+| `reader/DictionaryPopup.svelte` | `open?`, `anchor`, `vertical`, `loading?`, `needsDownload?`, `result?`, `highlighted?`, `onclose/ondownload/ontogglehighlight` | Floating card (`--z-popup`) placed by `placeNearWord`. Headword serif 24, reading in accent, glosses 15, POS/chips/pitch 12. The first line of every state reserves `--sp-8` for the 44pt ×. A slow first lookup shows a **skeleton**; a re-targeted card dims the old result. Download state: primary button + "One-time download · works offline"; "Preparing the dictionary…" shows an indeterminate bar. Footer highlight toggle is 44pt. |
+| `reader/SelectionToolbar.svelte` | `open?`, `rect`, `onHighlight?`, `onCopy?` | Glass capsule above a selection: **Highlight** (44pt) + Copy (44pt). Copy shows a *Copied* toast. |
+| `reader/ProgressScrubber.svelte` | `fraction?`, `sectionLabel?`, `labelAt?(frac)`, `onseek?` | Bottom-capsule progress: 4px track + 12px ink-soft section/% line. Drag-to-scrub (8px touch / 4px mouse arm), commit on release; the preview bubble shows the **target chapter title** (`labelAt`, resolved by the Reader from foliate's section fractions + TOC hrefs) over the %. `role="slider"`. |
+| `reader/Reader.svelte` chrome | — | Two floating **glass capsules**: top = grid `minmax(92–100px,1fr) auto minmax(…,1fr)` so the title is optically centred; bottom = TOC · scrubber · bookmark, centred ≤680px on iPad. Both stay inside the chrome-toggle band (see §6). Bookmarked page → a small accent **ribbon** on the fore-edge top corner (left for rtl books), `pointer-events:none`, spring scale-in. Page-% readout (no glass) while chrome is hidden. |
 
 ---
 
@@ -201,9 +228,16 @@ a roomier centered tablet form. No JS device detection — pure CSS.
 
 | Surface | < 768px (phone) | ≥ 768px (iPad/wide) |
 | --- | --- | --- |
-| **Sheets** (`Sheet`) | Full-width bottom sheet, rises from bottom, drag-grip, top-corner radius | **Centered modal card**: `top/left:50%` + `translate(-50%,-50%)`, `width: min(480px, 100vw-96px)`, `max-height: min(82dvh,760px)`, all-corner radius, grip hidden, `pop-center` animation. Applies to **every** sheet (Display/TOC/Notes/Settings) since they all wrap `Sheet`. |
-| **Shelf** (`Shelf`) | Grid `minmax(118px,1fr)`, gap `22px 16px`, `h1` 30px, edge padding 18px | Content centered at **`max-width: 1120px`** (`.bar/.grid/.importing/.import-error/.state`), covers `minmax(168px,1fr)` gap `38px 28px`, `h1` 36px, edge padding 40px |
-| **Reader chrome** (`Reader`) | Bars span full width; progress `flex:1` | Bars padded `max(--safe-*, 26px)`; progress block capped & centered: **`flex: 0 1 580px; margin-inline:auto`**; title 16px |
+| **Sheets** (`Sheet`) | Full-width bottom sheet, rises from bottom, drag-grip, top-corner radius | **Centered modal card**: `top/left:50%` + `translate(-50%,-50%)`, `width: min(480px, 100vw-96px)`, `max-height: min(82dvh,760px)`, all-corner radius, grip hidden, scale+fade in/out. Applies to every `variant="sheet"` (TOC/Notes/Settings/book menu); Display is the `popover` variant (row below). The iPad `@media` block sits **after** the base rules so it actually overrides them. |
+| **Shelf** (`Shelf`) | Grid `minmax(118px,1fr)`, gap `--sp-6 --sp-4`, edge padding `--sp-5` | Content centred at **`max-width: 1120px`**, covers `minmax(168px,1fr)`, gap `--sp-10 --sp-7`, edge padding `--sp-10` |
+| **Reader chrome** (`Reader`) | Capsules inset `--sp-2`, 48px tall, top at `safe-top + 4` | Capsules inset `--sp-4`, 52px, top at `safe-top + 12`; bottom capsule centred `min(680px, …)` |
+| **Display settings** | Bottom sheet over a *clear* scrim | Glass popover under the Aa button, no scrim dimming |
+
+**Chrome-toggle band budget.** The bars must end inside `inChromeToggleBand` (12% of the
+visual-viewport height, clamped 80–160px) so a tap where they appear toggles them. iPad landscape
+(834 → 100px band): the top capsule ends ≈ safe-top + 64px, the bottom one starts ≈ 60px +
+safe-bottom above the edge. On an iPhone with a 59px top inset the top capsule ends ≈ 111px vs a
+102px band — slightly over (the pre-redesign bar ended at ≈121px).
 
 Reading-area margins / measure (column width, gutter, padding) are tuned in `services/reader.ts`
 (`marginScale`, writing-mode), not component CSS — see **[reader-engine.md](reader-engine.md)**.
@@ -235,11 +269,11 @@ export function openShelf(): void { nav.route = { name: 'shelf' } }
 {:else}
   <Shelf />
 {/if}
-<UpdateToast />
+<ToastHost />
 ```
 
 `{#key bookId}` forces a full teardown/remount of `Reader` on book switch, so the foliate view and
-all reader state reset cleanly. `UpdateToast` is always mounted.
+all reader state reset cleanly. `ToastHost` is always mounted. While the reader chunk loads, `App` shows `LoadingScreen` with the title from the shelf.
 
 ---
 
@@ -250,9 +284,15 @@ all reader state reset cleanly. `UpdateToast` is always mounted.
 - **`lang="ja"` on Japanese text:** every element holding book-derived Japanese (titles, authors, TOC
   labels, dictionary headwords, highlight text) carries `lang="ja"` for correct fonts / line-breaking.
   Apply it to any new element rendering user/book Japanese.
-- **Accessibility:** icon-only buttons get `aria-label` (e.g. "Settings", "Import book", "Close").
-  Sheets use `role="dialog" aria-modal="true"`; the tap-to-look-up toggle uses `role="switch"
-  aria-checked`; segmented options use `aria-pressed`; the scrubber uses `role="slider"`.
+- **Accessibility:** icon-only buttons get `aria-label` (e.g. "Settings", "Import book", "Close",
+  "Highlights & Bookmarks"). Sheets use `role="dialog" aria-modal="true"`; the "Highlight looked-up
+  words" switch uses `role="switch" aria-checked`; segmented options use `aria-pressed`; the
+  scrubber uses `role="slider"`; toasts are `role="status" aria-live="polite"`.
+- **Touch targets:** ≥44pt everywhere (segments, steppers, dict Download, shelf icon buttons, error
+  dismiss, popup toggle, toolbar Highlight, Notes tabs). Visually smaller discs (sheet ×, switch)
+  extend their hit area with an `::after`.
+- **Undo, not confirm:** destructive actions (remove a book, delete a highlight/bookmark) happen
+  immediately and offer *Undo* in a toast.
 - **`tabular-nums`** on changing numbers — reader progress %, stepper values, dictionary pitch — so
   digits don't jitter.
 - **Aesthetic:** calm paper-and-vermilion. Serif for reading + book titles + dictionary headwords;
@@ -272,14 +312,19 @@ scrim, and Escape handling.
 </Sheet>
 ```
 
+**Show a toast:** `showToast({ message, action?: { label, run }, onexpire? })` from
+`stores/toast.svelte`. For an undoable delete, remove from the UI now and commit in `onexpire`.
+
 **Add an icon:** add a 24×24 `currentColor` path to the `PATHS` map in `Icon.svelte` (module script),
 then `<Icon name="my-icon" />`. Keep the map to icons in active use. For a solid variant pass `fill`
 to fill the **same** path (as the active bookmark does) — no separate `-fill` entry.
 
-**Add a theme:** add a `:root[data-theme='<name>']` block defining **all** semantic tokens
-(`--paper`, `--paper-raised`, `--ink*`, `--line*`, `--accent*`, `--hl-yellow`, `--scrim`, plus
-`color-scheme`); add the option to the theme `Segmented` arrays in `ShelfSettings.svelte` /
-`ReaderSettings.svelte`; widen `ThemeName` in `services/types.ts`. The in-book rendering picks it up
+**Add a theme:** add a `:root[data-theme='<name>']` block defining **all** palette tokens
+(`--paper`, `--paper-raised`, `--ink*`, `--line*`, `--accent*`, `--on-accent`, `--control-track`,
+`--control-active`, `--danger`, `--hl-yellow`, `--scrim`, `--glass-edge`, plus `color-scheme`; keep
+`--ink-faint` ≥4.5:1 on `--paper`); add the option to the theme `Segmented` arrays in
+`ShelfSettings.svelte` / `ReaderSettings.svelte`; add its paper colour to `PAPER` in the settings
+store and the inline script in `index.html`; widen `ThemeName` in `services/types.ts`. The in-book rendering picks it up
 automatically (the reader reads live CSS vars).
 
 **Add a setting control:** extend `ReaderSettings` + `DEFAULT_SETTINGS` (`services/types.ts`), add a
@@ -291,25 +336,28 @@ the `onchange(kind)` callback so the reader re-applies the right aspect — see
 
 ## 10. Gotchas
 
-- **Sheets are modal but don't trap focus:** `Sheet` renders a `--scrim` (`z-index:40`) and closes on
+- **Sheets are modal but don't trap focus:** `Sheet` renders a `--scrim` (`--z-scrim`) and closes on
   scrim/grip tap, the 44px close button, or **Escape**. To honour `aria-modal` it moves focus into the
   sheet on open and restores to the trigger on close.
 - **Popup & toolbar are NOT sheets:** `DictionaryPopup` and `SelectionToolbar` are **floating**
   (`position:fixed`), positioned in a `$effect`/rAF via `placeAnchored`. No scrim, don't close on
   Escape; the **reader** owns their `open` state. While the dictionary popup is open it's the
-  highest-priority tap target: the next tap anywhere (incl. the nav-bar band) **only dismisses it** —
-  it does not re-define or toggle the chrome. Also dismissed by a page turn (`onTurn` closes overlays)
+  highest-priority *blank* tap target: a blank tap only dismisses it; a tap on another glyph
+  re-targets it (see [reader-engine.md](reader-engine.md) §8). Also dismissed by a page turn (`onTurn` closes overlays)
   and its own × button. (Tap/turn gesture details: **[reader-engine.md](reader-engine.md)**.)
 - **Theme before first paint:** `main.ts` `await`s `initSettings()` before `mount(App, …)`, so
   `applyTheme()` has set `<html data-theme>` before the first frame (no light→dark flash). `index.html`
   ships static `theme-color` media metas as a pre-hydration fallback; `applyTheme()` then writes the
   dynamic non-media one.
-- **z-index ladder:** reader bars 20 / page-% readout 15 / scrim 40 / sheet 41 / dictionary popup 50 /
-  selection toolbar 52 / update toast 60. Floating reader overlays sit above sheets intentionally.
+- **z-index ladder:** use the `--z-*` tokens (§2), never raw numbers.
+- **No `transform` on elements with a `fly`:** Svelte's fly animates `transform`; centre such
+  elements with the `translate` property (bottom capsule, toast).
+- **Custom properties resolve where declared:** overriding `--glass-mix` on a component does not
+  change `--glass-bg` (computed on `:root`) — use `--glass-bg-strong` or the palette block.
 - **objectURL leaks:** `BookCover` revokes its cover `objectURL` in the `$effect` cleanup — follow this
   for any `URL.createObjectURL`.
-- **Reduced motion:** all animations collapse under `prefers-reduced-motion`; don't rely on animation
-  timing for correctness.
+- **Reduced motion:** CSS collapses via the media query; Svelte transitions must pass `dur(…)`.
+  Don't rely on animation timing for correctness.
 - **Don't reassign store bindings** (§1) — mutate in place or reactivity breaks for all readers.
 
 ---

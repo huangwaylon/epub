@@ -106,8 +106,8 @@
     aria-label="Dictionary"
     tabindex="-1"
   >
-    <button class="close" aria-label="Close" onclick={() => onclose?.()}>
-      <Icon name="x" size={16} />
+    <button class="icon-btn close" aria-label="Close" onclick={() => onclose?.()}>
+      <Icon name="x" size="sm" />
     </button>
     <div class="body" class:stale={loading && !!result} aria-busy={loading}>
       {#if needsDownload}
@@ -115,7 +115,7 @@
           {#if phase === 'downloading'}
             <p class="dl-title">Downloading dictionary…</p>
             <div class="track"><div class="fill" style="width:{Math.round(dict.progress * 100)}%"></div></div>
-            <p class="dl-sub">{Math.round(dict.progress * 100)}%</p>
+            <p class="dl-sub num">{Math.round(dict.progress * 100)}%</p>
           {:else if phase === 'retrying'}
             <p class="dl-title">Waiting to resume the download…</p>
             {#if dict.error}<p class="dl-sub">{dict.error}</p>{/if}
@@ -123,14 +123,16 @@
             <!-- Installed (or still being checked), with the segmenter being prepared:
                  never re-offer the download for a dictionary that is already here. -->
             <p class="dl-title">Preparing the dictionary…</p>
-            <div class="loading"><div class="spinner"></div></div>
+            <div class="progress-indeterminate prep" role="progressbar" aria-label="Preparing the dictionary"></div>
+            <p class="dl-sub">Getting word lookup ready — this only happens once.</p>
           {:else if phase === 'unavailable'}
             <p class="dl-title">Dictionary unavailable</p>
             <p class="dl-sub">This device’s storage couldn’t be opened. Try again after restarting the app.</p>
           {:else}
             <p class="dl-title">Dictionary not installed</p>
-            <p class="dl-sub">Download the Japanese dictionary (~few MB) to look up words offline.</p>
-            <button class="dl-btn" onclick={ondownload}>Download dictionary</button>
+            <p class="dl-sub">Look up any word in the book with the Japanese–English dictionary.</p>
+            <button class="btn btn-primary dl-btn" onclick={ondownload}>Download dictionary</button>
+            <p class="dl-foot">One-time download · works offline</p>
             {#if dict.error}<p class="err">{dict.error}</p>{/if}
           {/if}
         </div>
@@ -169,18 +171,21 @@
           {/each}
         </div>
       {:else if loading}
-        <div class="loading">
-          {#if slow}<div class="spinner"></div>{/if}
+        <!-- A slow first lookup shows the shape of an entry rather than a bare spinner. -->
+        <div class="skel" role="status" aria-label="Looking up" class:show={slow}>
+          <div class="skeleton sk-head"></div>
+          <div class="skeleton sk-line"></div>
+          <div class="skeleton sk-line short"></div>
         </div>
       {:else}
         <div class="none">
-          <Icon name="search" size={20} />
+          <Icon name="search" size="sm" />
           <span>No dictionary match.</span>
         </div>
       {/if}
     </div>
     {#if loading && result && slow}
-      <div class="spin-over" aria-hidden="true"><div class="spinner"></div></div>
+      <div class="spin-over" aria-hidden="true"><div class="spinner" style="--spinner-size:20px"></div></div>
     {/if}
     {#if showActions}
       <div class="actions">
@@ -196,39 +201,16 @@
 <style>
   .popup {
     position: fixed;
-    z-index: 50;
+    z-index: var(--z-popup);
     display: flex;
     flex-direction: column;
     width: min(340px, calc(100vw - 40px - var(--safe-left, 0px) - var(--safe-right, 0px)));
     max-height: 46dvh;
     background: var(--paper-raised);
-    border: 1px solid var(--line);
     border-radius: var(--r-lg);
-    box-shadow: var(--shadow-2);
-    animation: pop 0.14s var(--ease);
-  }
-  .body {
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
-    padding: 14px 16px;
-  }
-  .close {
-    position: absolute;
-    /* 44×44 hit target (Apple HIG min); top:0/right:0 keeps the 16px icon's centre at
-       the same spot the old 36px@4px button had it, so nothing shifts visually. */
-    top: 0;
-    right: 0;
-    width: 44px;
-    height: 44px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    color: var(--ink-faint);
-    z-index: 1;
-  }
-  .close:active {
-    background: var(--accent-soft);
+    box-shadow: var(--glass-edge), var(--shadow-3);
+    outline: none;
+    animation: pop var(--dur-fast) var(--ease-out);
   }
   @keyframes pop {
     from {
@@ -236,16 +218,31 @@
       transform: scale(0.96);
     }
   }
-  .loading {
-    display: grid;
-    place-items: center;
-    min-height: 22px;
-    padding: 18px;
+  .body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    padding: var(--sp-3) var(--sp-4);
   }
+  /* 44pt × in the corner; the first line of every state leaves room for it, so a long
+     headword never runs underneath. */
+  .close {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 1;
+    color: var(--ink-faint);
+  }
+  .entry:first-child > :first-child,
+  .none,
+  .skel {
+    padding-inline-end: var(--sp-8);
+  }
+
   /* A re-targeted card: the previous word stays readable, dimmed, while the next loads. */
   .body.stale {
     opacity: 0.45;
-    transition: opacity 0.12s var(--ease);
+    transition: opacity var(--dur-fast) var(--ease-out);
   }
   .spin-over {
     position: absolute;
@@ -254,118 +251,133 @@
     place-items: center;
     pointer-events: none;
   }
-  .spinner {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    border: 2.5px solid var(--line-strong);
-    border-top-color: var(--accent);
-    animation: spin 0.8s linear infinite;
+
+  .skel {
+    display: grid;
+    gap: var(--sp-2);
+    padding-block: var(--sp-1);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-out);
   }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+  .skel.show {
+    opacity: 1;
+  }
+  .sk-head {
+    width: 44%;
+    height: 24px;
+  }
+  .sk-line {
+    height: 12px;
+  }
+  .sk-line.short {
+    width: 70%;
   }
 
   .reasons {
     display: flex;
     flex-wrap: wrap;
-    gap: 5px;
-    margin-bottom: 6px;
+    gap: var(--sp-1);
+    margin-bottom: var(--sp-2);
   }
   .chip {
-    font-size: 11px;
+    font-size: var(--fs-caption);
     font-weight: 600;
+    line-height: 1.4;
     color: var(--accent);
     background: var(--accent-soft);
-    padding: 3px 8px;
-    border-radius: 100px;
+    padding: 2px var(--sp-2);
+    border-radius: var(--r-full);
   }
   .entry {
-    padding: 8px 0;
+    padding: var(--sp-3) 0;
     border-top: 1px solid var(--line);
   }
   .entry:first-child {
     border-top: 0;
+    padding-top: var(--sp-1);
+  }
+  .entry:last-child {
+    padding-bottom: var(--sp-1);
   }
   .head {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: var(--sp-1) var(--sp-3);
     flex-wrap: wrap;
   }
   .word {
     font-family: var(--font-serif);
-    font-size: 23px;
+    font-size: var(--fs-headword);
     font-weight: 600;
-    line-height: 1.2;
+    line-height: 1.25;
   }
   .reading {
-    font-size: 15px;
+    font-size: var(--fs-body);
     color: var(--accent);
   }
   .pitch {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: 12px;
+    gap: var(--sp-1);
+    font-size: var(--fs-caption);
     color: var(--ink-soft);
     font-variant-numeric: tabular-nums;
   }
   .pitch-tag {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    font-size: var(--fs-caption);
+    font-weight: 600;
     color: var(--ink-faint);
-    background: var(--line);
-    padding: 1px 5px;
-    border-radius: 100px;
+    background: var(--control-track);
+    padding: 0 var(--sp-2);
+    border-radius: var(--r-full);
   }
   .senses {
-    margin: 6px 0 0;
-    padding-inline-start: 18px;
+    margin: var(--sp-2) 0 0;
+    padding-inline-start: var(--sp-5);
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--sp-1);
   }
   .senses li {
-    font-size: 14px;
+    font-size: var(--fs-body);
     line-height: 1.45;
     color: var(--ink);
   }
+  .senses li::marker {
+    color: var(--ink-faint);
+    font-size: var(--fs-footnote);
+    font-variant-numeric: tabular-nums;
+  }
   .pos {
-    font-size: 11px;
+    font-size: var(--fs-caption);
     font-style: italic;
     color: var(--ink-faint);
-    margin-inline-end: 6px;
+    margin-inline-end: var(--sp-2);
   }
   .none {
     display: flex;
     align-items: center;
-    gap: 10px;
-    color: var(--ink-faint);
-    font-size: 14px;
-    padding: 4px;
+    gap: var(--sp-2);
+    min-height: 28px;
+    color: var(--ink-soft);
+    font-size: var(--fs-body);
   }
 
   /* Sticky footer action: toggle the word's yellow vocab highlight. */
   .actions {
     flex: none;
-    padding: 6px 10px;
+    padding: var(--sp-1) var(--sp-2);
     border-top: 1px solid var(--line);
-    background: var(--paper-raised);
-    border-radius: 0 0 var(--r-lg) var(--r-lg);
   }
   .hl-toggle {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--sp-3);
     width: 100%;
-    min-height: 40px;
-    padding: 0 8px;
-    border-radius: var(--r-md);
-    font-size: 14px;
+    min-height: var(--control-h);
+    padding: 0 var(--sp-2);
+    border-radius: var(--r-sm);
+    font-size: var(--fs-body);
     font-weight: 600;
     color: var(--accent);
   }
@@ -373,16 +385,16 @@
     color: var(--ink-soft);
   }
   .hl-toggle:active {
-    background: var(--accent-soft);
+    background: var(--control-track);
   }
   .hl-swatch {
-    width: 16px;
-    height: 16px;
-    border-radius: 5px;
+    width: var(--icon-sm);
+    height: var(--icon-sm);
+    border-radius: var(--r-xs);
     border: 1.5px solid var(--line-strong);
     transition:
-      transform 0.16s var(--ease),
-      background 0.16s var(--ease);
+      transform var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
   }
   .hl-swatch.filled {
     background: #ffd54a;
@@ -395,41 +407,53 @@
   .download {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-5);
     text-align: center;
   }
   .dl-title {
     margin: 0;
     font-weight: 650;
-    font-size: 15px;
+    font-size: var(--fs-callout);
   }
   .dl-sub {
     margin: 0;
-    font-size: 12.5px;
+    font-size: var(--fs-footnote);
+    line-height: 1.45;
     color: var(--ink-soft);
   }
+  .dl-foot {
+    margin: 0;
+    font-size: var(--fs-caption);
+    color: var(--ink-faint);
+  }
   .dl-btn {
-    margin-top: 4px;
-    padding: 10px;
-    border-radius: var(--r-md);
-    font-weight: 600;
-    color: #fff;
-    background: var(--accent);
+    align-self: stretch;
+    margin-top: var(--sp-2);
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  .prep {
+    margin: var(--sp-2) 0;
   }
   .track {
-    height: 6px;
-    border-radius: 3px;
+    align-self: stretch;
+    height: 4px;
+    margin-top: var(--sp-1);
+    border-radius: var(--r-full);
     background: var(--line-strong);
     overflow: hidden;
   }
   .fill {
     height: 100%;
     background: var(--accent);
-    transition: width 0.2s;
+    transition: width var(--dur-base) var(--ease-out);
   }
   .err {
     color: var(--danger);
-    font-size: 12px;
+    font-size: var(--fs-caption);
     margin: 0;
   }
 </style>

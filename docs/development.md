@@ -36,8 +36,8 @@ is `npm run check` (svelte-check + strict `tsc` on the node config).
 | `npm run check`   | `svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json`     | Type-checks the app **and** the build tooling (`vite.config.ts`). Run before committing. |
 
 > **`predev` / `prebuild`** run `node scripts/copy-kuromoji-dict.mjs`, staging the
-> kuromoji IPADIC dict (12 `*.dat.gz`, ~19 MB compressed — ≈95 MB once the worker inflates
-> it) from `node_modules/@sglkc/kuromoji/dict` into `public/kuromoji/dict/` (gitignored —
+> kuromoji IPADIC dict (trimmed to 11 `*.dat.gz`, ~11 MB compressed — ≈27 MB once the worker inflates
+> it; `tid_pos` is dropped) from `node_modules/@sglkc/kuromoji/dict` into `public/kuromoji/dict/` (gitignored —
 > regenerated, never committed). Vite serves it in dev and copies it into `dist/` on build,
 > so CI ships the dict without committing it. See [`japanese.md`](./japanese.md) §4 and
 > [`deployment.md`](./deployment.md).
@@ -87,7 +87,7 @@ injected via `define` in `vite.config.ts`).
   `worker.format: 'es'` (ES-module workers — the lookup pipeline runs in a worker).
 - **Build-only base `/epub/`** (dev stays `/`) for the GitHub Pages project site; the
   PWA `start_url`/`scope`/`navigateFallback` derive from it. See [`deployment.md`](./deployment.md).
-- PWA `registerType: 'prompt'` (update via the in-app `UpdateToast.svelte`); standalone
+- PWA `registerType: 'prompt'` (update via the in-app toast, `ToastHost.svelte`); standalone
   manifest, icons under `public/icons/`.
 
 ### Vendored `enum` (esbuild isolated modules)
@@ -108,7 +108,7 @@ The layered map (UI → stores → services → vendor) and per-area code↔doc 
 | Path | Contents |
 |------|----------|
 | `src/main.ts`, `App.svelte`, `app.css` | Bootstrap, shelf↔reader switch, global theme/safe-area tokens. |
-| `src/lib/components/` | Reusable UI: Sheet, Segmented, Icon, UpdateToast. |
+| `src/lib/components/` | Reusable UI: Sheet, Segmented, Icon, Toast/ToastHost, LoadingScreen. |
 | `src/lib/library/` | Shelf, BookCover, ShelfSettings. |
 | `src/lib/reader/` | Reader + panels: ReaderSettings, DictionaryPopup, SelectionToolbar, TocSheet, AnnotationsPanel. |
 | `src/lib/{actions,util}/` | longpress action; anchoredPosition, debounce helpers. |

@@ -1,9 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte'
   import { fly, fade } from 'svelte/transition'
+  import { cubicOut } from 'svelte/easing'
   import { openShelf } from '../../stores/nav.svelte'
   import { settings, appearance } from '../../stores/settings.svelte'
   import { dict } from '../../stores/dict.svelte'
+  import { library } from '../../stores/library.svelte'
+  import { showToast } from '../../stores/toast.svelte'
+  import { DUR, dur } from '../util/motion.svelte'
   import { getBookFile } from '../../services/library'
   import { getBookMeta, getProgress, putProgress } from '../../services/storage/db'
   import {
@@ -37,6 +41,7 @@
   import type { BookMeta, Annotation, ResolvedTheme } from '../../services/types'
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
+  import LoadingScreen from '../components/LoadingScreen.svelte'
   import ReaderSettings from './ReaderSettings.svelte'
   import TocSheet from './TocSheet.svelte'
   import DictionaryPopup from './DictionaryPopup.svelte'
@@ -66,6 +71,13 @@
   let tocOpen = $state(false)
   let settingsOpen = $state(false)
   let annotationsOpen = $state(false)
+  /** The Aa button — the Display popover hangs from it on iPad. */
+  let displayBtn = $state<HTMLButtonElement>()
+
+  /** Title for the opening screen: the shelf already knows it before the meta read lands. */
+  const loadingTitle = $derived(meta?.title ?? library.books.find((b) => b.id === bookId)?.title)
+  /** Page-progression side: the bookmark ribbon sits on the page's outer (fore-edge) corner. */
+  let rtlBook = $state(false)
 
   // Active text selection → highlight/copy toolbar. `doc`/`range` are live DOM refs,
   // released (clearSel) as soon as the toolbar is done with them.
@@ -187,7 +199,7 @@
   }
 
   /** Delete from the Notes panel. A highlight must be unpainted too — but only once no
-   *  other record still highlights the same CFI. */
+   *  other record still highlights the same CFI. Undo restores the very same record. */
   function onRemoveAnnotation(a: Annotation) {
     const done = removeAnnotation(a.id) // updates the in-memory list synchronously
     if (a.kind === 'highlight' && !isHighlighted(a.cfi)) {
@@ -195,6 +207,17 @@
       if (dictState.cfi === a.cfi) dictState.highlighted = false
     }
     done.catch((err) => console.warn('Could not delete annotation', err))
+    showToast({
+      message: a.kind === 'highlight' ? 'Highlight deleted' : 'Bookmark deleted',
+      action: { label: 'Undo', run: () => restoreAnnotation(a) },
+    })
+  }
+  function restoreAnnotation(a: Annotation) {
+    if (destroyed) return
+    const repaint = a.kind === 'highlight' && !isHighlighted(a.cfi)
+    saveAnnotation(a).catch((err) => console.warn('Could not restore annotation', err))
+    if (repaint) void controller?.addHighlight(a.cfi).catch(() => {})
+    if (a.kind === 'highlight' && dictState.cfi === a.cfi) dictState.highlighted = true
   }
 
   // ── Selection → highlight / copy ──────────────────────────────────────────
@@ -220,8 +243,9 @@
     if (text) {
       try {
         await navigator.clipboard.writeText(text)
+        showToast({ message: 'Copied' })
       } catch {
-        /* clipboard may be unavailable */
+        showToast({ message: 'Couldn’t copy' })
       }
     }
   }
@@ -236,12 +260,20 @@
 
   // ── Tapping an existing highlight → reopen its definition (with a remove option) ──
   function onShowAnnotation(value: string, range: Range) {
-    // This `click` rides the same gesture as our tap. If that tap already defined a word
-    // (which auto-highlights it, so it is very likely *this* annotation), stand down: the
-    // tap's own lookup owns the card, including its highlight state. Adopting this
-    // annotation's CFI here used to race that lookup and could leave the footer toggling
-    // the wrong highlight.
-    if (Date.now() - tapDefinedAt < 500) return
+    // This `click` rides the same gesture as our tap. If that tap already defined a word,
+    // the tap's lookup owns the card's *content* — but the card must still own *this*
+    // highlight, so its "Remove highlight" removes what the user tapped. Otherwise a tap
+    // inside a longer highlight (a drag-selected phrase, or a vocab span from an older
+    // segmentation) would add a nested word highlight that Remove clears while the outer
+    // yellow stays. Guarded by the tap's key, so it can never land on a newer card.
+    if (Date.now() - tapDefinedAt < 500) {
+      if (dictState.open && dictState.lastKey === tapDefinedKey && !dictState.cfi) {
+        dictState.cfi = value
+        dictState.word = highlightAt(value)?.text || dictState.word
+        dictState.highlighted = true
+      }
+      return
+    }
     // Prefer the word we stored when the highlight was made: a range that spans ruby
     // stringifies with the furigana spliced in (決けっ心), which looks up as nothing.
     const word = highlightAt(value)?.text || range.toString()
@@ -318,6 +350,7 @@
   // tap already opened the same word — the two paths agree on the outcome anyway, since a
   // looked-up word is highlighted.
   let tapDefinedAt = 0
+  let tapDefinedKey = ''
 
   /**
    * Tap routing. A tap that lands on a Japanese glyph **always** defines it — the reading
@@ -329,8 +362,9 @@
   function onTap(info: TapInfo) {
     // 1. On a word → look it up. Works with the card already open (it re-targets to the
     //    new word) and inside the top/bottom band, where live text overlaps the band.
-    if (settings.tapToDefine && info.doc && tryDefine(info)) {
+    if (info.doc && tryDefine(info)) {
       tapDefinedAt = Date.now()
+      tapDefinedKey = dictState.lastKey
       chromeVisible = false // don't leave the bars covering the card
       return
     }
@@ -529,10 +563,13 @@
     } catch {
       /* keep the glyph anchor */
     }
-    addHighlight(cfi, word)
+    // "Highlight looked-up words" off: still resolve the CFI so the footer's Highlight
+    // toggle can mark this word on demand — just don't paint or record it unasked.
+    const mark = settings.highlightLookups || isHighlighted(cfi)
+    if (mark) addHighlight(cfi, word)
     dictState.cfi = cfi
     dictState.word = word
-    dictState.highlighted = true
+    dictState.highlighted = mark
   }
 
   // Download the dictionary from the popup. `downloadAndWarmDictionary` keeps the
@@ -568,6 +605,61 @@
     if (appearance.resolved !== appliedTheme) untrack(() => controller && applyAppearance())
   })
 
+  /**
+   * Chapter lookup for the scrubber preview: each TOC entry's start as an overall-book
+   * fraction (its section's start, from foliate's section fractions). Built once per open —
+   * the preview then resolves a drag position to a title with a short scan, no layout.
+   */
+  let chapterStarts: { start: number; label: string }[] = []
+  function buildChapterIndex() {
+    chapterStarts = []
+    const v = controller?.view as unknown as {
+      book?: { resolveHref?: (h: string) => { index: number } | null }
+      getSectionFractions?: () => number[]
+    }
+    const fr = v?.getSectionFractions?.() ?? []
+    if (!fr.length || !v?.book?.resolveHref) return
+    const out: { start: number; label: string }[] = []
+    const walk = (items: TocItem[]) => {
+      for (const it of items) {
+        const label = it.label?.trim()
+        if (it.href && label) {
+          try {
+            const r = v.book!.resolveHref!(it.href)
+            if (r && r.index >= 0 && fr[r.index] !== undefined) out.push({ start: fr[r.index], label })
+          } catch {
+            /* unresolvable href — skip */
+          }
+        }
+        if (it.subitems?.length) walk(it.subitems)
+      }
+    }
+    walk(toc)
+    // Stable sort; several entries in one section share its start — keep the first.
+    out.sort((a, b) => a.start - b.start)
+    chapterStarts = out.filter((c, i) => i === 0 || c.start > out[i - 1].start)
+  }
+  function chapterAt(f: number): string {
+    let label = ''
+    for (const c of chapterStarts) {
+      if (c.start <= f + 1e-6) label = c.label
+      else break
+    }
+    return label
+  }
+  /** Flattened TOC labels in reading order — the Notes panel groups highlights by these. */
+  const chapterOrder = $derived.by(() => {
+    const out: string[] = []
+    const walk = (items: TocItem[]) => {
+      for (const it of items) {
+        if (it.label?.trim()) out.push(it.label.trim())
+        if (it.subitems?.length) walk(it.subitems)
+      }
+    }
+    walk(toc)
+    return out
+  })
+
   /** Fast-scroll via the progress scrubber: jump to an overall-book fraction. */
   function seek(frac: number) {
     if (!controller) return
@@ -589,7 +681,6 @@
 
   /** Warm the lookup worker (kuromoji trie) if the dictionary is installed. */
   function warmLookupIfReady() {
-    if (!settings.tapToDefine) return
     void isDictReady().then((ok) => {
       if (ok && !destroyed) void warmupLookup()
     })
@@ -713,6 +804,8 @@
       if (destroyed) return
       status = 'ready'
       toc = controller.view.book?.toc ?? []
+      rtlBook = controller.bookDir === 'rtl'
+      buildChapterIndex()
       installDevHook()
 
       // Flush the position on background/close; shed / re-warm the lookup worker as the
@@ -756,56 +849,76 @@
 
   {#if status === 'loading'}
     <!-- A slow open (a large book, a cold iOS launch) must never trap the reader here. -->
-    <div class="overlay">
-      <div class="loading">
-        <div class="spinner" role="progressbar" aria-label="Opening book"></div>
-        <button class="back-cta" onclick={openShelf}>← Back to library</button>
-      </div>
-    </div>
+    <LoadingScreen title={loadingTitle} onback={openShelf} />
   {:else if status === 'error'}
-    <div class="overlay error">
+    <div class="overlay error" role="alert">
       <p>{errorMsg}</p>
-      <button class="back-cta" onclick={openShelf}>← Back to library</button>
+      <button class="btn btn-tinted" onclick={openShelf}>Back to library</button>
     </div>
   {/if}
 
+  <!-- The page is bookmarked: a small accent ribbon on the fore-edge corner. Purely
+       decorative (pointer-events:none, no backdrop-filter — it stays put during a slide). -->
+  {#if status === 'ready' && isBookmarked}
+    <div class="ribbon" class:rtl={rtlBook} aria-hidden="true"></div>
+  {/if}
+
   {#if status === 'ready' && chromeVisible}
-    <header class="bar top" role="presentation" onclick={dismissChromeFromBar} transition:fly={{ y: -20, duration: 200 }}>
-      <button class="cbtn" onclick={openShelf} aria-label="Library">
-        <Icon name="arrow-left" size={22} />
-      </button>
+    <!-- Floating glass capsules. They stay inside the top/bottom chrome-toggle band
+         (inChromeToggleBand), so a tap where they appear always toggles them. -->
+    <header
+      class="bar top glass"
+      role="presentation"
+      onclick={dismissChromeFromBar}
+      in:fly={{ y: -16, duration: dur(DUR.base), easing: cubicOut }}
+      out:fly={{ y: -12, duration: dur(DUR.fast) }}
+    >
+      <div class="group start">
+        <button class="icon-btn" onclick={openShelf} aria-label="Library">
+          <Icon name="chevron-left" />
+        </button>
+      </div>
       <div class="title" lang="ja">{meta?.title ?? ''}</div>
-      <button class="cbtn" onclick={() => (annotationsOpen = true)} aria-label="Highlights & bookmarks">
-        <Icon name="note" size={21} />
-      </button>
-      <button class="cbtn" onclick={() => (settingsOpen = true)} aria-label="Display settings">
-        <Icon name="aa" size={22} />
-      </button>
+      <div class="group end">
+        <button class="icon-btn" onclick={() => (annotationsOpen = true)} aria-label="Highlights & Bookmarks">
+          <Icon name="highlighter" />
+        </button>
+        <button bind:this={displayBtn} class="icon-btn" onclick={() => (settingsOpen = true)} aria-label="Display settings">
+          <Icon name="aa" />
+        </button>
+      </div>
     </header>
 
-    <footer class="bar bottom" role="presentation" onclick={dismissChromeFromBar} transition:fly={{ y: 20, duration: 200 }}>
-      <button class="cbtn" onclick={() => (tocOpen = true)} aria-label="Contents">
-        <Icon name="list" size={22} />
+    <footer
+      class="bar bottom glass"
+      role="presentation"
+      onclick={dismissChromeFromBar}
+      in:fly={{ y: 16, duration: dur(DUR.base), easing: cubicOut }}
+      out:fly={{ y: 12, duration: dur(DUR.fast) }}
+    >
+      <button class="icon-btn" onclick={() => (tocOpen = true)} aria-label="Contents">
+        <Icon name="list" />
       </button>
       <div class="progress">
-        <ProgressScrubber {fraction} {sectionLabel} onseek={seek} />
+        <ProgressScrubber {fraction} {sectionLabel} labelAt={chapterAt} onseek={seek} />
       </div>
       <button
-        class="cbtn"
+        class="icon-btn"
         class:on={isBookmarked}
         onclick={toggleBookmark}
         aria-label={isBookmarked ? 'Remove bookmark' : 'Add bookmark'}
       >
-        <Icon name="bookmark" size={22} fill={isBookmarked} />
+        <Icon name="bookmark" fill={isBookmarked} />
       </button>
     </footer>
   {/if}
 
   <!-- Persistent reading-position readout at the bottom centre, shown while the
        chrome is hidden (the bottom bar carries its own progress when visible).
-       pointer-events:none so it never intercepts taps/swipes. -->
+       pointer-events:none so it never intercepts taps/swipes; no backdrop-filter, since
+       it stays on screen through every page slide. -->
   {#if status === 'ready' && !chromeVisible}
-    <div class="page-pct" aria-hidden="true" transition:fade={{ duration: 150 }}>
+    <div class="page-pct" aria-hidden="true" transition:fade={{ duration: dur(DUR.fast) }}>
       {Math.round(fraction * 100)}%
     </div>
   {/if}
@@ -815,12 +928,14 @@
   <TocSheet {toc} currentId={currentTocId} currentLabel={sectionLabel} onnavigate={navigate} />
 </Sheet>
 
-<Sheet bind:open={settingsOpen} title="Display">
+<!-- Live-preview panel: an undimmed popover under Aa on iPad, a bottom sheet with a clear
+     scrim on phones — so text changes are judged against the page itself. -->
+<Sheet bind:open={settingsOpen} title="Display" variant="popover" anchor={displayBtn}>
   <ReaderSettings onchange={onSettingChange} />
 </Sheet>
 
-<Sheet bind:open={annotationsOpen} title="Notes">
-  <AnnotationsPanel onnavigate={navAnnotation} onremove={onRemoveAnnotation} />
+<Sheet bind:open={annotationsOpen} title="Highlights & Bookmarks">
+  <AnnotationsPanel {chapterOrder} onnavigate={navAnnotation} onremove={onRemoveAnnotation} />
 </Sheet>
 
 <DictionaryPopup
@@ -874,58 +989,48 @@
     box-sizing: border-box;
   }
 
+  /* ── Floating glass capsules ──
+     Height budget: both must end inside the chrome-toggle band (12% of the viewport,
+     clamped 80–160px). iPad landscape (834px → 100px band): top ends at
+     safe-top + 12 + 52 ≈ 88px, bottom starts ≈ 88px above the edge. */
   .bar {
     position: absolute;
-    left: 0;
-    right: 0;
-    z-index: 20;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 8px;
-    background: color-mix(in srgb, var(--paper-raised) 86%, transparent);
-    backdrop-filter: blur(18px) saturate(1.2);
-    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    z-index: var(--z-bars);
+    left: calc(var(--safe-left) + var(--sp-2));
+    right: calc(var(--safe-right) + var(--sp-2));
+    min-height: 48px;
+    padding: 2px var(--sp-1);
+    border-radius: var(--r-full);
   }
   .bar.top {
-    top: 0;
-    padding-top: calc(var(--safe-top) + 8px);
-    border-bottom: 1px solid var(--line);
-  }
-  .bar.bottom {
-    bottom: 0;
-    /* Just enough bottom padding to clear the home indicator — no extra, so the
-       control row hugs the bottom instead of floating with a translucent strip
-       (read as a "gap") beneath it. The bar background still fills to the edge. */
-    padding-bottom: max(var(--safe-bottom), 10px);
-    border-top: 1px solid var(--line);
-  }
-  .cbtn {
-    flex: none;
-    width: 44px;
-    height: 44px;
+    top: calc(var(--safe-top) + var(--sp-1));
     display: grid;
-    place-items: center;
-    border-radius: 50%;
-    color: var(--ink-soft);
+    /* Symmetric side tracks keep the title optically centred however long it is. */
+    grid-template-columns: minmax(92px, 1fr) minmax(0, auto) minmax(92px, 1fr);
+    align-items: center;
   }
-  .cbtn:active {
-    background: var(--accent-soft);
+  .group {
+    display: flex;
+    align-items: center;
   }
-  .cbtn:disabled {
-    opacity: 0.35;
-  }
-  .cbtn.on {
-    color: var(--accent);
+  .group.end {
+    justify-content: flex-end;
   }
   .title {
-    flex: 1;
+    min-width: 0;
+    padding: 0 var(--sp-2);
     text-align: center;
-    font-size: 15px;
+    font-size: var(--fs-body);
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .bar.bottom {
+    bottom: calc(var(--safe-bottom) + var(--sp-1));
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
   }
   .progress {
     flex: 1;
@@ -937,72 +1042,83 @@
   .page-pct {
     position: absolute;
     left: 50%;
-    bottom: calc(var(--safe-bottom) + 8px);
+    bottom: calc(var(--safe-bottom) + var(--sp-2));
     transform: translateX(-50%);
-    z-index: 15;
+    z-index: var(--z-readout);
     pointer-events: none;
-    padding: 2px 9px;
-    border-radius: 999px;
-    font-size: 11px;
+    padding: 2px var(--sp-2);
+    font-size: var(--fs-caption);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.03em;
     color: var(--ink-faint);
-    background: color-mix(in srgb, var(--paper-raised) 70%, transparent);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
   }
 
-  /* iPad / wide screens: don't stretch the bar controls edge-to-edge. */
+  /* Bookmark ribbon: hangs from the top fore-edge corner of the page. */
+  .ribbon {
+    position: absolute;
+    top: 0;
+    right: calc(var(--safe-right) + var(--sp-7));
+    z-index: var(--z-ribbon);
+    width: 14px;
+    height: calc(var(--safe-top) + 30px);
+    pointer-events: none;
+    background: var(--accent);
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 6px), 0 100%);
+    transform-origin: top center;
+    animation: ribbon-in var(--dur-slow) var(--ease-spring);
+  }
+  .ribbon.rtl {
+    right: auto;
+    left: calc(var(--safe-left) + var(--sp-7));
+  }
+  @keyframes ribbon-in {
+    from {
+      transform: scaleY(0);
+    }
+  }
+
+  /* iPad / wide screens: a roomier top capsule, a centred bottom capsule. */
   @media (min-width: 768px) {
     .bar {
-      padding-left: max(var(--safe-left), 26px);
-      padding-right: max(var(--safe-right), 26px);
+      left: calc(var(--safe-left) + var(--sp-4));
+      right: calc(var(--safe-right) + var(--sp-4));
+      min-height: 52px;
+      padding: var(--sp-1);
     }
     .bar.top {
-      padding-top: calc(var(--safe-top) + 12px);
-      padding-bottom: 12px;
+      top: calc(var(--safe-top) + var(--sp-3));
+      grid-template-columns: minmax(100px, 1fr) minmax(0, auto) minmax(100px, 1fr);
     }
-    .progress {
-      flex: 0 1 580px;
-      margin-inline: auto;
+    .bar.bottom {
+      bottom: calc(var(--safe-bottom) + var(--sp-3));
+      left: 50%;
+      right: auto;
+      width: min(680px, calc(100vw - 2 * var(--sp-4) - var(--safe-left) - var(--safe-right)));
+      /* `translate`, not `transform`: the fly transition animates `transform`. */
+      translate: -50% 0;
     }
     .title {
-      font-size: 16px;
+      max-width: 52vw;
+      font-size: var(--fs-callout);
     }
   }
 
   .overlay {
     position: absolute;
     inset: 0;
-    z-index: 30;
+    z-index: var(--z-overlay);
     display: grid;
-    place-items: center;
-    gap: 16px;
+    place-content: center;
+    justify-items: center;
+    gap: var(--sp-4);
     background: var(--paper);
     color: var(--ink-soft);
     text-align: center;
-    padding: 24px;
+    padding: var(--sp-6);
   }
-  .loading {
-    display: grid;
-    place-items: center;
-    gap: 22px;
-  }
-  .spinner {
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    border: 3px solid var(--line-strong);
-    border-top-color: var(--accent);
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  .back-cta {
-    color: var(--accent);
-    font-weight: 600;
+  .overlay p {
+    margin: 0;
+    max-width: 34ch;
+    line-height: 1.5;
   }
 </style>

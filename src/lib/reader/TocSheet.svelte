@@ -48,7 +48,7 @@
         class="toc-row"
         class:current={isCurrent(item)}
         aria-current={isCurrent(item) ? 'location' : undefined}
-        style="padding-inline-start:{14 + item.depth * 16}px"
+        style="padding-inline-start:{4 + item.depth * 16}px"
         onclick={() => item.href && onnavigate(item.href)}
         disabled={!item.href}
       >
@@ -62,15 +62,24 @@
   nav {
     display: flex;
     flex-direction: column;
-    padding-bottom: 10px;
+    padding-bottom: var(--sp-3);
   }
   .toc-row {
+    min-height: var(--control-h);
+    display: flex;
+    align-items: center;
     text-align: start;
-    padding: 13px 6px;
-    font-size: 15px;
+    padding: var(--sp-3) var(--sp-1);
+    font-size: var(--fs-body);
     line-height: 1.4;
     color: var(--ink);
     border-bottom: 1px solid var(--line);
+  }
+  .toc-row:last-child {
+    border-bottom: 0;
+  }
+  .toc-row:active {
+    background: var(--control-track);
   }
   .toc-row.current {
     color: var(--accent);
@@ -82,6 +91,6 @@
   .empty {
     color: var(--ink-faint);
     text-align: center;
-    padding: 30px 0;
+    padding: var(--sp-8) 0;
   }
 </style>

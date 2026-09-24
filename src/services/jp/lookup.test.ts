@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 //    with an in-memory dictionary keyed by the *deinflected* term `lookup.ts` queries.
 //  * `./segment` — kuromoji. We control `segmenterReady`/`tokenSpanAt` so we can
 //    exercise both the morphological (kuromoji) path and the greedy fallback, and
-//    `ensureSegmenter` is a no-op so no ~19 MB dict load is attempted.
+//    `ensureSegmenter` is a no-op so no ~11 MB dict load is attempted.
 //
 // `deinflect` and `@birchill/normal-jp`'s `toNormalized` stay REAL, so the tests use
 // genuine Japanese surface forms and the real candidate generation.
@@ -449,6 +449,36 @@ describe('matchAt — every candidate at the winning length', () => {
     expect(res!.entries[0].kanaOnly).toBe(true) // usually kana ⇒ shown as する, not 為る
     expect(res!.entries[1].reasons).toEqual([])
     expect(res!.reasons).toEqual(['past']) // top-level mirrors entries[0]
+  })
+
+  it('したように (tap し): an uncommon conjugation parse (したる) yields to common する', async () => {
+    segmenterReadyValue = true
+    tokenSpanImpl = () => ({ start: 0, end: 1 }) // し | た | よう | に
+    const SHITARU = [kanaHit({ id: 9, r: 'したる', pos: ['v1'], glosses: ['(obscure)'] })]
+    const COMMON_SURU = SURU.map((w) => ({ ...w, r: w.r.map((r: any) => ({ ...r, p: ['s1'] })) }))
+    setDict({ したる: SHITARU, した: SHITA, する: COMMON_SURU })
+    const res = await lookupAt('したように', 0)
+    expect(res!.matchLength).toBe(2)
+    expect(res!.entries[0].headword).toBe('する')
+  })
+
+  it('した never deinflects to godan 知る (its past is 知った) via the ichidan rule', async () => {
+    segmenterReadyValue = true
+    tokenSpanImpl = () => ({ start: 2, end: 3 })
+    const SHIRU = [kanaHit({ id: 7, k: '知る', r: 'しる', pos: ['v5r'], glosses: ['to know'] })]
+    setDict({ した: SHITA, しる: SHIRU, する: SURU })
+    const res = await lookupAt('勉強した', 2)
+    expect(res!.entries.map((e) => e.headword)).toEqual(['する', '下', '舌'])
+  })
+
+  it('keeps an uncommon conjugation parse when nothing shorter is common', async () => {
+    segmenterReadyValue = true
+    tokenSpanImpl = () => ({ start: 0, end: 1 })
+    const SHITARU = [kanaHit({ id: 9, r: 'したる', pos: ['v1'], glosses: ['(obscure)'] })]
+    setDict({ したる: SHITARU })
+    const res = await lookupAt('したように', 0)
+    expect(res!.matchLength).toBe(4)
+    expect(res!.entries[0].headword).toBe('したる')
   })
 
   it('机の下 (tap 下): a one-token surface noun stays first', async () => {

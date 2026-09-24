@@ -3,7 +3,7 @@ import { registerSW } from 'virtual:pwa-register'
 import './app.css'
 import App from './App.svelte'
 import { initSettings } from './stores/settings.svelte'
-import { validateRestoredRoute } from './stores/nav.svelte'
+import { rememberRouteForReload, validateRestoredRoute } from './stores/nav.svelte'
 import { pwa } from './stores/pwa.svelte'
 import { getBookMeta } from './services/storage/db'
 import { requestPersistence } from './services/storage/persist'
@@ -33,7 +33,10 @@ const SW_UPDATE_CHECK_MS = 60 * 60 * 1000
 const updateSW = registerSW({
   onNeedRefresh() {
     pwa.needRefresh = true
-    pwa.update = () => updateSW(true)
+    pwa.update = () => {
+      rememberRouteForReload()
+      return updateSW(true)
+    }
   },
   onOfflineReady() {
     pwa.offlineReady = true
@@ -55,8 +58,21 @@ const updateSW = registerSW({
 
 // The kuromoji dict's runtime cache was renamed to 'kuromoji-ipadic-v2' (new dict
 // contents); Workbox's cleanupOutdatedCaches only prunes *precaches*, so drop the old
-// ~19 MB runtime cache ourselves.
+// ~19 MB runtime cache (superseded by kuromoji-ipadic-v2) ourselves.
 if ('caches' in window) void caches.delete('kuromoji-ipadic').catch(() => {})
+
+// Re-fill the offline IPADIC cache for users whose dictionary is installed — e.g. after
+// the rename above dropped their old copy — so their next *offline* tap still segments
+// accurately. Idle-deferred and dynamically imported so jpdict-idb stays off the shelf's
+// critical path; cacheIpadic() skips files already cached, so this is cheap when warm.
+setTimeout(() => {
+  if (!navigator.onLine || !('caches' in window)) return
+  void import('./services/jp/dictdb')
+    .then(async (m) => {
+      if (await m.isDictReady()) await m.cacheIpadic()
+    })
+    .catch(() => {})
+}, 4000)
 
 const app = mount(App, {
   target: document.getElementById('app')!,

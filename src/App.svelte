@@ -1,20 +1,21 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { nav, openShelf, loadReader, warmReader } from './stores/nav.svelte'
+  import { nav, openShelf, loadReader, warmReader, rememberRouteForReload } from './stores/nav.svelte'
   import Shelf from './lib/library/Shelf.svelte'
-  import UpdateToast from './lib/components/UpdateToast.svelte'
+  import ToastHost from './lib/components/ToastHost.svelte'
+  import LoadingScreen from './lib/components/LoadingScreen.svelte'
+  import { library } from './stores/library.svelte'
 
   // The reader (foliate-js + the reader controller + the dictionary download glue) is
   // a lazy chunk so the Shelf cold-starts without any of it. It's fetched on first open
   // — or earlier: warmed once the shelf has settled, and on pointerdown on a cover — and
   // the heavy kuromoji/JMdict engine is split a step further into its own worker.
-  // `attempt` is bumped by "Try again" so a failed load re-derives a fresh promise
-  // (loadReader drops a rejected promise rather than caching it).
-  let attempt = $state(0)
-  const readerPromise = $derived.by(() => {
-    void attempt
-    return nav.route.name === 'reader' ? loadReader() : null
-  })
+  const readerPromise = $derived(nav.route.name === 'reader' ? loadReader() : null)
+
+  // The shelf already knows the title, so the pending screen matches the reader's own.
+  const pendingTitle = $derived(
+    nav.route.name === 'reader' ? library.books.find((b) => b.id === (nav.route as { bookId: string }).bookId)?.title : undefined,
+  )
 
   onMount(() => {
     const warm = () =>
@@ -27,9 +28,10 @@
 {#if nav.route.name === 'reader'}
   {#key nav.route.bookId}
     {#await readerPromise}
-      <!-- Calm paper screen while the chunk arrives (usually already warm) — the
-           spinner only fades in if it's actually slow, so a fast load never flashes. -->
-      <div class="chunk-state" aria-busy="true"><div class="spinner"></div></div>
+      <!-- Calm paper screen while the chunk arrives (usually already warm) — it only
+           fades in if it's actually slow, so a fast load never flashes. Same look as
+           the reader's own opening screen, so the hand-off is seamless. -->
+      <LoadingScreen title={pendingTitle} />
     {:then Reader}
       {#if Reader}<Reader bookId={nav.route.bookId} />{/if}
     {:catch}
@@ -39,8 +41,16 @@
       <div class="chunk-state" role="alert">
         <p>Couldn’t load the reader. Check your connection and try again.</p>
         <div class="actions">
-          <button class="primary" onclick={() => attempt++}>Try again</button>
-          <button onclick={openShelf}>← Back to library</button>
+          <!-- A full reload: WebKit can keep replaying a failed module fetch for the same
+               URL, and a stale post-deploy chunk name only resolves with fresh HTML. -->
+          <button
+            class="btn btn-primary"
+            onclick={() => {
+              rememberRouteForReload()
+              location.reload()
+            }}>Try again</button
+          >
+          <button class="btn" onclick={openShelf}>Back to library</button>
         </div>
       </div>
     {/await}
@@ -49,7 +59,7 @@
   <Shelf />
 {/if}
 
-<UpdateToast />
+<ToastHost />
 
 <style>
   .chunk-state {
@@ -59,42 +69,18 @@
     display: grid;
     place-content: center;
     justify-items: center;
-    gap: 16px;
-    padding: 24px;
+    gap: var(--sp-4);
+    padding: var(--sp-6);
     text-align: center;
     background: var(--paper);
     color: var(--ink-soft);
   }
   .chunk-state p {
     margin: 0;
+    max-width: 30ch;
   }
   .actions {
     display: flex;
-    gap: 20px;
-  }
-  .actions button {
-    color: var(--accent);
-    font-weight: 600;
-  }
-  .spinner {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    border: 3px solid var(--line-strong);
-    border-top-color: var(--accent);
-    opacity: 0;
-    animation:
-      fade-in 0.3s ease 0.4s forwards,
-      spin 0.8s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @keyframes fade-in {
-    to {
-      opacity: 1;
-    }
+    gap: var(--sp-3);
   }
 </style>

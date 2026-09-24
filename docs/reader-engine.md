@@ -60,7 +60,7 @@ Upstream is explicitly unstable, so we **vendor a pinned copy**.
 > belongs in `ReaderController` / `Reader.svelte`. If you must patch a vendor file,
 > keep the diff minimal, leave a `// TSUZURI PATCH: …` comment, and note it here.
 
-Three documented patches:
+Four documented patches:
 
 - **PDF.js removed.** `src/vendor/foliate-js/vendor/` holds only `fflate.js` and
   `zip.js`. `makeBook` (view.js) dispatches zip → CBZ/FBZ/EPUB, else MOBI/KF8 →
@@ -88,6 +88,11 @@ Three documented patches:
   `#turnPage` sooner than one slide phase (150 ms) later — though a TOC/scrubber `goTo`
   issued within 100 ms of a chapter crossing is ignored, as upstream. Rapid-turn
   coalescing is app-side (`#turning`/`#pendingDir`, [§8a](#slide)).
+- **`View#render` skips a document-less iframe** (`paginator.js`, `TSUZURI PATCH (4)`).
+  A `ResizeObserver`/resize can reach `render()` while the iframe is between documents
+  (section swap, rotation, reader teardown); `documentElement`/`body` is then null and
+  `columnize` threw `el is null` from `setStylesImportant`. It now returns early — the
+  new section's `load` path renders once its document exists.
 
 MOBI/KF8, FB2, FBZ, CBZ branches are **kept** — cheap lazy dynamic `import()`s.
 
@@ -626,8 +631,7 @@ Pinch-zoom is the fourth hazard, handled in CSS rather than JS: see
 `onTap` → `handleTap`, in this order. **Glyph first** — the reading gesture outranks
 every piece of chrome:
 
-1. **On a Japanese glyph → define it.** If `settings.tapToDefine && info.doc &&
-   tryDefine(info)`: record `tapDefinedAt = Date.now()` ([§8a](#defer)), set
+1. **On a Japanese glyph → define it.** If `info.doc && tryDefine(info)`: record `tapDefinedAt = Date.now()` ([§8a](#defer)), set
    `chromeVisible = false` (never leave the bars covering the card), `return`. This wins
    **even inside the nav-bar band and even with a card already open** — the open card
    simply re-targets to the new word, so consecutive lookups cost one tap each.
@@ -958,7 +962,7 @@ back, the trie had to rebuild, and taps during the rebuild fell back to greedy
 segmentation, i.e. silently returned the wrong word. On return it always **pings**
 (`pingLookup()`): iOS can reclaim a hidden worker without an `onerror`, so a worker that
 doesn't answer (or was disposed) is dropped and re-warmed (`warmupLookup`, if
-`tapToDefine` + dict ready) with no network (see [japanese.md](japanese.md)).
+dict ready) with no network (see [japanese.md](japanese.md)).
 
 **Sheets & popups:** `TocSheet` (`onnavigate` → `goTo(href)`; rows keyed on foliate's
 unique TOC `id`, the current row matched by `currentTocId` — label as fallback — marked
@@ -1113,7 +1117,7 @@ shadow DOM.
 ## 15. Cross-references
 
 - [architecture.md](architecture.md) — app shell, routing, stores, services.
-- [japanese.md](japanese.md) — `extractTextAt`/`resolveGlyph`/`looksJapanese`, dictionary
+- [japanese.md](japanese.md) — `extractTextAt`/`resolveGlyph`, dictionary
   lookup, segmentation/deinflection, the `glyphSlack` hit-test math, the `annotations`
   store.
 - [ui-and-design.md](ui-and-design.md) — theme tokens, `Sheet`/`SelectionToolbar`,

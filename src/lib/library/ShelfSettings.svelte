@@ -5,6 +5,7 @@
   import { dict } from '../../stores/dict.svelte'
   import { getDb, cacheIpadic, downloadAndCacheDictionary, dictPhase } from '../../services/jp/dictdb'
   import Segmented from '../components/Segmented.svelte'
+  import Icon from '../components/Icon.svelte'
   import type { ThemeName } from '../../services/types'
 
   let status = $state<StorageStatus | null>(null)
@@ -24,6 +25,7 @@
 
   /** One reactive status for the section: see `DictPhase` in dictdb.ts. */
   const phase = $derived(dictPhase())
+  const pct = $derived(Math.round(dict.progress * 100))
 
   async function getDict() {
     try {
@@ -36,34 +38,26 @@
   }
 
   const themeOpts: { value: ThemeName; label: string }[] = [
+    { value: 'auto', label: 'Auto' },
     { value: 'light', label: 'Light' },
     { value: 'sepia', label: 'Sepia' },
     { value: 'dark', label: 'Dark' },
   ]
 </script>
 
-<div class="settings">
-  <section>
-    <h3>Appearance</h3>
-    <Segmented
-      value={settings.theme}
-      options={themeOpts}
-      onchange={(v) => updateSettings({ theme: v })}
-    />
-  </section>
-
-  <section>
-    <h3>Japanese dictionary</h3>
-    <div class="dict-row">
-      <div class="dict-status">
+<div class="settings-stack">
+  <section class="settings-section">
+    <h3 class="settings-h">Japanese dictionary</h3>
+    <div class="settings-row">
+      <div class="dict-status" aria-live="polite">
         {#if phase === 'downloading'}
-          Downloading… {Math.round(dict.progress * 100)}%
+          <span>Downloading… <span class="num">{pct}%</span></span>
         {:else if phase === 'retrying'}
           Waiting to resume download…
         {:else if phase === 'preparing'}
-          Preparing for offline use…
+          <span class="spinner" style="--spinner-size:14px"></span><span>Preparing for offline use…</span>
         {:else if phase === 'ready'}
-          <span class="ok">Installed</span> · tap any word to look it up
+          <span><span class="ok">Installed</span> · works offline</span>
         {:else if phase === 'checking'}
           Checking…
         {:else if phase === 'unavailable'}
@@ -73,148 +67,105 @@
         {/if}
       </div>
       {#if phase === 'missing' || phase === 'unavailable'}
-        <button class="dict-btn" onclick={getDict}>Download</button>
+        <button class="btn btn-primary" onclick={getDict}>Download</button>
       {:else if phase === 'retrying'}
-        <button class="dict-btn" onclick={getDict}>Retry now</button>
+        <button class="btn btn-tinted" onclick={getDict}>Retry now</button>
       {/if}
     </div>
     {#if phase === 'downloading' || phase === 'retrying'}
-      <div class="usebar"><div class="usefill" style="width:{Math.round(dict.progress * 100)}%"></div></div>
+      <div class="usebar"><div class="usefill" style="width:{pct}%"></div></div>
     {/if}
-    {#if dict.error}<p class="hint {phase === 'retrying' ? '' : 'err'}">{dict.error}</p>{/if}
-    <p class="hint">JMdict data from the 10ten project. Stored on-device for offline lookups.</p>
+    {#if dict.error}<p class="settings-hint" class:err={phase !== 'retrying'}>{dict.error}</p>{/if}
+    <p class="settings-hint">
+      {phase === 'ready' ? 'Tap any word in a book to look it up.' : 'One-time download · works offline.'}
+      JMdict data from the 10ten project, stored on this device.
+    </p>
   </section>
 
-  {#if status}
-    <section>
-      <h3>Storage</h3>
-      <div class="storage">
-        <div class="usebar">
-          <div
-            class="usefill"
-            style="width:{status.quota ? Math.min(100, (status.usage / status.quota) * 100) : 0}%"
-          ></div>
-        </div>
-        <div class="usetext">
-          {formatBytes(status.usage)} used{status.quota ? ` of ${formatBytes(status.quota)}` : ''}
-          {#if status.persisted}<span class="badge">Persistent</span>{/if}
-        </div>
-      </div>
-    </section>
-  {/if}
+  <section class="settings-section">
+    <h3 class="settings-h">Appearance</h3>
+    <Segmented label="Theme" value={settings.theme} options={themeOpts} onchange={(v) => updateSettings({ theme: v })} />
+  </section>
 
-  <section class="about">
-    <h3>About</h3>
-    <p>
-      <strong>Tsuzuri</strong> — a paginated reader for Japanese books. Rendering by
-      <a href="https://github.com/johnfactotum/foliate-js" target="_blank" rel="noreferrer">foliate-js</a>;
-      dictionary by the
-      <a href="https://github.com/birchill/10ten-ja-reader" target="_blank" rel="noreferrer">10ten</a>
-      project (JMdict / CC BY-SA).
-    </p>
-    <p class="version">Version <span>{__APP_VERSION__}</span></p>
+  <section class="settings-section">
+    <h3 class="settings-h">About</h3>
+    {#if status}
+      <p class="settings-hint storage">
+        Storage: {formatBytes(status.usage)} used{status.quota ? ` of ${formatBytes(status.quota)}` : ''}{status.persisted
+          ? ' · persistent'
+          : ''}
+      </p>
+    {/if}
+    <details class="about">
+      <summary class="settings-row">
+        <span>Tsuzuri <span class="version">{__APP_VERSION__}</span></span>
+        <span class="chev"><Icon name="chevron-down" size="sm" /></span>
+      </summary>
+      <p class="settings-hint">
+        A paginated reader for Japanese books. Rendering by
+        <a href="https://github.com/johnfactotum/foliate-js" target="_blank" rel="noreferrer">foliate-js</a>;
+        dictionary by the
+        <a href="https://github.com/birchill/10ten-ja-reader" target="_blank" rel="noreferrer">10ten</a>
+        project (JMdict / CC BY-SA); segmentation by kuromoji. Licensed GPL-3.0.
+      </p>
+    </details>
   </section>
 </div>
 
 <style>
-  .settings {
-    display: flex;
-    flex-direction: column;
-    gap: 26px;
-    padding-bottom: 16px;
+  .dict-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    color: var(--ink-soft);
   }
-  section {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  h3 {
-    margin: 0;
-    font-size: 13px;
+  .ok {
+    color: var(--accent);
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
   }
-  .hint {
-    margin: 0;
-    font-size: 12.5px;
-    color: var(--ink-faint);
+  .num {
+    font-variant-numeric: tabular-nums;
   }
   .err {
     color: var(--danger);
   }
-  .dict-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .dict-status {
-    font-size: 14px;
-    color: var(--ink-soft);
-  }
-  .dict-status .ok {
-    color: var(--accent);
-    font-weight: 600;
-  }
-  .dict-btn {
-    flex: none;
-    padding: 8px 16px;
-    border-radius: var(--r-md);
-    font-weight: 600;
-    color: #fff;
-    background: var(--accent);
-  }
-  .storage {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
   .usebar {
-    height: 8px;
-    border-radius: 4px;
+    height: 4px;
+    border-radius: var(--r-full);
     background: var(--line-strong);
     overflow: hidden;
   }
   .usefill {
     height: 100%;
     background: var(--accent);
+    transition: width var(--dur-base) var(--ease-out);
   }
-  .usetext {
-    font-size: 13px;
-    color: var(--ink-soft);
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .storage {
+    font-variant-numeric: tabular-nums;
   }
-  .badge {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--accent);
-    background: var(--accent-soft);
-    padding: 2px 7px;
-    border-radius: 100px;
+  .about summary {
+    list-style: none;
+    cursor: pointer;
   }
-  .about p {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.6;
-    color: var(--ink-soft);
+  .about summary::-webkit-details-marker {
+    display: none;
+  }
+  .version {
+    margin-inline-start: var(--sp-1);
+    font-family: var(--font-mono);
+    font-size: var(--fs-caption);
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .chev {
+    display: grid;
+    color: var(--ink-faint);
+    transition: transform var(--dur-base) var(--ease-out);
+  }
+  .about[open] .chev {
+    transform: rotate(180deg);
   }
   .about a {
     color: var(--accent);
-  }
-  .version {
-    margin: 2px 0 0;
-    font-size: 12px;
-    color: var(--ink-faint);
-  }
-  .version span {
-    font-variant-numeric: tabular-nums;
-    font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    letter-spacing: 0.02em;
   }
 </style>

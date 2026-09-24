@@ -43,10 +43,10 @@
   .placeholder {
     position: relative;
     overflow: hidden;
-    padding: 14px 14px 14px 20px;
+    padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--sp-2);
     background: linear-gradient(
       150deg,
       hsl(var(--h) 38% 92%),
@@ -67,7 +67,7 @@
   .ptitle {
     font-family: var(--font-serif);
     font-weight: 600;
-    font-size: 15px;
+    font-size: var(--fs-body);
     line-height: 1.35;
     display: -webkit-box;
     -webkit-line-clamp: 5;
@@ -77,7 +77,7 @@
   }
   .pauthor {
     margin-top: auto;
-    font-size: 11px;
-    opacity: 0.75;
+    font-size: var(--fs-caption);
+    opacity: 0.8;
   }
 </style>
