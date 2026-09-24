@@ -1,32 +1,15 @@
-// Stages kuromoji's IPADIC dictionary into public/ so Vite serves it (dev) / copies it
-// into dist/ (build). Run automatically via the `predev` / `prebuild` npm scripts;
-// public/kuromoji/ is gitignored, so the dict is regenerated from node_modules rather
-// than committed. The lookup worker fetches it from `${BASE_URL}kuromoji/dict/` at
-// runtime (src/services/jp/segment.ts), and it is pre-cached for offline use by
-// `cacheIpadic()` (src/services/jp/dictdb.ts).
+// Stages kuromoji's IPADIC dict into public/kuromoji/dict (gitignored; run by `predev` /
+// `prebuild`), trimmed losslessly so the worker holds ~30 MB instead of ~175 MB:
 //
-// The files are not copied verbatim — they are *trimmed*, which is lossless for how
-// kuromoji reads them and cuts the worker's resident memory from ~175 MB to ~30 MB:
+//   - `tid`, `unk`, `unk_pos`, `unk_map`, `unk_invoke` carry megabytes of zero padding from
+//     kuromoji's fixed-size builder buffers. They are cut to their structural length
+//     (asserted zero tail, costs spot-checked); kuromoji's ByteBuffer reads past-the-end
+//     as 0, so this is invisible. `unk_invoke` matters most: its reader loops to the end
+//     of the buffer, so the padding became ~150k bogus character classes.
+//   - `tid_pos` (feature strings, ≈40 MB inflated) is not staged; see kuromojiLoader.cjs.
+//   - The rest are copied byte-for-byte.
 //
-//   - kuromoji's dictionary builder wrote several files straight out of fixed-size
-//     `ByteBuffer`s (10 MB / 1 MB) without shrinking them, so they carry megabytes of
-//     trailing zero padding that every client inflated into memory. `tid`, `unk`,
-//     `unk_pos`, `unk_map` and `unk_invoke` are cut to the exact length of the data
-//     they actually hold (computed structurally, below, and verified). Kuromoji reads
-//     them through `ByteBuffer`, which returns 0 for any read past the end, so padding
-//     and absence are indistinguishable. `unk_invoke` matters beyond its size: its
-//     reader loops to the end of the buffer, so the 1 MB of padding became ~150k bogus
-//     `CharacterClass` objects.
-//   - `tid_pos.dat.gz` (40 MB inflated: the POS/reading feature strings) is not staged
-//     at all. Tsuzuri only needs token *boundaries*, which come from the lattice +
-//     Viterbi path (segment.ts), never from `getFeatures`; the loader
-//     (kuromojiLoader.cjs) hands kuromoji an empty buffer for it without a fetch.
-//   - `base`, `check`, `cc`, `unk_char`, `unk_compat` are fixed-size arrays indexed
-//     directly (and read as Int32/Int16/Uint32 views), so they are staged unchanged.
-//     `tid_map` is read by our flat loader using its header count, so its (tiny)
-//     padding is harmless and it is left alone too.
-//
-// Usage: node scripts/copy-kuromoji-dict.mjs [destDir]   (default public/kuromoji/dict)
+// Usage: node scripts/copy-kuromoji-dict.mjs [destDir]
 import { mkdirSync, readdirSync, existsSync, statSync, readFileSync, writeFileSync, rmSync, copyFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -50,12 +33,12 @@ const STAGED = [
   'unk_compat.dat.gz',
   'unk_invoke.dat.gz',
 ]
-/** Bump when the transformation changes, so a stale staged copy is regenerated. */
+/** Bump when the transformation changes, to regenerate stale staged copies. */
 const TRIM_VERSION = 1
 const STAMP = '.staged.json'
 
 if (!existsSync(src)) {
-  // Don't hard-fail: without the dict the reader falls back to greedy segmentation.
+  // Don't fail the build: without the dict lookups fall back to greedy segmentation.
   console.warn(`[kuromoji] dict not found at ${src} — run \`npm install\`. Skipping.`)
   process.exit(0)
 }
@@ -152,8 +135,7 @@ const current =
   STAGED.every((f) => existsSync(join(dest, f)))
 
 mkdirSync(dest, { recursive: true })
-// Drop anything no longer staged (notably a tid_pos.dat.gz from an older checkout), so
-// it can't be served or cached.
+// Drop anything no longer staged (e.g. tid_pos.dat.gz), so it can't be served or cached.
 for (const f of readdirSync(dest)) {
   if (f.endsWith('.dat.gz') && !STAGED.includes(f)) rmSync(join(dest, f))
 }
@@ -166,6 +148,7 @@ if (current) {
 const raw = {}
 for (const f of STAGED) raw[f] = gunzipSync(readFileSync(join(src, f)))
 const trims = computeTrims(raw)
+const entryIds = (f) => [...parseTargetMap(raw[f]).map.values()].flat()
 
 let inflatedBefore = 0
 let inflatedAfter = 0
@@ -176,12 +159,11 @@ for (const f of STAGED) {
     const len = Math.min(trims[f], full.length)
     assertZeroTail(f, full, len)
     out = full.subarray(0, len)
-    if (f === 'tid.dat.gz') verifyTokenInfo(f, full, out, [...parseTargetMap(raw['tid_map.dat.gz']).map.values()].flat())
-    if (f === 'unk.dat.gz') verifyTokenInfo(f, full, out, [...parseTargetMap(raw['unk_map.dat.gz']).map.values()].flat())
+    if (f === 'tid.dat.gz') verifyTokenInfo(f, full, out, entryIds('tid_map.dat.gz'))
+    if (f === 'unk.dat.gz') verifyTokenInfo(f, full, out, entryIds('unk_map.dat.gz'))
   }
   inflatedBefore += full.length
   inflatedAfter += out.length
-  // Untouched files are copied byte-for-byte (re-gzipping them gains nothing).
   if (out === full) copyFileSync(join(src, f), join(dest, f))
   else writeFileSync(join(dest, f), gzipSync(out, { level: constants.Z_BEST_COMPRESSION }))
 }

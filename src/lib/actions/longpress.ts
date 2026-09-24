@@ -1,12 +1,10 @@
-/**
- * Svelte action: invoke `onlongpress` after a press-and-hold that doesn't move.
- * Used for iOS-style context menus on the shelf. Cancels on movement or early
- * release so it never competes with taps or scrolling.
- */
-export function longpress(
-  node: HTMLElement,
-  opts: { onlongpress: () => void; duration?: number },
-) {
+interface LongpressOptions {
+  onlongpress: () => void
+  duration?: number
+}
+
+/** Svelte action: `onlongpress` after a stationary press-and-hold; movement or release cancels. */
+export function longpress(node: HTMLElement, opts: LongpressOptions) {
   let current = opts
   let timer: number | undefined
   let startX = 0
@@ -36,7 +34,7 @@ export function longpress(
   node.addEventListener('pointerleave', cancel)
 
   return {
-    update(next: { onlongpress: () => void; duration?: number }) {
+    update(next: LongpressOptions) {
       current = next
     },
     destroy() {

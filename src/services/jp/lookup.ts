@@ -4,33 +4,19 @@ import { deinflect, Reason, WordType, type CandidateWord } from './deinflect'
 import { ensureSegmenter, segmenterReady, tokenSpanAt } from './segment'
 import type { DictEntry, LookupResult, Sense } from './lookupTypes'
 
-export type { Sense, DictEntry, LookupResult } from './lookupTypes'
+/** Whether kuromoji is built (else lookups take the greedy fallback). */
+export { segmenterReady as isSegmenterReady } from './segment'
 
-/** Longest surface span (in characters) a single `matchAt` will probe.
- *
- *  Every extra length costs one deinflection pass **and** a `getWords` per candidate —
- *  and each `getWords` opens three IndexedDB transactions internally, so the tail of
- *  this range is the most expensive part of a tap and the least likely to pay off.
- *  Measured over the ~137k characters of プロローグ〜エピローグ in また、同じ夢を見ていた
- *  (124,298 tap positions): the sub-window from a kuromoji token start averages 8.8
- *  chars, the longest IPADIC lexicon entry occurring *anywhere* in the book is 8 chars,
- *  and of the 110,949 distinct 13–16-char spans a tap would otherwise probe, **zero**
- *  are a single known dictionary unit — they are all multi-clause fragments
- *  (のかもしれないと思いました). 12 keeps a comfortable margin over the 8-char observed
- *  maximum for JMdict compounds that IPADIC splits, while cutting the warm token path
- *  from ~21 to ~17 distinct queried terms and the greedy fallback from ~204 to ~100. */
+/** Longest surface span one `matchAt` probes. Each length costs a deinflection pass and
+ *  a `getWords` (3 IndexedDB transactions) per candidate; 12 comfortably exceeds the
+ *  longest dictionary unit found in real prose. */
 const MAX_WINDOW = 12
 /** `getWords` limit per queried term. */
 const MAX_RESULTS = 8
 /** Cap on entries in one result, after merging every candidate at the winning length. */
 const MAX_ENTRIES = 10
 
-/** How long a tap will wait for the kuromoji build before giving up and taking the
- *  greedy fallback. The morphological path is what makes a tap land on the *right*
- *  word, so a tap should prefer to wait for it — but never at the cost of an
- *  unresponsive popup. The trie build is well under a second from the Cache API, so
- *  1.2 s covers a rebuild (the worker is shed after 60 s in the background and on reader
- *  exit, then rebuilt on return) without ever stalling the UI for long. */
+/** How long a tap waits for an in-flight kuromoji build before answering greedily. */
 const SEGMENTER_WAIT_MS = 1200
 
 const REASON_LABELS: Partial<Record<Reason, string>> = {
@@ -138,10 +124,8 @@ const MISC_LABELS: Record<string, string> = {
 }
 
 /**
- * A deinflected candidate is only valid if the entry's part of speech is one of the word
- * types the deinflection can produce (10ten's `entryMatchesType`). Checking merely "is it
- * inflectable" let した deinflect to godan 知る (whose past is 知った) via the *ichidan*
- * rule し+た → しる, and 知る — being common — then led the card.
+ * A deinflected candidate is valid only if the entry's POS is a word type the rule can
+ * produce (10ten's `entryMatchesType`) — otherwise した → ichidan しる matches godan 知る.
  */
 function candidateMatches(word: any, cand: CandidateWord): boolean {
   if (!cand.reasonChains.length) return true // original surface form — always allowed
@@ -181,25 +165,17 @@ function toSense(s: any): Sense {
   return sense
 }
 
-/**
- * Raw `getWords` record → `DictEntry`, honouring jpdict-idb's match metadata so the
- * popup shows the form that was actually tapped:
- *
- * - `k[i].matchRange` / `r[i].matchRange` mark the spelling the search hit; `match`
- *   marks every kanji/kana form that goes with it (a kanji hit flags its readings, a kana
- *   hit flags the kanji it is a reading of), and `s[i].match` the senses that apply.
- * - A **kanji** hit shows that spelling with its first applicable reading.
- * - A **kana** hit shows the kana as the headword when the word is usually written in
- *   kana (most matched senses tagged `uk`, e.g. する) or has no kanji; otherwise the
- *   first kanji that reading belongs to (した → 下, not the entry's first spelling).
- * - Matched senses come first. Records without match metadata keep the old behaviour
- *   (first kanji, first reading, senses in order).
- */
 /** Any JMdict priority tag (news/ichi/spec/gai…) on a kanji or reading form. */
 function isCommon(w: any): boolean {
   return [...(w.k ?? []), ...(w.r ?? [])].some((f: any) => Array.isArray(f.p) && f.p.length > 0)
 }
 
+/**
+ * Raw `getWords` record → `DictEntry`, using jpdict-idb's `matchRange` (the form searched)
+ * and `match` (forms/senses that go with it) flags so the card shows the tapped form. A kana
+ * hit heads with the kana if the word has no kanji or is usually kana (≥ half the matched
+ * senses `uk`), else with the kanji it belongs to (した → 下).
+ */
 function toEntry(w: any, reasons: string[]): DictEntry {
   const ks: any[] = w.k ?? []
   const rs: any[] = w.r ?? []
@@ -218,7 +194,7 @@ function toEntry(w: any, reasons: string[]): DictEntry {
   else if (!ks.length || (rHit && usuallyKana)) headword = reading
   else headword = (ks.find((k) => k.match) ?? ks[0]).ent
 
-  // Stable partition: senses that apply to the matched form first.
+  // Stable partition: matched senses first.
   const senses = [...matchedSenses, ...ss.filter((s) => s.match === false)].map(toSense)
   const entry: DictEntry = {
     headword,
@@ -232,12 +208,8 @@ function toEntry(w: any, reasons: string[]): DictEntry {
   return entry
 }
 
-/** A memoised `getWords` so the many length/start probes for one tap share queries.
- *  Caches the *promise* (not the resolved array) so concurrent probes for the same
- *  term — fired in parallel by `matchAt` — collapse onto a single IndexedDB read.
- *  A rejected read (e.g. a transient IndexedDB hiccup on iOS) resolves to an empty
- *  array rather than a rejected promise, so one failed probe degrades to "no match
- *  for this candidate" instead of aborting the whole tap's lookup. */
+/** Per-tap memoised `getWords`. Caches the promise so parallel probes share one read; a
+ *  failed read resolves `[]` so it can't abort the whole tap. */
 function makeQueryCache(): (term: string) => Promise<any[]> {
   const cache = new Map<string, Promise<any[]>>()
   return (term: string): Promise<any[]> => {
@@ -251,30 +223,13 @@ function makeQueryCache(): (term: string) => Promise<any[]> {
 }
 
 /**
- * Longest dictionary match starting at the *beginning* of `window`, trying
- * deinflected forms (10ten-style). Returns null if nothing matches. `matchLength`
- * is the number of surface characters consumed.
+ * Longest dictionary match at the start of `window`, via normalize → deinflect → JMdict.
+ * All queries are fired up front (concurrent reads), then lengths are walked longest-first.
  *
- * All candidate queries (across every length and deinflection) are fired into the
- * shared cache up front so the IndexedDB reads run concurrently rather than as a
- * serial `await` chain; we then walk lengths longest-first and stop at the first length
- * with any match, reading each result from the now-resolved cache.
- *
- * **At the winning length every candidate contributes** — the surface form *and* each
- * deinflection — deduped by entry id, each entry carrying its own reasons. Taking only
- * the first candidate with a hit made kana verbs resolve to nouns: した is both the
- * surface of 下/舌 and the past of する, and the surface form is always candidate #0.
- *
- * Ordering among them: surface-form entries first, **unless** the matched span runs past
- * the end of the kuromoji token it starts in (`tokenLen`), in which case the deinflected
- * entries come first. That is exactly the kana-verb case — IPADIC splits 勉強した as
- * 勉強|し|た, so "した" crossing a boundary means the verb し + past た (→ する), while
- * 机の下 / 机のした keeps 下|した as one token and the noun stays first.
- *
- * `minLen` skips lengths the caller would throw away anyway. `lookupAt` only keeps a
- * match that *spans the tap*, so from a start `s` with the tap at `t` no length
- * `<= t - s` can ever be used; probing them is pure IndexedDB waste. It is a lossless
- * bound, not a heuristic — see `lookupAt`.
+ * At the winning length every candidate contributes (deduped by id): した is both the
+ * surface of 下 and the past of する. Surface entries lead unless the span overruns the
+ * kuromoji token it starts in (`tokenLen`) — 勉強した is 勉強|し|た, so する leads there,
+ * while 机のした keeps 下 first. `minLen` skips lengths that can't span the tap (lossless).
  */
 async function matchAt(
   window: string,
@@ -283,7 +238,7 @@ async function matchAt(
   tokenLen?: number,
 ): Promise<LookupResult | null> {
   const limit = Math.min(window.length, MAX_WINDOW)
-  if (minLen > limit) return null // no usable length at this start — don't query at all
+  if (minLen > limit) return null
   const perLen: { len: number; candidates: CandidateWord[] }[] = []
   for (let len = limit; len >= minLen; len--) {
     const sub = window.slice(0, len)
@@ -291,16 +246,12 @@ async function matchAt(
     if (!normalized) continue
     const candidates = deinflect(normalized)
     perLen.push({ len, candidates })
-    // Kick off (and cache) every candidate query without awaiting — they run in parallel.
     for (const cand of candidates) void queryWords(cand.word)
   }
 
-  // Set when the longest match looks like a spurious conjugation parse: the span is
-  // reachable only by deinflecting, hits nothing but uncommon words and overruns the
-  // kuromoji token — e.g. したよう (し|た|よう) read as the volitional of the obscure
-  // したる, which buried the past of する. The longest shorter length with a *common*
-  // word then wins; if there is none, this one stands. Long *surface* matches (idioms,
-  // compounds kuromoji splits) are never demoted.
+  // A likely spurious conjugation parse (deinflection-only, no common word, overruns the
+  // token — したよう as volitional of obscure したる) is held back: the longest shorter
+  // length with a common word wins, else it stands. Surface matches are never demoted.
   let fallback: LookupResult | null = null
   for (const { len, candidates } of perLen) {
     const surface: DictEntry[] = []
@@ -313,7 +264,7 @@ async function matchAt(
       for (const w of words) {
         if (!candidateMatches(w, cand)) continue
         if (typeof w.id === 'number') {
-          if (seen.has(w.id)) continue // first (i.e. least-inflected) candidate wins
+          if (seen.has(w.id)) continue // the least-inflected candidate wins
           seen.add(w.id)
         }
         const isCom = isCommon(w)
@@ -323,8 +274,7 @@ async function matchAt(
         else surface.push(entry)
       }
     }
-    // Deinflections come from several candidate words (した → する past, したる stem…);
-    // across candidates, common words lead. Within one query jpdict already ranks them.
+    // Across candidates (different base words) common words lead; jpdict ranks within one.
     deinflected.push(...rareDeinflected)
     if (!surface.length && !deinflected.length) continue
     const crossesToken = tokenLen !== undefined && len > tokenLen
@@ -335,7 +285,6 @@ async function matchAt(
       reasons: entries[0].reasons ?? [],
       entries,
     }
-    // A shorter length only wins if it has a *common* word; otherwise keep this one.
     if (fallback) {
       if (common) return result
       continue
@@ -349,17 +298,11 @@ async function matchAt(
   return fallback
 }
 
-/** Set once a kuromoji build has failed (typically: offline before the IPADIC dict was
- *  cached). Taps then stop *waiting* on the build — they'd burn `SEGMENTER_WAIT_MS`
- *  each on a fetch that cannot succeed — but still kick off a background retry, so the
- *  moment it does succeed subsequent taps take the morphological path again. */
+/** Set after a failed build (e.g. offline, IPADIC not cached): taps stop waiting on the
+ *  build but still retry it in the background. */
 let segmenterUnavailable = false
 
-/** Eagerly build the kuromoji tokenizer (e.g. when a book opens, or right after the
- *  dictionary download) so the first tap takes the fast morphological path rather than
- *  the greedy fallback. Also opens the worker's IndexedDB connection (a one-row
- *  `getWords`), in parallel, so the first tap doesn't pay that either. Resolves `true`
- *  once the tokenizer is built (dict fetched), or `false` if the build/fetch failed. */
+/** Build kuromoji and, in parallel, open this worker's IndexedDB connection; `true` once built. */
 export async function warmup(): Promise<boolean> {
   void getWords('の', { matchType: 'exact', limit: 1 }).catch(() => [])
   try {
@@ -371,21 +314,8 @@ export async function warmup(): Promise<boolean> {
   }
 }
 
-/** Whether kuromoji is built — i.e. whether a lookup right now resolves word boundaries
- *  morphologically or falls back to greedy leftmost-covering. */
-export function isSegmenterReady(): boolean {
-  return segmenterReady()
-}
-
-/**
- * Give the kuromoji build a bounded chance to finish before this tap decides which path
- * to take. Without this a tap fired while the tokenizer is still building silently falls
- * into the greedy fallback and returns a plausible-but-wrong span — and since the worker
- * is rebuilt after every long backgrounding and every reader re-open, that window recurs,
- * not just once per session. Accuracy is worth a bounded wait; a hang is not, so a build
- * slower than `SEGMENTER_WAIT_MS` (or one that has already failed) still degrades to
- * greedy.
- */
+/** Give an in-flight kuromoji build up to `SEGMENTER_WAIT_MS` before the tap picks a path:
+ *  the greedy fallback returns plausible-but-wrong spans, and the worker rebuilds often. */
 async function settleSegmenter(): Promise<void> {
   if (segmenterReady()) return
   if (segmenterUnavailable) {
@@ -397,8 +327,7 @@ async function settleSegmenter(): Promise<void> {
     )
     return
   }
-  // The build promise is folded to a non-rejecting one *before* the race, so a failure
-  // arriving after the timeout can't surface as an unhandled rejection.
+  // Folded to non-rejecting before the race, so a late failure isn't unhandled.
   const build = ensureSegmenter().then(
     () => {},
     () => {
@@ -421,44 +350,22 @@ async function settleSegmenter(): Promise<void> {
 /** A lookup result plus which path produced it. */
 export interface LookupReply {
   result: LookupResult | null
-  /** Whether kuromoji was ready **when the path was chosen** — i.e. whether `result` is
-   *  the authoritative morphological answer (cacheable across worker lifetimes) or a
-   *  provisional greedy one. Captured at decision time, not after the IndexedDB reads: a
-   *  build finishing *during* a greedy tap's queries must not promote that answer. */
+  /** Kuromoji was ready when the path was chosen (so `result` is cacheable). Captured
+   *  before the IndexedDB reads: a build finishing mid-lookup must not promote a greedy answer. */
   ready: boolean
 }
 
 /**
- * Returns the dictionary entry for the word that contains the character at
- * `tapOffset` in `text` — so tapping *any* character of a word resolves the whole
- * word, not just the run from the tapped character forward.
- *
- * Word boundaries come from **kuromoji** (MeCab-style IPADIC morphological analysis,
- * `segment.ts`): we take the token containing the tap and run `matchAt` from its
- * start (so deinflection + JMdict glosses still apply, and a JMdict compound longer
- * than the IPADIC token is still found). kuromoji loads lazily, and a tap gives that
- * build a bounded wait (`settleSegmenter`) rather than racing it, because answering from
- * the greedy fallback while the tokenizer is a few hundred ms from ready is how a tap
- * returns the *wrong* word. If the build is slower than that (or has failed) — or if
- * kuromoji split a word JMdict lemmatises differently — we fall back to **greedy
- * leftmost-covering**: take the leftmost start whose longest match spans the tap (the
- * leftmost, most complete word — tapping 決 or 心 in 決心 both resolve 決心).
- *
- * Both paths pass a `minLen` to `matchAt`: a match from start `s` is only usable if it
- * spans the tap, i.e. `matchLength > tapOffset - s`, so shorter lengths are never
- * queried and starts further left than `MAX_WINDOW` from the tap are skipped entirely
- * (they cannot reach it). This is exact — the leftmost covering match is unchanged — and
- * roughly halves the IndexedDB fan-out of a fallback tap.
- *
- * There is no result cache here: `lookupClient` keeps one on the main thread (which,
- * unlike anything in this worker, survives the worker being shed).
+ * The entry for the word containing `text[tapOffset]`. Matches from the start of the
+ * kuromoji token under the tap; if kuromoji isn't ready (after `settleSegmenter`) or its
+ * token matches nothing, falls back to greedy leftmost-covering: the leftmost start whose
+ * match spans the tap (決 or 心 in 決心 both → 決心). Not cached here — see lookupClient.
  */
 export async function resolveLookup(text: string, tapOffset: number): Promise<LookupReply> {
   if (tapOffset < 0 || tapOffset >= text.length) return { result: null, ready: segmenterReady() }
 
-  // Prefer the morphological path: wait (briefly) for the tokenizer before deciding.
   await settleSegmenter()
-  // Decide the path — and record it — synchronously, right here.
+  // Decide the path — and record it — synchronously.
   const ready = segmenterReady()
   const token = ready ? tokenSpanAt(text, tapOffset) : null
 
@@ -477,11 +384,8 @@ export async function resolveLookup(text: string, tapOffset: number): Promise<Lo
     }
   }
 
-  // Greedy fallback. Starts more than MAX_WINDOW - 1 chars left of the tap can't produce
-  // a span that reaches it, so the scan begins at the leftmost start that still can. All
-  // starts are probed concurrently (sharing the per-tap query cache, so overlapping
-  // candidates — and the token-path probes above — aren't re-queried), then read in
-  // left-to-right order so the leftmost covering match still wins.
+  // Greedy fallback: probe every start that can reach the tap concurrently, then take the
+  // leftmost hit.
   const starts: number[] = []
   for (let s = Math.max(0, tapOffset - MAX_WINDOW + 1); s <= tapOffset; s++) starts.push(s)
   const probes = starts.map((s) =>

@@ -1,7 +1,6 @@
 <script lang="ts" module>
   import { SvelteSet } from 'svelte/reactivity'
-  // Books removed but still inside their Undo window. Module-level so the pending state
-  // survives the Shelf unmounting (opening a book) — the deferred delete still commits.
+  // Books in their Undo window; module-level so it survives the Shelf unmounting.
   const removing = new SvelteSet<string>()
 </script>
 
@@ -20,9 +19,7 @@
   let menuFor = $state<BookMeta | null>(null)
   let settingsOpen = $state(false)
 
-  // Lazy-load the settings sheet: it pulls in the dictionary download code
-  // (jpdict-idb), which the shelf never needs at startup. Fetch it the first time the
-  // user opens Settings so jpdict-idb stays out of the cold-start chunk.
+  // Lazy: ShelfSettings pulls in jpdict-idb, which stays out of the cold-start chunk.
   let SettingsComp = $state<typeof import('./ShelfSettings.svelte').default | null>(null)
   $effect(() => {
     if (settingsOpen && !SettingsComp) {
@@ -43,14 +40,12 @@
   }
 
   function open(b: BookMeta) {
-    // Navigate first; the "last opened" stamp (shelf order) is written in the background.
     menuFor = null
     openReader(b.id)
     void markOpened(b.id).catch(() => {})
   }
 
-  /** Remove with Undo: the book leaves the shelf at once, and the real delete (bytes +
-   *  progress + annotations) only runs once the Undo window closes. */
+  /** Hidden at once; the real delete runs when the Undo toast expires. */
   function remove(b: BookMeta) {
     menuFor = null
     removing.add(b.id)
@@ -160,7 +155,6 @@
   onchange={pick}
 />
 
-<!-- Per-book action sheet (long-press) -->
 <Sheet open={menuFor !== null} title={menuFor?.title} onclose={() => (menuFor = null)}>
   {#if menuFor}
     {@const b = menuFor}
@@ -175,7 +169,6 @@
   {/if}
 </Sheet>
 
-<!-- App settings -->
 <Sheet bind:open={settingsOpen} title="Settings">
   {#if SettingsComp}
     <SettingsComp />
@@ -253,7 +246,6 @@
       padding-left: calc(var(--safe-left) + var(--sp-10));
       padding-right: calc(var(--safe-right) + var(--sp-10));
     }
-    /* Centre the shelf content on wide (iPad) screens with larger covers. */
     .bar,
     .grid,
     .import-error,
@@ -275,10 +267,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-2);
-    /* Skip layout/paint for off-screen covers on a long shelf; `auto` remembers each
-       card's last rendered height once it has been on screen. That implies paint
-       containment, so pad the box (and cancel it with a negative margin) to keep
-       the cover's shadow from being clipped. */
+    /* Skip off-screen cards; the padding/negative margin keeps the paint-contained shadow. */
     content-visibility: auto;
     contain-intrinsic-size: auto 150px auto 280px;
     padding: var(--sp-3);
@@ -291,8 +280,6 @@
     transform: scale(var(--press-scale));
     transition-duration: var(--dur-instant);
   }
-  /* Thin reading-progress rule under the cover (empty track for unread books keeps
-     every card the same height). */
   .progress {
     height: 3px;
     border-radius: var(--r-full);
@@ -410,7 +397,7 @@
     font-weight: 600;
     text-decoration: underline;
     text-underline-offset: 2px;
-    /* A 44pt target around inline link text. */
+    /* 44pt target */
     position: relative;
   }
   .link::after {

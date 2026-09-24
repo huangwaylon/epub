@@ -16,8 +16,7 @@
   } = $props()
 
   let bar = $state<HTMLDivElement>()
-  // Measured and placed synchronously in the flush that mounts it (before paint), so the
-  // toolbar never shows a first frame at 0,0 (mirrors DictionaryPopup).
+  // Placed in the mounting flush (before paint), so it never shows a frame at 0,0.
   let pos = $state<{ left: number; top: number } | null>(null)
   $effect(() => {
     if (!open) {
@@ -51,13 +50,7 @@
     padding: 2px;
     border-radius: var(--r-full);
     background: var(--glass-bg-strong);
-    animation: pop var(--dur-fast) var(--ease-out);
-  }
-  @keyframes pop {
-    from {
-      opacity: 0;
-      transform: translateY(4px) scale(0.96);
-    }
+    animation: t-pop var(--dur-fast) var(--ease-out);
   }
   .act {
     display: flex;

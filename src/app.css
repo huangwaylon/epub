@@ -1,30 +1,22 @@
-/* ───────────────────────────────────────────────────────────────────────────
-   Tsuzuri — design tokens, shared primitives & base styles
-   A calm, paper-like reading environment. Three palettes (light / sepia / dark)
-   are selected by [data-theme] on <html> ('auto' resolves to light/dark in JS).
-   Chrome uses the system UI font; long-form reading uses a serif stack with
-   Japanese fallbacks. Every component styles itself from these tokens — no
-   ad-hoc sizes, radii, durations or glass recipes. See docs/ui-and-design.md.
-   ─────────────────────────────────────────────────────────────────────────── */
+/* Tsuzuri design tokens, palettes, base styles and shared primitives. See docs/ui-and-design.md. */
 
 :root {
-  /* ── Type ─────────────────────────────────────────────────────────────── */
+  /* Type */
   --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-serif: 'Hiragino Mincho ProN', 'Noto Serif JP', 'Yu Mincho', 'YuMincho',
     Georgia, 'Times New Roman', serif;
   --font-jp-sans: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* Type scale (px — never below 12). */
-  --fs-caption: 12px; /* chips, POS tags, meta, hints */
-  --fs-footnote: 13px; /* section headers, secondary rows */
-  --fs-body: 15px; /* rows, glosses, controls */
-  --fs-callout: 17px; /* sheet titles, emphasised rows */
-  --fs-title: 20px; /* empty-state titles, word highlights */
-  --fs-headword: 24px; /* dictionary headword */
-  --fs-display: clamp(30px, 2.4vw + 18px, 36px); /* shelf heading */
+  --fs-caption: 12px;
+  --fs-footnote: 13px;
+  --fs-body: 15px;
+  --fs-callout: 17px;
+  --fs-title: 20px;
+  --fs-headword: 24px;
+  --fs-display: clamp(30px, 2.4vw + 18px, 36px);
 
-  /* ── Spacing: 4pt scale ───────────────────────────────────────────────── */
+  /* Spacing (4pt) */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
@@ -33,10 +25,9 @@
   --sp-6: 24px;
   --sp-7: 28px;
   --sp-8: 32px;
-  --sp-9: 36px;
   --sp-10: 40px;
 
-  /* ── Radii ────────────────────────────────────────────────────────────── */
+  /* Radii */
   --r-xs: 6px;
   --r-sm: 10px;
   --r-md: 14px;
@@ -44,48 +35,44 @@
   --r-xl: 28px;
   --r-full: 999px;
 
-  /* ── Touch & icons ────────────────────────────────────────────────────── */
-  --tap: 44px; /* minimum touch target (HIG 44pt) */
+  /* Touch & icons */
+  --tap: 44px;
   --control-h: 44px;
   --icon-sm: 18px;
-  --icon-md: 22px;
-  --icon-lg: 48px;
 
-  /* ── Elevation ────────────────────────────────────────────────────────── */
+  /* Elevation */
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.1), 0 12px 40px rgba(0, 0, 0, 0.14);
   --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.14), 0 24px 64px rgba(0, 0, 0, 0.18);
 
-  /* ── Liquid-Glass material (one recipe) ───────────────────────────────── */
+  /* Glass (--glass-bg-strong: denser, for glass that carries text) */
   --glass-mix: 72%;
   --glass-bg: color-mix(in srgb, var(--paper-raised) var(--glass-mix), transparent);
-  /* Same material, denser — for glass that carries reading content (popovers, toasts). */
   --glass-bg-strong: color-mix(in srgb, var(--paper-raised) 88%, transparent);
   --glass-filter: blur(24px) saturate(1.6);
   --glass-shadow: var(--glass-edge), var(--shadow-2);
 
-  /* ── z-index scale ────────────────────────────────────────────────────── */
+  /* z-index */
   --z-ribbon: 12;
   --z-readout: 15;
   --z-bars: 20;
-  --z-overlay: 30; /* reader loading / error */
+  --z-overlay: 30;
   --z-scrim: 40;
   --z-sheet: 41;
-  --z-popup: 50; /* dictionary card */
-  --z-toolbar: 52; /* selection toolbar */
+  --z-popup: 50;
+  --z-toolbar: 52;
   --z-toast: 60;
 
-  /* ── Motion ───────────────────────────────────────────────────────────── */
+  /* Motion (mirrored by DUR in lib/util/motion.svelte.ts) */
   --dur-instant: 90ms;
   --dur-fast: 140ms;
   --dur-base: 220ms;
   --dur-slow: 320ms;
   --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
   --press-scale: 0.97;
 
-  /* Safe-area insets, surfaced as variables for layout math */
+  /* Safe area */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
@@ -102,7 +89,7 @@
   }
 }
 
-/* Light (default) — warm paper */
+/* Palettes */
 :root,
 :root[data-theme='light'] {
   color-scheme: light;
@@ -113,13 +100,12 @@
   --ink-faint: #746c5e; /* 4.7:1 on paper */
   --line: rgba(33, 29, 23, 0.1);
   --line-strong: rgba(33, 29, 23, 0.16);
-  --accent: #ad4f29; /* vermilion, like a hanko seal — 4.8:1 on paper */
+  --accent: #ad4f29; /* 4.8:1 on paper */
   --accent-soft: rgba(173, 79, 41, 0.12);
   --on-accent: #ffffff;
   --control-track: rgba(33, 29, 23, 0.06);
   --control-active: #ffffff;
   --danger: #c0392b;
-  --hl-yellow: #ffe79a;
   --scrim: rgba(33, 29, 23, 0.32);
   --glass-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.7), 0 0 0 0.5px rgba(33, 29, 23, 0.1);
 }
@@ -139,7 +125,6 @@
   --control-track: rgba(74, 58, 41, 0.08);
   --control-active: #fffaf0;
   --danger: #b23a26;
-  --hl-yellow: #f2d98a;
   --scrim: rgba(57, 43, 28, 0.34);
   --glass-edge: inset 0 0 0 0.5px rgba(255, 250, 236, 0.7), 0 0 0 0.5px rgba(74, 58, 41, 0.12);
 }
@@ -159,15 +144,13 @@
   --control-track: rgba(231, 225, 211, 0.08);
   --control-active: rgba(231, 225, 211, 0.18);
   --danger: #f0897a;
-  --hl-yellow: #6b5a1f;
   --scrim: rgba(0, 0, 0, 0.5);
   --glass-mix: 68%;
   --glass-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.3), 0 12px 40px rgba(0, 0, 0, 0.35);
 }
 
-/* ── Base / reset ─────────────────────────────────────────────────────── */
-
+/* Base */
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
@@ -178,9 +161,7 @@ body {
   margin: 0;
   height: 100%;
   height: 100dvh;
-  /* Screen height in a full-screen standalone app (viewport.ts): a cold iOS launch
-     under-reports 100dvh by the status-bar inset, and WebKit paints nothing below the
-     document's box — so without this the reader's bottom bar was cut off. */
+  /* A cold iOS standalone launch under-reports 100dvh; viewport.ts publishes --doc-height. */
   height: var(--doc-height, 100dvh);
   overflow: hidden;
   overscroll-behavior: none;
@@ -198,10 +179,8 @@ body {
   height: var(--doc-height, 100dvh);
 }
 
-/* Chrome (everything outside the book text) should not be selectable or show the
-   iOS long-press callout — it interferes with tap-to-define and page turns. */
-button,
-.no-select {
+/* No selection / iOS long-press callout on chrome: it competes with taps and swipes. */
+button {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
@@ -227,10 +206,7 @@ textarea {
   outline-offset: 2px;
 }
 
-/* ── Shared primitives ────────────────────────────────────────────────── */
-
-/* Capsule text button. Variants: .btn-primary (filled accent), .btn-tinted
-   (accent-soft fill), bare .btn = plain accent text. */
+/* Primitives */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -267,7 +243,6 @@ textarea {
   background: var(--accent-soft);
 }
 
-/* 44pt circular icon button. `.glass` / `.btn-primary` compose onto it. */
 .icon-btn {
   flex: none;
   width: var(--tap);
@@ -291,8 +266,7 @@ textarea {
   background: var(--accent);
 }
 
-/* The one Liquid-Glass material. Only for chrome that is *not* on screen during a
-   page slide (backdrop-filter re-samples every frame the content beneath moves). */
+/* Not for anything on screen during a page slide: backdrop-filter re-samples every frame. */
 .glass {
   background: var(--glass-bg);
   -webkit-backdrop-filter: var(--glass-filter);
@@ -300,8 +274,7 @@ textarea {
   box-shadow: var(--glass-shadow);
 }
 
-/* The one spinner. Size with --spinner-size; `.delayed` fades in only if the wait is
-   genuinely slow, so fast loads never flash it. */
+/* .delayed fades in only if the wait is slow, so fast loads never flash it. */
 .spinner {
   --spinner-size: 24px;
   width: var(--spinner-size);
@@ -318,7 +291,6 @@ textarea {
     t-spin 0.8s linear infinite;
 }
 
-/* Thin indeterminate progress bar (loading screens). */
 .progress-indeterminate {
   position: relative;
   width: 160px;
@@ -337,14 +309,13 @@ textarea {
   animation: t-indeterminate 1.3s var(--ease-out) infinite;
 }
 
-/* Skeleton shimmer blocks. */
 .skeleton {
   border-radius: var(--r-xs);
   background: var(--control-track);
   animation: t-pulse 1.4s ease-in-out infinite;
 }
 
-/* Settings sheets (Shelf + Reader) share one section style. */
+/* Settings sheets */
 .settings-stack {
   display: flex;
   flex-direction: column;
@@ -405,13 +376,19 @@ textarea {
     opacity: 0.45;
   }
 }
+@keyframes t-pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
   }
-  /* Keep loaders legible as static states rather than frozen mid-spin. */
+  /* Loaders become static states, not frozen mid-spin. */
   .spinner,
   .progress-indeterminate::after,
   .skeleton {

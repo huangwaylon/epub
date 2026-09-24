@@ -4,10 +4,9 @@ export const dict = $state<{
   updating: boolean
   /** 0..1 download progress while updating. */
   progress: number
-  /** True while the ~11 MB kuromoji IPADIC dict is being fetched + SW-cached for
-   *  offline use, right after the JMdict download. Until this clears, segmentation
-   *  isn't guaranteed to work offline yet. */
+  /** IPADIC being cached (and, from the reader, kuromoji built) after the JMdict download. */
   warming: boolean
+  /** A permanent failure, or — while `updating` — the transient retry message. */
   error?: string
 }>({
   state: 'init',

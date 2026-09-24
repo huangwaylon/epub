@@ -1,8 +1,4 @@
-/** Trailing-edge debounce. The returned function carries a `.cancel()` that drops any
- *  pending trailing call, and a `.flush()` that runs it *now* (no-op if nothing is
- *  pending) — use `flush()` where losing the last call would lose data (e.g. the reading
- *  position when the app is backgrounded or the reader closes), `cancel()` where a late
- *  call would be wrong. */
+/** Trailing-edge debounce; `cancel()` drops a pending call, `flush()` runs it now. */
 export interface Debounced<A extends any[]> {
   (...args: A): void
   cancel(): void

@@ -1,7 +1,6 @@
 /**
- * App-wide transient message ("Copied", "Book removed · Undo"). One toast at a time —
- * a new one replaces the current (its `onexpire` still runs, so a deferred delete behind
- * a replaced "Undo" toast is committed, never lost). Rendered by `ToastHost`.
+ * One app-wide toast at a time. A new toast replaces the current one, whose `onexpire`
+ * still runs (so a deferred delete behind a replaced "Undo" is committed, never lost).
  */
 export interface ToastSpec {
   message: string

@@ -55,8 +55,7 @@
   let controller: ReaderController | null = null
   let bookFile: File | null = null
   let meta = $state<BookMeta | null>(null)
-  /** Set on unmount. onMount's async body re-checks it after every await, so leaving the
-   *  reader mid-open can't go on to register listeners, warm the worker, or set state. */
+  /** Set on unmount; onMount's async body re-checks it after every await. */
   let destroyed = false
 
   let status = $state<'loading' | 'ready' | 'error'>('loading')
@@ -74,13 +73,12 @@
   /** The Aa button — the Display popover hangs from it on iPad. */
   let displayBtn = $state<HTMLButtonElement>()
 
-  /** Title for the opening screen: the shelf already knows it before the meta read lands. */
+  /** The shelf knows the title before the meta read lands. */
   const loadingTitle = $derived(meta?.title ?? library.books.find((b) => b.id === bookId)?.title)
-  /** Page-progression side: the bookmark ribbon sits on the page's outer (fore-edge) corner. */
+  /** The bookmark ribbon sits on the fore-edge corner. */
   let rtlBook = $state(false)
 
-  // Active text selection → highlight/copy toolbar. `doc`/`range` are live DOM refs,
-  // released (clearSel) as soon as the toolbar is done with them.
+  // Selection toolbar state; `doc`/`range` are live DOM refs, released by clearSel.
   let sel = $state<{ open: boolean; rect: SelectionInfo['rect']; text: string; doc: Document | null; range: Range | null }>(
     { open: false, rect: { left: 0, top: 0, width: 0, height: 0 }, text: '', doc: null, range: null },
   )
@@ -92,54 +90,43 @@
   }
 
   let currentCFI = $state('')
-  // "This page is bookmarked" = a bookmark lies within the visible page's range — not an
-  // exact CFI match, which broke as soon as a reflow (font size, rotation) moved the page
-  // boundaries off the CFI the bookmark was saved at.
+  // Within the page's range, not an exact CFI match, so it survives a reflow.
   const isBookmarked = $derived(
     !!currentCFI && annotations.items.some((a) => a.kind === 'bookmark' && cfiWithinPage(a.cfi, currentCFI)),
   )
 
-  // Dictionary popup state. Tapping a word looks it up *and* highlights it yellow
-  // (a vocab record); the popup's footer toggles that highlight off/on.
   let dictState = $state<{
     open: boolean
-    /** What the card is placed against: the tapped glyph, then the matched word (top-window coords). */
+    /** The tapped glyph, then the matched word (top-window coords). */
     anchor: AnchorRect | null
-    /** Vertical (縦書き) text: the card goes beside the column, not above it. */
     vertical: boolean
     loading: boolean
     needsDownload: boolean
     result: LookupResult | null
-    /** Pending query text (kept so a post-download retry can re-run the same lookup). */
+    /** Kept so a post-download retry can re-run the lookup. */
     text: string
     tapOffset: number
-    /** Stable per-lookup key; guards against a stale lookup landing in a newer popup. */
+    /** Per-lookup key; a stale lookup never lands in a newer card. */
     lastKey: string
-    /** CFI of this word's highlight (set once highlighted), '' if not yet highlighted. */
+    /** The word's CFI once resolved, else ''. */
     cfi: string
-    /** Whether this word is currently highlighted (drives the footer toggle). */
     highlighted: boolean
-    /** The matched surface word, for re-saving when the highlight is toggled back on. */
+    /** The matched surface word (for re-adding the highlight). */
     word: string
   }>({
     open: false, anchor: null, vertical: false, loading: false, needsDownload: false, result: null,
     text: '', tapOffset: 0, lastKey: '', cfi: '', highlighted: false, word: '',
   })
 
-  // DOM context for the in-flight define, used to build the word's range after the
-  // (async) lookup resolves. Plain refs, not $state — they hold live DOM nodes.
+  // Live DOM for the in-flight define (plain refs, not $state).
   let defineDoc: Document | null = null
   let definePositions: CharPosition[] = []
 
-  // Only persist reading progress once the user has actually moved (a turn, swipe,
-  // or TOC/annotation jump). This keeps the noisy relocations emitted while the
-  // first layout settles — which can report a bogus fraction — from being saved and
-  // restored on the next open.
+  // Persist progress only after the user moved: startup relocations can report a bogus
+  // fraction, and `relocate` carries no reason to tell them apart.
   let userInteracted = false
 
-  // Flushed (not cancelled) when the reader closes or the app is backgrounded: the last
-  // turn before either is exactly the position the reader expects to come back to, and
-  // iOS may kill a backgrounded PWA before a 600ms timer ever fires.
+  // Flushed on close/background: iOS may kill a hidden PWA before the timer fires.
   const saveProgress = debounce((d: RelocateDetail) => {
     void putProgress({
       bookId,
@@ -155,38 +142,27 @@
     currentCFI = d.cfi
     currentTocId = d.tocItem?.id
     if (d.tocItem?.label) sectionLabel = d.tocItem.label
-    // Only persist once the reader has actually moved. The foliate-view `relocate`
-    // event does not carry a `reason`, so we mark intent from the gesture/navigation
-    // side (onTurn, navigate, navAnnotation) rather than sniffing the relocation.
     if (userInteracted) saveProgress(d)
   }
 
-  // A user page-turn (swipe). The new page invalidates any popup/toolbar anchored to
-  // the previous page, hides the chrome if it was up (so a swipe clears the bars the
-  // same way a reading-area tap does), and means the current position is worth saving.
   function onTurn() {
     userInteracted = true
     chromeVisible = false
     closeOverlays()
   }
 
-  /** Close every transient overlay (dict popup, selection toolbar). The single close
-   *  path — the popup's X and Escape come through here too. */
+  /** The single close path for the card and the selection toolbar. Also releases the
+   *  define DOM refs so a navigated-away section can be collected. */
   function closeOverlays() {
     dictState.open = false
     dictState.anchor = null
     clearSel()
-    // Release the content Document + Text-node refs held for auto-highlighting the last
-    // tapped word. They're consumed synchronously inside runLookup/highlightMatch, so once
-    // the popup is closed they're dead — clearing them lets a detached (navigated-away)
-    // section's DOM be collected instead of being pinned until the next tap.
     defineDoc = null
     definePositions = []
   }
 
   // ── Highlights: the one create/remove pair ────────────────────────────────
-  /** Highlight `cfi` yellow and record it (deduped on CFI). Paints first — the overlay is
-   *  what the reader is waiting to see — and persists in the background. */
+  /** Paint `cfi` and record it (deduped on CFI); the record persists in the background. */
   function addHighlight(cfi: string, text: string) {
     if (!controller) return
     if (!isHighlighted(cfi)) void controller.addHighlight(cfi).catch(() => {})
@@ -198,10 +174,9 @@
     void controller?.removeHighlight(cfi).catch(() => {})
   }
 
-  /** Delete from the Notes panel. A highlight must be unpainted too — but only once no
-   *  other record still highlights the same CFI. Undo restores the very same record. */
+  /** Panel delete: unpaint once no other record shares the CFI. Undo restores the record. */
   function onRemoveAnnotation(a: Annotation) {
-    const done = removeAnnotation(a.id) // updates the in-memory list synchronously
+    const done = removeAnnotation(a.id) // in-memory list updates synchronously
     if (a.kind === 'highlight' && !isHighlighted(a.cfi)) {
       void controller?.removeHighlight(a.cfi).catch(() => {})
       if (dictState.cfi === a.cfi) dictState.highlighted = false
@@ -224,10 +199,6 @@
   function onSelection(info: SelectionInfo) {
     sel = { open: true, rect: info.rect, text: info.text, doc: info.doc, range: info.range }
   }
-  function onSelectionCleared() {
-    clearSel()
-  }
-
   function createHighlight() {
     if (!controller || !sel.doc || !sel.range) return
     const cfi = controller.cfiForSelection(sel.doc, sel.range)
@@ -260,12 +231,9 @@
 
   // ── Tapping an existing highlight → reopen its definition (with a remove option) ──
   function onShowAnnotation(value: string, range: Range) {
-    // This `click` rides the same gesture as our tap. If that tap already defined a word,
-    // the tap's lookup owns the card's *content* — but the card must still own *this*
-    // highlight, so its "Remove highlight" removes what the user tapped. Otherwise a tap
-    // inside a longer highlight (a drag-selected phrase, or a vocab span from an older
-    // segmentation) would add a nested word highlight that Remove clears while the outer
-    // yellow stays. Guarded by the tap's key, so it can never land on a newer card.
+    // This click rides the same gesture as our tap. If the tap defined a word, keep its
+    // lookup but adopt this highlight, so Remove clears what was tapped (e.g. an enclosing
+    // phrase highlight) rather than a nested word.
     if (Date.now() - tapDismissedAt < 500) return
     if (Date.now() - tapDefinedAt < 500) {
       if (dictState.open && dictState.lastKey === tapDefinedKey && !dictState.cfi) {
@@ -275,8 +243,7 @@
       }
       return
     }
-    // Prefer the word we stored when the highlight was made: a range that spans ruby
-    // stringifies with the furigana spliced in (決けっ心), which looks up as nothing.
+    // Prefer the stored word: a range over ruby stringifies with furigana (決けっ心).
     const word = highlightAt(value)?.text || range.toString()
     const doc = range.startContainer.ownerDocument
     let anchor: AnchorRect | null = null
@@ -289,7 +256,7 @@
     openDefine({ text: word, tapOffset: 0, anchor: anchor ?? { left: 0, top: 0, right: 0, bottom: 0 }, existingCfi: value, word })
   }
 
-  /** Toggle the looked-up word's highlight from the popup footer. Keeps the card open. */
+  /** Popup footer toggle; keeps the card open. */
   function toggleWordHighlight() {
     if (!controller || !dictState.cfi) return
     if (dictState.highlighted) removeHighlight(dictState.cfi)
@@ -319,19 +286,11 @@
     }).catch(warn)
   }
 
-  /** Jump somewhere that isn't a page turn (TOC, a note). A corrupt/stale target (e.g. a
-   *  section that no longer resolves) must not throw or reject unhandled out of a tap. */
+  /** A non-turn jump (TOC, a note). */
   function jumpTo(target: string) {
     userInteracted = true
     closeOverlays()
-    try {
-      const r = controller?.goTo(target) as unknown
-      if (r && typeof (r as Promise<unknown>).catch === 'function') {
-        ;(r as Promise<unknown>).catch((err) => console.warn('Could not navigate', err))
-      }
-    } catch (err) {
-      console.warn('Could not navigate', err)
-    }
+    controller?.goTo(target).catch((err) => console.warn('Could not navigate', err))
   }
 
   function navAnnotation(cfi: string) {
@@ -344,65 +303,41 @@
     jumpTo(href)
   }
 
-  // A tap and foliate's highlight hit-test (a real `click`) fire on the same gesture, so
-  // both can want to open the card for the tapped word. Rather than delay every tap
-  // waiting to see which wins (that cost 60ms on the hot path and made taps droppable),
-  // we let the tap run immediately and have the later `show-annotation` stand down if the
-  // tap already opened the same word — the two paths agree on the outcome anyway, since a
-  // looked-up word is highlighted.
+  // Our tap and foliate's highlight `click` (show-annotation) share a gesture. The tap runs
+  // immediately — never delay it — and the click stands down behind these stamps.
   let tapDefinedAt = 0
   let tapDefinedKey = ''
-  /** When a tap last dismissed the card — its highlight `click` must not reopen it. */
   let tapDismissedAt = 0
 
-  /**
-   * Tap routing. With the definition card open, a tap anywhere only dismisses it. With it
-   * closed, a tap on a Japanese glyph defines it — winning over the nav-bar band, since the
-   * band overlaps the first and last characters of every line, which would otherwise be
-   * un-lookupable. Blank paper, the margins and the edge band drive the chrome.
-   */
+  /** Tap routing: open card → dismiss; glyph → define (even in the edge band, which
+   *  overlaps each column's end glyphs); blank edge band → toggle chrome; else hide it. */
   function onTap(info: TapInfo) {
-    // 1. Any tap while the definition card is open → just dismiss it — even on another
-    //    word. Re-targeting on a text tap made "tap away to close" impossible: it defined
-    //    (and highlighted) whatever text the tap happened to land on. The same-gesture
-    //    highlight `click` is told to stand down too (`tapDismissedAt`).
     if (dictState.open) {
       tapDismissedAt = Date.now()
       closeOverlays()
       return
     }
-    // 2. On a word → look it up, even inside the top/bottom band, where live text overlaps
-    //    the band.
-    if (info.doc && tryDefine(info)) {
+    if (tryDefine(info)) {
       tapDefinedAt = Date.now()
       tapDefinedKey = dictState.lastKey
-      chromeVisible = false // don't leave the bars covering the card
+      chromeVisible = false
       return
     }
-    // 3. Blank tap in the top or bottom edge band (over the nav bars) → toggle the chrome.
-    //    This is the only way a tap *shows* the bars, so reading taps don't flash them.
     if (inChromeToggleBand(info.py, viewportSize().h)) {
       chromeVisible = !chromeVisible
       return
     }
-    // 4. Otherwise a blank tap dismisses the chrome if it's up, so the bars are easy to
-    //    clear without reaching for them.
     if (chromeVisible) chromeVisible = false
   }
 
-  /**
-   * Keyboard (a hardware keyboard on iPad, or desktop): ←/→ turn toward that side (the
-   * controller's goLeft/goRight already honour an rtl book), Space / Shift-Space go
-   * forward / back in reading order, Escape closes the card, else the chrome. Wired on the
-   * window *and* forwarded from each content document (iframe keys never bubble out).
-   */
+  /** ←/→ turn that way, Space/Shift-Space go forward/back in reading order, Escape closes
+   *  the card, else the chrome. Also receives keys forwarded from content documents. */
   function onKey(e: KeyboardEvent) {
     if (status !== 'ready' || !controller || e.defaultPrevented) return
     if (e.metaKey || e.ctrlKey || e.altKey) return
     // A modal sheet owns the keyboard (and handles its own Escape).
-    if (tocOpen || settingsOpen || annotationsOpen) return
+    if (tocOpen || settingsOpen || annotationsOpen) return // the sheet owns the keyboard
     const t = e.target as Element | null
-    // Leave keys to focused controls: fields, and the scrubber slider (arrows seek).
     if (t?.closest?.('input, textarea, select, [contenteditable], [role="slider"]')) return
     switch (e.key) {
       case 'ArrowLeft':
@@ -431,19 +366,13 @@
     }
   }
 
-  /**
-   * Tapping a nav bar's own empty area hides the chrome. When the chrome is visible
-   * the bars cover the top/bottom toggle bands, so this is how a top/bottom tap hides
-   * them again (taps on the bars never reach the reader's gesture detector behind
-   * them). Guarded so it doesn't fire when an actual control was tapped.
-   */
+  /** The visible bars cover the edge bands, so a tap on a bar's empty area hides them. */
   function dismissChromeFromBar(e: MouseEvent) {
     if ((e.target as HTMLElement).closest('button')) return
     chromeVisible = false
   }
 
-  /** The tapped character's box, in top-window coords — the card's first anchor (the
-   *  matched word replaces it once the lookup resolves). Falls back to the tap point. */
+  /** The tapped character's box (top-window), else the tap point. */
   function glyphAnchor(doc: Document, positions: CharPosition[], i: number, px: number, py: number): AnchorRect {
     const c = positions[i]
     if (c) {
@@ -460,7 +389,7 @@
     return { left: px, top: py, right: px, bottom: py }
   }
 
-  /** Returns true if the tap landed on Japanese text and a lookup was started. */
+  /** Whether the tap hit Japanese text (and a lookup started). */
   function tryDefine(info: TapInfo): boolean {
     if (!info.doc) return false
     const ex = extractTextAt(info.doc, info.ix, info.iy)
@@ -476,13 +405,9 @@
   }
 
   /**
-   * Open the dictionary popup for a word. For a fresh tap (`doc` + `positions`)
-   * the matched word is auto-highlighted once the lookup resolves; for a tap on an
-   * existing highlight (`existingCfi`) the popup just reopens with a remove option.
-   *
-   * Re-targeting an open card keeps the previous result on screen (dimmed by the popup
-   * while `loading`) instead of blanking it to a spinner, so word-to-word reading doesn't
-   * flash; the popup shows a spinner only if the lookup is still running after ~150ms.
+   * Open the card for a word. A fresh tap (`doc` + `positions`) highlights the match once
+   * the lookup resolves; `existingCfi` reopens a highlight. An already-open card keeps its
+   * previous result (dimmed) until the new one lands.
    */
   function openDefine(o: {
     text: string
@@ -523,17 +448,12 @@
         return
       }
       const res = await lookupAt(text, tapOffset)
-      // Ignore if the popup was dismissed or a newer tap superseded this lookup.
       if (stale()) return
       dictState.loading = false
       dictState.result = res
-      // Auto-highlight the matched word — but only a real match, only a fresh tap
-      // (not a reopened highlight), and not on a download/no-match miss.
       if (res && res.entries.length && !dictState.cfi && defineDoc && definePositions.length) highlightMatch(res, key)
     } catch (err) {
-      // Never leave the card spinning: a failed IndexedDB open (iOS storage pressure, a
-      // version change from another tab) used to reject here and latch the spinner on for
-      // the rest of the session.
+      // e.g. IndexedDB refused to open: never leave the card spinning.
       console.warn('Lookup failed', err)
       if (stale()) return
       dictState.loading = false
@@ -541,12 +461,8 @@
     }
   }
 
-  /**
-   * Highlight the matched word yellow, record it as vocab, and re-anchor the card to the
-   * word. Entirely synchronous: the old version awaited the IndexedDB write and the paint
-   * before setting `dictState.cfi`, so a tap on another word in between had its card's
-   * highlight state overwritten with this (older) word's CFI.
-   */
+  /** Highlight the matched word and re-anchor the card to it. Synchronous, so a newer tap
+   *  can't have its card state overwritten by this word's CFI. */
   function highlightMatch(res: LookupResult, key: string) {
     if (!controller || !defineDoc) return
     const start = res.matchStart
@@ -555,10 +471,7 @@
     if (!range) return
     const cfi = controller.cfiForSelection(defineDoc, range)
     if (!cfi || !dictState.open || dictState.lastKey !== key) return
-    // Read the word off the extracted positions, not `range.toString()`: a range over a
-    // ruby-annotated compound spans the intervening <rt>, so stringifying it splices the
-    // furigana into the word (決けっ心) — which then shows wrong in Notes and fails to
-    // look up when the highlight is tapped again.
+    // Not range.toString(): a range over ruby splices in the furigana (決けっ心).
     const word = definePositions
       .slice(start, end)
       .map((c) => c.node.data.charAt(c.offset))
@@ -568,8 +481,7 @@
     } catch {
       /* keep the glyph anchor */
     }
-    // "Highlight looked-up words" off: still resolve the CFI so the footer's Highlight
-    // toggle can mark this word on demand — just don't paint or record it unasked.
+    // With "Highlight looked-up words" off the CFI still backs the footer toggle.
     const mark = settings.highlightLookups || isHighlighted(cfi)
     if (mark) addHighlight(cfi, word)
     dictState.cfi = cfi
@@ -577,11 +489,8 @@
     dictState.highlighted = mark
   }
 
-  // Download the dictionary from the popup. `downloadAndWarmDictionary` keeps the
-  // online-warm invariant (JMdict, then the kuromoji IPADIC fetched + SW-cached while still
-  // online) in one place — but the card must not wait for that second step (11.3 MB of IPADIC
-  // to cache, ~30 MB resident once the segmenter builds): the
-  // effect below re-runs the pending lookup the moment JMdict is queryable.
+  // The card doesn't wait for the IPADIC warm: the effect below re-runs the pending lookup
+  // as soon as JMdict is queryable.
   async function downloadDict() {
     try {
       await downloadAndWarmDictionary('en')
@@ -598,9 +507,8 @@
       })
   })
 
-  // Recolour the page when the resolved palette changes underneath us — the 'auto' theme
-  // following the OS into dark mode mid-read. (An explicit theme pick already re-applies
-  // via onSettingChange; `appliedTheme` keeps the two paths from applying twice.)
+  // Recolour when an 'auto' theme follows the OS; `appliedTheme` stops an explicit pick
+  // (already applied via onSettingChange) from applying twice.
   let appliedTheme: ResolvedTheme | null = null
   function applyAppearance() {
     appliedTheme = appearance.resolved
@@ -610,27 +518,21 @@
     if (appearance.resolved !== appliedTheme) untrack(() => controller && applyAppearance())
   })
 
-  /**
-   * Chapter lookup for the scrubber preview: each TOC entry's start as an overall-book
-   * fraction (its section's start, from foliate's section fractions). Built once per open —
-   * the preview then resolves a drag position to a title with a short scan, no layout.
-   */
+  /** Scrubber preview: each TOC entry's section start as a book fraction, built once per open. */
   let chapterStarts: { start: number; label: string }[] = []
   function buildChapterIndex() {
     chapterStarts = []
-    const v = controller?.view as unknown as {
-      book?: { resolveHref?: (h: string) => { index: number } | null }
-      getSectionFractions?: () => number[]
-    }
-    const fr = v?.getSectionFractions?.() ?? []
-    if (!fr.length || !v?.book?.resolveHref) return
+    const view = controller?.view
+    const fr = view?.getSectionFractions() ?? []
+    const resolveHref: ((h: string) => { index: number } | null) | undefined = view?.book?.resolveHref?.bind(view.book)
+    if (!fr.length || !resolveHref) return
     const out: { start: number; label: string }[] = []
     const walk = (items: TocItem[]) => {
       for (const it of items) {
         const label = it.label?.trim()
         if (it.href && label) {
           try {
-            const r = v.book!.resolveHref!(it.href)
+            const r = resolveHref(it.href)
             if (r && r.index >= 0 && fr[r.index] !== undefined) out.push({ start: fr[r.index], label })
           } catch {
             /* unresolvable href — skip */
@@ -640,7 +542,7 @@
       }
     }
     walk(toc)
-    // Stable sort; several entries in one section share its start — keep the first.
+    // Entries sharing a section start: keep the first (stable sort).
     out.sort((a, b) => a.start - b.start)
     chapterStarts = out.filter((c, i) => i === 0 || c.start > out[i - 1].start)
   }
@@ -652,7 +554,7 @@
     }
     return label
   }
-  /** Flattened TOC labels in reading order — the Notes panel groups highlights by these. */
+  /** TOC labels in reading order (the annotations panel groups by these). */
   const chapterOrder = $derived.by(() => {
     const out: string[] = []
     const walk = (items: TocItem[]) => {
@@ -665,7 +567,6 @@
     return out
   })
 
-  /** Fast-scroll via the progress scrubber: jump to an overall-book fraction. */
   function seek(frac: number) {
     if (!controller) return
     userInteracted = true
@@ -678,34 +579,23 @@
     if (kind === 'appearance') applyAppearance()
     else if (kind === 'layout') controller.applyLayout(settings)
     else if (kind === 'writingmode' && bookFile) {
-      // The re-open replaces every content document: anything anchored to the old ones goes.
-      closeOverlays()
+      closeOverlays() // the re-open replaces every content document
       controller.reopenForWritingMode(bookFile).catch((err) => console.warn('Could not re-open the book', err))
     }
   }
 
-  /** Warm the lookup worker (kuromoji trie) if the dictionary is installed. */
   function warmLookupIfReady() {
     void isDictReady().then((ok) => {
       if (ok && !destroyed) void warmupLookup()
     })
   }
 
-  // While a book is open, shed the lookup worker (and the resident kuromoji trie it holds)
-  // when the PWA stays backgrounded. iOS aggressively reclaims memory from hidden web
-  // content; holding that trie resident across a long backgrounding raises the odds the
-  // whole tab is killed — losing the reading position — rather than just the worker.
-  //
-  // But only after a grace period. Dispose-on-hide punished the common case (a glance at
-  // another app, a notification, Slide Over): coming back, the worker had to rebuild the
-  // trie, and taps issued during the rebuild silently fell back to greedy segmentation —
-  // i.e. a wrong word, with no way for the reader to tell. Rebuilding also costs more
-  // transient memory than staying resident does.
+  // Shed the worker's resident trie only after a long backgrounding (iOS kills memory-heavy
+  // hidden tabs). Not on every hide: taps during a rebuild fall back to greedy segmentation.
   const LOOKUP_IDLE_DISPOSE_MS = 60_000
   let disposeTimer: number | undefined
   function onVisibility() {
     if (document.hidden) {
-      // Backgrounding may be the last thing this page ever does (iOS kills hidden PWAs).
       saveProgress.flush()
       if (disposeTimer) clearTimeout(disposeTimer)
       disposeTimer = window.setTimeout(() => {
@@ -717,9 +607,7 @@
         clearTimeout(disposeTimer)
         disposeTimer = undefined
       }
-      // Whether or not we disposed it, iOS may have reclaimed the worker while hidden
-      // without an `onerror`. A cheap ping tells; a dead (or disposed) one is dropped and
-      // re-warmed from the cached dict (no network) before the next tap needs it.
+      // iOS may have reclaimed the worker without an onerror; re-warm a dead one.
       void pingLookup().then((alive) => {
         if (!alive && !destroyed && !document.hidden) warmLookupIfReady()
       })
@@ -729,18 +617,14 @@
     saveProgress.flush()
   }
 
-  /** Most recently loaded content document — DEV diagnostics only (see `__tsuzuri`). */
+  /** DEV only, for `__tsuzuri`. */
   let lastDoc: Document | null = null
   function onLoad(doc: Document) {
     if (import.meta.env.DEV) lastDoc = doc
   }
 
-  /**
-   * Dev-only diagnostics hook. foliate renders into a **closed** shadow DOM, so an
-   * automated harness has no other way to reach the content document and measure how
-   * accurately a tap point resolves to a glyph. Guarded by `import.meta.env.DEV`, so it
-   * is dead code (tree-shaken) in the production build. Removed again on destroy.
-   */
+  /** DEV-only hook: the content document is in a closed shadow DOM, so the tap-accuracy
+   *  harness has no other way in. Tree-shaken from production. */
   function installDevHook() {
     if (!import.meta.env.DEV) return
     ;(window as any).__tsuzuri = {
@@ -759,9 +643,6 @@
   }
 
   onMount(async () => {
-    // Both are off the critical path's own work, so start them before the first await:
-    // foliate's lazily imported chunks (else fetched serially inside view.open), and the
-    // lookup worker's kuromoji build (in a worker, so it doesn't contend with the open).
     prefetchEngine()
     warmLookupIfReady()
     try {
@@ -772,9 +653,7 @@
         loadAnnotations(bookId),
       ])
       if (destroyed) return
-      // A meta row with no bytes means the OPFS/IDB blob was evicted (e.g. WebKit's
-      // 7-day eviction of a non-installed PWA) — tell the user to re-import rather than
-      // showing a cryptic "not found".
+      // Meta without bytes: the blob was evicted (e.g. WebKit's 7-day rule).
       if (!file)
         throw new Error(
           m
@@ -783,8 +662,6 @@
         )
       meta = m ?? null
       bookFile = file
-      // Seed the displayed progress from the saved position so the bar is correct
-      // before the first relocate (and stays correct for a restored book).
       if (progress) {
         fraction = progress.fraction ?? 0
         currentCFI = progress.cfi ?? ''
@@ -796,13 +673,11 @@
         onTap,
         onTurn,
         onSelection,
-        onSelectionCleared,
+        onSelectionCleared: clearSel,
         onShowAnnotation,
         onKey,
       })
-      // Seed the highlight set *before* opening: the opening section's `create-overlay`
-      // then draws its own highlights on the normal per-section path during init, and
-      // every other section draws when it loads — no whole-book sweep at open.
+      // Before open: each section then draws its own highlights as it loads.
       controller.setHighlights(annotations.items.filter((a) => a.kind === 'highlight').map((a) => a.cfi))
       appliedTheme = appearance.resolved
       await controller.open(file, progress?.cfi)
@@ -812,9 +687,6 @@
       rtlBook = controller.bookDir === 'rtl'
       buildChapterIndex()
       installDevHook()
-
-      // Flush the position on background/close; shed / re-warm the lookup worker as the
-      // PWA is backgrounded / foregrounded (see onVisibility).
       document.addEventListener('visibilitychange', onVisibility)
       window.addEventListener('pagehide', onPageHide)
     } catch (err) {
@@ -833,12 +705,8 @@
     saveProgress.flush()
     controller?.destroy()
     controller = null
-    // Free the worker's resident kuromoji trie while no book is open (re-warmed on
-    // the next open from the SW-cached dict — no network).
     disposeLookup()
     clearAnnotations()
-    // Drop any retained content Document / Range / Text-node refs so the closed book's
-    // last section can't be pinned past unmount.
     defineDoc = null
     definePositions = []
     clearSel()
@@ -853,7 +721,6 @@
   <div class="view-host" bind:this={host}></div>
 
   {#if status === 'loading'}
-    <!-- A slow open (a large book, a cold iOS launch) must never trap the reader here. -->
     <LoadingScreen title={loadingTitle} onback={openShelf} />
   {:else if status === 'error'}
     <div class="overlay error" role="alert">
@@ -862,15 +729,13 @@
     </div>
   {/if}
 
-  <!-- The page is bookmarked: a small accent ribbon on the fore-edge corner. Purely
-       decorative (pointer-events:none, no backdrop-filter — it stays put during a slide). -->
+  <!-- No backdrop-filter: it stays on screen through page slides. -->
   {#if status === 'ready' && isBookmarked}
     <div class="ribbon" class:rtl={rtlBook} aria-hidden="true"></div>
   {/if}
 
   {#if status === 'ready' && chromeVisible}
-    <!-- Floating glass capsules. They stay inside the top/bottom chrome-toggle band
-         (inChromeToggleBand), so a tap where they appear always toggles them. -->
+    <!-- The capsules stay inside the chrome-toggle band (inChromeToggleBand). -->
     <header
       class="bar top glass"
       role="presentation"
@@ -918,10 +783,7 @@
     </footer>
   {/if}
 
-  <!-- Persistent reading-position readout at the bottom centre, shown while the
-       chrome is hidden (the bottom bar carries its own progress when visible).
-       pointer-events:none so it never intercepts taps/swipes; no backdrop-filter, since
-       it stays on screen through every page slide. -->
+  <!-- Reading % while the chrome is hidden; no backdrop-filter (stays up through slides). -->
   {#if status === 'ready' && !chromeVisible}
     <div class="page-pct" aria-hidden="true" transition:fade={{ duration: dur(DUR.fast) }}>
       {Math.round(fraction * 100)}%
@@ -933,8 +795,7 @@
   <TocSheet {toc} currentId={currentTocId} currentLabel={sectionLabel} onnavigate={navigate} />
 </Sheet>
 
-<!-- Live-preview panel: an undimmed popover under Aa on iPad, a bottom sheet with a clear
-     scrim on phones — so text changes are judged against the page itself. -->
+<!-- Undimmed, so text changes are judged against the page. -->
 <Sheet bind:open={settingsOpen} title="Display" variant="popover" anchor={displayBtn}>
   <ReaderSettings onchange={onSettingChange} />
 </Sheet>
@@ -956,7 +817,6 @@
   ontogglehighlight={toggleWordHighlight}
 />
 
-<!-- Toolbar for a fresh text selection (highlight yellow / copy) -->
 <SelectionToolbar
   open={sel.open}
   rect={sel.rect}
@@ -970,15 +830,12 @@
     top: 0;
     left: 0;
     right: 0;
-    /* Not `inset: 0`: a cold iOS standalone launch reports a layout viewport short by the
-       status-bar inset. --app-height (services/viewport.ts) is the screen height there —
-       and the document itself is made screen-tall via --doc-height, since WebKit won't
-       paint this overlay below the document's box. 100dvh is the pre-JS fallback. */
+    /* Not `inset: 0`: a cold iOS standalone launch under-reports the viewport height
+       (see services/viewport.ts). 100dvh is the pre-JS fallback. */
     height: var(--app-height, 100dvh);
     background: var(--paper);
     overflow: hidden;
-    /* Same reason as the injected content stylesheet: no double-tap zoom over the reading
-       surface, because a scaled visual viewport disables tap-to-define and page turns. */
+    /* No double-tap zoom: taps and swipes bail while the viewport is scaled. */
     touch-action: manipulation;
   }
   .view-host {
@@ -989,10 +846,7 @@
     box-sizing: border-box;
   }
 
-  /* ── Floating glass capsules ──
-     Height budget: both must end inside the chrome-toggle band (12% of the viewport,
-     clamped 80–160px). iPad landscape (834px → 100px band): top ends at
-     safe-top + 12 + 52 ≈ 88px, bottom starts ≈ 88px above the edge. */
+  /* Both capsules must fit inside the chrome-toggle band (12% of vh, 80–160px). */
   .bar {
     position: absolute;
     z-index: var(--z-bars);
@@ -1038,7 +892,6 @@
     display: flex;
   }
 
-  /* Standalone reading-% readout, centred at the very bottom of the screen. */
   .page-pct {
     position: absolute;
     left: 50%;
@@ -1053,7 +906,6 @@
     color: var(--ink-faint);
   }
 
-  /* Bookmark ribbon: hangs from the top fore-edge corner of the page. */
   .ribbon {
     position: absolute;
     top: 0;

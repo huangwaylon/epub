@@ -1,23 +1,14 @@
 import { deleteBlobFallback, getBlobFallback, putBlobFallback } from './db'
 
 /**
- * Stores raw EPUB bytes. Prefers the Origin Private File System (OPFS), which on
- * iOS 16.4+ gives durable, large-quota storage well suited to multi-MB files.
- * Falls back to an IndexedDB object store where OPFS (or its writable stream)
- * isn't available, so the app degrades gracefully on older engines.
- *
- * Reads always fall through to the IndexedDB store on an OPFS miss, so a book written
- * while OPFS was unavailable (older engine, a transient failure) stays readable.
+ * Raw EPUB bytes: OPFS (`books/<id>.epub`), with an IndexedDB fallback store. Reads fall
+ * through to IndexedDB on an OPFS miss, so bytes written while OPFS failed stay readable.
  */
 
 const BOOKS_DIR = 'books'
 
-/**
- * Main-thread OPFS writes need `FileSystemFileHandle.createWritable` (older WebKit
- * only had sync access handles, in workers). A feature check replaces the old
- * per-session create/write/remove probe file; a write that still fails at runtime is
- * caught in `putBook` and routed to the IndexedDB fallback.
- */
+/** Main-thread OPFS writes need `createWritable` (older WebKit only had worker-side sync
+ *  access handles). Runtime write failures still fall back in `putBook`. */
 function opfsSupported(): boolean {
   return (
     typeof navigator !== 'undefined' &&
@@ -27,8 +18,8 @@ function opfsSupported(): boolean {
   )
 }
 
-/** The OPFS books directory, or null when unsupported / refused (e.g. SecurityError in
- *  some private modes). Not memoised: resolving it is cheap, and a handle can go stale. */
+/** Null when unsupported or refused (SecurityError in some private modes). Not memoised:
+ *  cheap, and a handle can go stale. */
 async function getBooksDir(): Promise<FileSystemDirectoryHandle | null> {
   if (!opfsSupported()) return null
   try {
@@ -44,7 +35,7 @@ function fileName(id: string): string {
 }
 
 function asEpubFile(blob: Blob, id: string): File {
-  // Normalise to a .epub-named File so foliate's type sniffing is happy.
+  // foliate sniffs the type from the name / MIME.
   return new File([blob], fileName(id), { type: 'application/epub+zip' })
 }
 
@@ -64,15 +55,12 @@ export async function putBook(id: string, data: Blob | ArrayBuffer): Promise<voi
         await w.close()
         return
       } catch (err) {
-        // getFileHandle({create:true}) already created a zero-length file; a failed
-        // write/close (e.g. quota) would otherwise leave that partial .epub behind —
-        // invisible to the shelf yet still counting against OPFS quota. Remove it.
+        // Don't leave the (partial) file created above counting against quota.
         await dir.removeEntry(fileName(id)).catch(() => {})
         throw err
       }
     } catch (err) {
-      // Out of space is out of space — IndexedDB shares the origin quota, so don't
-      // write the same bytes a second time. Anything else: try the fallback store.
+      // IndexedDB shares the origin quota, so a quota error won't succeed there either.
       if (isQuotaError(err)) throw err
     }
   }
@@ -94,7 +82,7 @@ export async function getBookFile(id: string): Promise<File | null> {
   return blob ? asEpubFile(blob, id) : null
 }
 
-/** Whether the book's bytes are present (without reading them). */
+/** Whether the book's bytes are present. */
 export async function hasBook(id: string): Promise<boolean> {
   return (await getBookFile(id)) !== null
 }
@@ -102,6 +90,5 @@ export async function hasBook(id: string): Promise<boolean> {
 export async function deleteBook(id: string): Promise<void> {
   const dir = await getBooksDir()
   await dir?.removeEntry(fileName(id)).catch(() => {})
-  // Always attempt fallback deletion too, in case it was stored before OPFS worked.
   await deleteBlobFallback(id).catch(() => {})
 }

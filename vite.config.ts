@@ -4,9 +4,7 @@ import { execSync } from 'node:child_process'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { VitePWA } from 'vite-plugin-pwa'
 
-// A human-readable build version (commit date + short SHA) baked in at config time
-// and exposed as the `__APP_VERSION__` global, so the Settings "About" section can
-// show which build is running. Falls back to "dev" outside a git checkout.
+// `__APP_VERSION__` (commit date · short SHA) for the Settings "About" row.
 function appVersion(): string {
   try {
     const sha = execSync('git rev-parse --short HEAD').toString().trim()
@@ -17,15 +15,11 @@ function appVersion(): string {
   }
 }
 
-// https://vite.dev/config/
 export default defineConfig(({ command }) => {
-  // Served from a GitHub Pages project site at https://<user>.github.io/epub/, so the
-  // production build needs the `/epub/` base. Keep dev at root for a clean local URL.
+  // GitHub Pages project site (https://<user>.github.io/epub/).
   const base = command === 'build' ? '/epub/' : '/'
-  // Replace kuromoji's dictionary loader with a defensive one (see the file header:
-  // tolerates servers that auto-decompress the gzipped dict). The regex matches the
-  // *whole* import specifier so the replacement is a clean absolute path, and pre-empts
-  // the package's `browser` field (which would otherwise pick its own loader).
+  // Swap in our kuromoji dictionary loader. The regex matches the whole specifier so it
+  // also pre-empts the package's `browser` field.
   const kuromojiLoader = fileURLToPath(new URL('./src/services/jp/kuromojiLoader.cjs', import.meta.url))
   const isLoader = (s: string) => /loader\/(?:Node|Browser)DictionaryLoader(?:\.js)?$/.test(s)
   return {
@@ -34,14 +28,12 @@ export default defineConfig(({ command }) => {
       __APP_VERSION__: JSON.stringify(appVersion()),
     },
     resolve: {
-      // Applies during the production build (Rolldown).
       alias: [
         { find: /^.*\/loader\/(?:Node|Browser)DictionaryLoader(?:\.js)?$/, replacement: kuromojiLoader },
       ],
     },
     optimizeDeps: {
-      // The dev prebundle (Rolldown) doesn't honour resolve.alias for a dep's internals,
-      // so alias the loader here too — otherwise the dev build uses kuromoji's own loader.
+      // The dev prebundle ignores resolve.alias for a dep's internals, so alias here too.
       rolldownOptions: {
         plugins: [
           {
@@ -57,7 +49,7 @@ export default defineConfig(({ command }) => {
       svelte(),
       VitePWA({
         registerType: 'prompt',
-        // Manifest icons are only read by the OS at install; don't precache them.
+        // Read by the OS at install only; don't precache.
         includeManifestIcons: false,
         manifest: {
           name: 'Tsuzuri — Japanese Reader',
@@ -68,7 +60,6 @@ export default defineConfig(({ command }) => {
           orientation: 'any',
           background_color: '#f6f3ec',
           theme_color: '#f6f3ec',
-          // Match the base so the installed PWA opens and scopes correctly under /epub/.
           start_url: base,
           scope: base,
           icons: [
@@ -78,45 +69,25 @@ export default defineConfig(({ command }) => {
           ],
         },
         workbox: {
-          // Take control of the page as soon as the SW activates, even on the very
-          // first visit. Without this, a freshly-installed SW doesn't control the
-          // already-loaded page, so the kuromoji IPADIC dict the lookup worker fetches
-          // *during that first session* (right after the dictionary download, via
-          // warmupLookup) bypasses the SW and is never runtime-cached — and the first
-          // offline tap would then fail to fetch it. `registerType: 'prompt'` still
-          // governs *updates* (we never skipWaiting out from under a reading user).
+          // Control the first-visit page too, so the IPADIC dict fetched in that session is
+          // runtime-cached. Updates still wait for the prompt (no skipWaiting mid-read).
           clientsClaim: true,
-          // Precache the app shell. Books live in OPFS and the JMdict data lives in
-          // jpdict's own IndexedDB, so neither is fetched through the service worker.
-          // No web fonts are bundled (the app uses the system JP stack). Of the images,
-          // only the favicon and the Apple touch icon are referenced by the page; the
-          // manifest icons and the iPad splash screens (public/splash/) are fetched by
-          // the OS at install time, so they stay out of the install-time download.
+          // App shell only. Manifest icons and splash screens are fetched by the OS at install.
           globPatterns: ['**/*.{js,css,html}', 'favicon.svg', 'icons/apple-touch-icon-180.png'],
-          // The ~19 MB kuromoji IPADIC dict is runtime-cached on first use (below), not
-          // precached. Also drop foliate's format loaders this app can never reach — it
-          // opens EPUB only, with no TTS/search UI — so the PWA install isn't padded with
-          // ~37 KB of dead chunks the browser would never request. The `foliate-` prefix
-          // comes from `chunkFileNames` below, so these can't match an app chunk.
+          // The IPADIC dict is runtime-cached (below). The foliate loaders are unreachable
+          // (EPUB only, no TTS/search); the `foliate-` prefix comes from chunkFileNames.
           globIgnores: ['**/kuromoji/**', 'assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js'],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           navigateFallback: `${base}index.html`,
           cleanupOutdatedCaches: true,
-          // The kuromoji IPADIC dictionary (*.dat.gz under /kuromoji/dict/) is fetched
-          // on first tap-to-define; cache it so word segmentation works offline after.
-          // It's build-versioned immutable data, so there's deliberately NO expiry — by
-          // age *or* entry count. The dict is an all-or-nothing set of ~12 files; an LRU
-          // `maxEntries` cap would, once crossed (e.g. a future kuromoji bump adding
-          // files), silently evict one shard and leave a *partial* dict, which makes the
-          // trie build fail and degrades tap-to-define to greedy segmentation with no way
-          // to refetch. `cleanupOutdatedCaches` already drops stale caches across deploys.
+          // Deliberately NO expiration (age or maxEntries): the dict is an all-or-nothing
+          // shard set, and evicting one shard leaves a partial dict that builds no trie.
           runtimeCaching: [
             {
               urlPattern: /\/kuromoji\/dict\/.*\.dat\.gz$/,
               handler: 'CacheFirst',
               options: {
-                // Versioned: bump with the dict contents. The old 'kuromoji-ipadic' cache
-                // is deleted at startup (main.ts).
+                // Bump with the dict contents; keep in sync with IPADIC_CACHE (jp/ipadic.ts).
                 cacheName: 'kuromoji-ipadic-v2',
                 cacheableResponse: { statuses: [0, 200] },
               },
@@ -124,7 +95,7 @@ export default defineConfig(({ command }) => {
           ],
         },
         devOptions: {
-          // Enables the service worker in `vite dev` so on-device install/offline can be tested.
+          // SW in `vite dev`, for on-device install/offline testing.
           enabled: true,
           type: 'module',
         },
@@ -133,9 +104,7 @@ export default defineConfig(({ command }) => {
     build: {
       rolldownOptions: {
         output: {
-          // Prefix foliate-js chunks so the precache ignore list above targets its
-          // unused format loaders exactly, rather than any chunk that happens to be
-          // called e.g. `search-*`.
+          // Prefix foliate chunks so globIgnores above can't match an app chunk.
           chunkFileNames(chunk) {
             const foliate = (id: string) => id.includes('/vendor/foliate-js/')
             const isFoliate = chunk.facadeModuleId

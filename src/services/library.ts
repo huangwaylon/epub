@@ -1,14 +1,8 @@
 import type { BookMeta } from './types'
 import { putBook, getBookFile, deleteBook, hasBook } from './storage/blobs'
-import {
-  deleteBookCascade,
-  getAllBooks,
-  getBookMeta,
-  putBookMeta,
-} from './storage/db'
+import { deleteBookCascade, getAllBooks, getBookMeta, putBookMeta } from './storage/db'
 
-/** EPUB title/author come back as either a plain string or a `{lang: value}` map.
- *  Prefer Japanese (`ja`/`ja_JP`), else the first value. Exported for unit tests. */
+/** EPUB title/author are a string or a `{lang: value}` map; prefer Japanese. */
 export function flattenLangMap(x: unknown): string {
   if (!x) return ''
   if (typeof x === 'string') return x
@@ -26,17 +20,11 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
     .join('')
 }
 
-/** Target width for stored cover thumbnails. The shelf renders covers ~120–170px
- *  wide; 320px stays crisp on 2–3× displays while keeping the stored (and later
- *  decoded) blob small, instead of holding the publisher's full-resolution art —
- *  often 1400×2100+ — in IndexedDB and in heap for every book on the shelf. */
+/** Shelf covers render ~120–170px wide; 320px stays crisp at 2–3× without storing (and
+ *  decoding) full-resolution publisher art for every book. */
 const COVER_THUMB_WIDTH = 320
 
-/**
- * Downscale a cover image to a small thumbnail at import time. Falls back to the
- * original blob on any failure (missing OffscreenCanvas, decode error, or if the
- * source is already small enough), so a cover is never lost to downscaling.
- */
+/** Downscale a cover to a WebP thumbnail; returns the original on any failure. */
 async function thumbnailCover(blob: Blob | undefined): Promise<Blob | undefined> {
   if (!blob) return undefined
   if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas === 'undefined') return blob
@@ -60,8 +48,7 @@ async function thumbnailCover(blob: Blob | undefined): Promise<Blob | undefined>
   }
 }
 
-/** Title/author/language/direction/cover parsed from the EPUB via foliate. Never
- *  throws: an unparseable book falls back to its file name and no cover. */
+/** Never throws: an unparseable book falls back to its file name and no cover. */
 async function parseMeta(file: File) {
   const out = {
     title: file.name.replace(/\.epub$/i, ''),
@@ -71,8 +58,7 @@ async function parseMeta(file: File) {
     cover: undefined as Blob | undefined,
   }
   try {
-    // Loaded on demand: foliate's view.js (and the epubcfi/zip code it pulls in) is
-    // only needed to import or read, so it stays off the shelf's cold-start path.
+    // Dynamic so foliate stays off the shelf's cold-start path.
     // @ts-ignore — vendored JS module, no type declarations
     const { makeBook } = await import('../vendor/foliate-js/view.js')
     const book: any = await makeBook(file)
@@ -92,33 +78,21 @@ async function parseMeta(file: File) {
   return out
 }
 
-/**
- * Import an EPUB: dedupe by content hash, persist the bytes, then parse metadata
- * and cover via foliate. Returns the (new or existing) shelf entry.
- */
+/** Import an EPUB, deduped by content hash. Returns the new or existing shelf entry. */
 export async function importEpub(file: File): Promise<BookMeta> {
-  // Hash the bytes to dedupe by content. The ArrayBuffer is only needed for the
-  // digest, so we don't hold it in a long-lived binding — it becomes GC-eligible
-  // immediately after, keeping peak heap near 1× the file size rather than ~3×
-  // (an oversized light-novel EPUB on an iPad can otherwise OOM the tab).
+  // Don't bind the ArrayBuffer: keeps peak heap near 1× the file (large EPUBs can OOM an iPad tab).
   const id = await sha256Hex(await file.arrayBuffer())
 
   const existing = await getBookMeta(id)
   if (existing) {
-    // Re-importing a book whose bytes were lost (evicted / cleared) restores them —
-    // that's exactly what the reader's "please re-import the EPUB" message asks for.
+    // Re-importing restores lost bytes (what the reader's "please re-import" message asks for).
     if (!(await hasBook(id))) await putBook(id, file)
     existing.lastOpenedAt = Date.now()
     await putBookMeta(existing)
     return existing
   }
 
-  // Write the bytes and parse the metadata concurrently — both only read the File
-  // (putBook streams it to OPFS without a second copy; makeBook reads ranges of it).
-  // If anything fails the bytes must be rolled back — otherwise a throw (most likely
-  // `putBookMeta` hitting quota on a near-full iPad) would orphan multi-MB OPFS bytes
-  // with no `books` row pointing at them: invisible to the shelf and to `removeBook`
-  // (which deletes by known id), leaking against quota.
+  // On failure roll the bytes back, or they'd be orphaned (no `books` row) against quota.
   try {
     const [, parsed] = await Promise.all([putBook(id, file), parseMeta(file)])
     const now = Date.now()

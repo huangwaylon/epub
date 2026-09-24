@@ -284,10 +284,8 @@ class View {
     }
     render(layout) {
         if (!layout) return
-        // TSUZURI PATCH (4): a ResizeObserver/resize can call render() while the iframe is
-        // between documents (section swap, rotation, reader teardown) — `documentElement`
-        // or `body` is then null and columnize threw `el is null` (setStylesImportant).
-        // Skip; the section's own `load` path renders once the new document exists.
+        // TSUZURI PATCH (4): render() can run while the iframe is between documents
+        // (section swap, teardown); skip — the new section's load path renders it.
         const doc = this.document
         if (!doc?.documentElement || !doc.body) return
         this.#column = layout.flow !== 'scrolled'
@@ -854,17 +852,13 @@ export class Paginator extends HTMLElement {
         state.vx = dx / dt
         state.vy = dy / dt
         this.#touchScrolled = true
-        // TSUZURI PATCH: page turns are driven by our own horizontal swipe detector
-        // (src/services/reader.ts) so the turn animates as a horizontal slide and
-        // stays horizontal for 縦書き (vertical) books. We keep the e.preventDefault()
-        // above (it blocks native scroll and Safari's edge back-swipe) but drop
-        // foliate's own finger-follow page drag here. (was: this.scrollBy(dx, dy))
+        // TSUZURI PATCH (2): our swipe detector (src/services/reader.ts) turns pages.
+        // Keep preventDefault() above (blocks native scroll / edge back-swipe); dropped
+        // upstream's `this.scrollBy(dx, dy)`.
     }
     #onTouchEnd() {
         this.#touchScrolled = false
-        // TSUZURI PATCH: foliate's velocity-snap page turn is disabled — see the note
-        // in #onTouchMove. Our swipe detector (src/services/reader.ts) turns pages via
-        // goLeft/goRight, which animate the horizontal slide.
+        // TSUZURI PATCH (2): velocity-snap page turn dropped — see #onTouchMove.
     }
     // allows one to process rects as if they were LTR and horizontal
     #getRectMapper() {
@@ -1070,15 +1064,9 @@ export class Paginator extends HTMLElement {
             index: this.#adjacentIndex(dir),
             anchor: prev ? () => 1 : () => 0,
         })
-        // TSUZURI PATCH: never make the caller wait on the debounce. Upstream ends with
-        // `if (shouldGo || !animated) await wait(100)`. We leave `animated` off (we drive
-        // our own horizontal slide), so the second clause taxed every turn; and even the
-        // section-crossing wait was awaited by our slide with the view translated
-        // off-screen — 100ms of blank paper on every chapter boundary. So: resolve now;
-        // after a section crossing keep the lock for the same 100ms, but release it from
-        // a timer instead of blocking the turn on it. Rapid-turn coalescing is app-side
-        // (`#turning`/`#pendingDir` in reader.ts), and our next turn can't reach here
-        // sooner than one slide phase (150ms) later, so the held lock never drops a turn.
+        // TSUZURI PATCH (3): upstream awaited `wait(100)` if shouldGo || !animated; we
+        // run with `animated` off, so resolve now and, after a section crossing, release
+        // the lock from a timer. The app's next turn arrives > 100ms later (a full slide).
         if (shouldGo) setTimeout(() => this.#locked = false, 100)
         else this.#locked = false
     }

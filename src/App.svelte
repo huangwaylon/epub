@@ -6,13 +6,9 @@
   import LoadingScreen from './lib/components/LoadingScreen.svelte'
   import { library } from './stores/library.svelte'
 
-  // The reader (foliate-js + the reader controller + the dictionary download glue) is
-  // a lazy chunk so the Shelf cold-starts without any of it. It's fetched on first open
-  // — or earlier: warmed once the shelf has settled, and on pointerdown on a cover — and
-  // the heavy kuromoji/JMdict engine is split a step further into its own worker.
+  // Lazy chunk so the Shelf cold-starts without foliate; warmed after mount and on cover press.
   const readerPromise = $derived(nav.route.name === 'reader' ? loadReader() : null)
 
-  // The shelf already knows the title, so the pending screen matches the reader's own.
   const pendingTitle = $derived(
     nav.route.name === 'reader' ? library.books.find((b) => b.id === (nav.route as { bookId: string }).bookId)?.title : undefined,
   )
@@ -28,21 +24,15 @@
 {#if nav.route.name === 'reader'}
   {#key nav.route.bookId}
     {#await readerPromise}
-      <!-- Calm paper screen while the chunk arrives (usually already warm) — it only
-           fades in if it's actually slow, so a fast load never flashes. Same look as
-           the reader's own opening screen, so the hand-off is seamless. -->
       <LoadingScreen title={pendingTitle} />
     {:then Reader}
       {#if Reader}<Reader bookId={nav.route.bookId} />{/if}
     {:catch}
-      <!-- The reader chunk failed to load — possibly offline before the SW cached it,
-           or a stale hashed-chunk reference after a deploy. Don't trap the user on a
-           blank screen: offer a retry and a way back to the shelf. -->
       <div class="chunk-state" role="alert">
         <p>Couldn’t load the reader. Check your connection and try again.</p>
         <div class="actions">
-          <!-- A full reload: WebKit can keep replaying a failed module fetch for the same
-               URL, and a stale post-deploy chunk name only resolves with fresh HTML. -->
+          <!-- Full reload: WebKit can replay a failed module fetch, and a stale post-deploy
+               chunk name only resolves with fresh HTML. -->
           <button
             class="btn btn-primary"
             onclick={() => {

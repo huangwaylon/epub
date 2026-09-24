@@ -18,14 +18,8 @@
     onclose?: () => void
     children: Snippet
     maxHeight?: string
-    /**
-     * `sheet` — bottom sheet on phones, centred modal card on iPad, over a dimming scrim.
-     * `popover` — for live-preview panels (Display): on iPad a glass popover anchored under
-     * `anchor`, and on phones a bottom sheet; in both cases the scrim is transparent so the
-     * page stays undimmed while its text settings change.
-     */
+    /** `popover`: clear scrim (live preview); on iPad a glass popover under `anchor`. */
     variant?: 'sheet' | 'popover'
-    /** The trigger the popover hangs from (iPad). */
     anchor?: HTMLElement | null
   } = $props()
 
@@ -36,12 +30,8 @@
 
   const popover = $derived(variant === 'popover')
 
-  // Honour aria-modal: move focus into the sheet on open so VoiceOver / keyboard
-  // users land inside it, and restore focus to the trigger on close. The capture is
-  // edge-gated on a real closed→open transition: the effect also re-runs when the
-  // `bind:this` sets `sheetEl` (a second pass while `open` is still true), and without
-  // the gate that pass would re-capture `document.activeElement` — now the sheet itself
-  // — clobbering the trigger we meant to restore to.
+  // aria-modal: focus moves in on open and back to the trigger on close. Edge-gated so the
+  // `bind:this` re-run doesn't capture the sheet itself as the restore target.
   let sheetEl = $state<HTMLElement>()
   let restoreFocus: HTMLElement | null = null
   let wasOpen = false
@@ -55,8 +45,7 @@
     wasOpen = open
   })
 
-  // Popover placement: hang under the anchor, right edges aligned, clamped on screen.
-  // Measured once per open and on resize/rotation — no per-frame work.
+  // Popover: under the anchor, right edges aligned; measured on open and resize only.
   let popPos = $state<{ top: number; right: number } | null>(null)
   function place() {
     if (!anchor) return (popPos = null)
@@ -131,8 +120,7 @@
     border-radius: var(--r-xl) var(--r-xl) 0 0;
     box-shadow: var(--shadow-3);
     padding-bottom: calc(var(--safe-bottom) + var(--sp-2));
-    /* Own layer for the enter/exit transform so WebKit doesn't repaint the large
-       shadow blur every frame. */
+    /* Own layer, so WebKit doesn't repaint the shadow blur every transition frame. */
     will-change: transform;
     overscroll-behavior: contain;
     outline: none;
@@ -161,9 +149,9 @@
     font-weight: 650;
   }
   .close {
+    /* 32px disc, 44px hit area */
     width: 32px;
     height: 32px;
-    /* 32px disc, 44px hit area. */
     position: relative;
     background: var(--control-track);
   }
@@ -178,8 +166,7 @@
     padding: 0 var(--sp-5);
   }
 
-  /* iPad-width screens: a centred modal card, or an anchored glass popover. Placed
-     after the base rules so it actually overrides them. */
+  /* iPad: centred card or anchored popover (must follow the base rules). */
   @media (min-width: 768px) {
     .sheet {
       inset: auto;

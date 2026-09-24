@@ -4,13 +4,9 @@
   type Option = {
     value: T
     label?: string
-    /** Icon name (Icon.svelte), shown before the label. */
     icon?: string
-    /** Optional count badge (e.g. Notes tabs). */
     count?: number
-    /** Language of the label — 'ja' for 明朝 / 縦書き etc. */
     lang?: string
-    /** Accessible name when the label alone is ambiguous or absent. */
     ariaLabel?: string
   }
   let {

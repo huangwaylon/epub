@@ -2,39 +2,26 @@ import { DEFAULT_SETTINGS, type ReaderSettings, type ResolvedTheme } from '../se
 import { loadSettings, saveSettings } from '../services/storage/db'
 
 /**
- * Global, app-wide reader preferences. Exported as a deep-reactive `$state`
- * object: components read `settings.x` directly and re-render on change.
- * Mutate only through `updateSettings` so changes persist and the theme applies.
- *
- * IndexedDB is the source of truth, but startup never waits on it: a synchronous
- * localStorage mirror (`MIRROR_KEY`, also read by the inline script in index.html to
- * set `data-theme` before first paint) seeds the store, the app mounts at once, and
- * `initSettings` then hydrates from IDB in the background.
+ * App-wide reader preferences; mutate only via `updateSettings`. IndexedDB is the source
+ * of truth; a sync localStorage mirror seeds the store (and index.html's first-paint theme).
  */
 export const settings = $state<ReaderSettings>({ ...DEFAULT_SETTINGS })
 
-/** The concrete palette in effect — `settings.theme` with 'auto' resolved against the
- *  OS colour scheme. Live: flips when the OS appearance changes while on 'auto'. */
+/** `settings.theme` with 'auto' resolved against the OS colour scheme (live). */
 export const appearance = $state<{ resolved: ResolvedTheme }>({ resolved: 'light' })
 
 /** Keep in sync with the inline theme script in index.html. */
 const MIRROR_KEY = 'tsuzuri:settings'
 
-/** Paper colours per palette (mirrors app.css) — the fallback for the theme-color meta
- *  when the stylesheet isn't applied yet (dev injects CSS from JS). Keep in sync with
- *  the inline script in index.html. */
+/** theme-color fallback before the stylesheet applies (dev injects CSS from JS). Mirrors
+ *  app.css; keep in sync with index.html. */
 const PAPER: Record<ResolvedTheme, string> = { light: '#f6f3ec', sepia: '#f4ecd8', dark: '#16140f' }
 
 let hydrated = false
 /** Keys the user changed before IDB hydration finished — those win over the stored copy. */
 const touchedEarly = new Set<keyof ReaderSettings>()
 
-/**
- * Keep only the fields `DEFAULT_SETTINGS` knows, so a stored copy from an older build
- * can't carry retired keys back in (they'd be re-persisted forever). The retired
- * `tapToDefine` switch simply drops: lookup is always on now, and its successor
- * `highlightLookups` takes its default.
- */
+/** Keep only keys `DEFAULT_SETTINGS` knows, so retired keys aren't re-persisted forever. */
 function known(saved: object): Partial<ReaderSettings> {
   const src = saved as Record<string, unknown>
   const out: Record<string, unknown> = {}
@@ -62,10 +49,8 @@ function writeMirror(): void {
 const darkQuery = (): MediaQueryList | null =>
   typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null
 
-/**
- * Seed from the localStorage mirror and apply the theme synchronously, then hydrate
- * from IndexedDB. Call once at startup; don't await it before mounting.
- */
+/** Seed from the mirror and apply the theme synchronously, then hydrate from IndexedDB.
+ *  Call once at startup; don't await it before mounting. */
 export async function initSettings(): Promise<void> {
   const mirrored = readMirror()
   if (mirrored) Object.assign(settings, { ...DEFAULT_SETTINGS, ...mirrored })
@@ -106,7 +91,6 @@ function applyTheme(): void {
   appearance.resolved = resolved
   const root = document.documentElement
   root.dataset.theme = resolved
-  // Read back the live paper colour so the status bar / chrome match app.css exactly.
   const paper = getComputedStyle(root).getPropertyValue('--paper').trim() || PAPER[resolved]
   let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
   if (!meta) {

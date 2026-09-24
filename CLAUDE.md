@@ -116,7 +116,7 @@ npm run build    # production build → dist/ (base /epub/)
   double-tap zoom kills taps and swipes). A touch swipe is decided on move once it crosses
   45px. A highlight `click` on the same gesture stands down (`tapDefinedAt`/`tapDismissedAt`).
 - **Vendored foliate-js:** edit only as a documented `TSUZURI PATCH`. Current patches:
-  (1) `view.js` PDF branch removed; (2) `paginator.js` own touch page-turn disabled (our
+  (1) `view.js` PDF branch removed (unmarked); (2) `paginator.js` own touch page-turn disabled (our
   swipe drives turns); (3) `#turnPage` resolves immediately, holding its lock 100 ms on a
   timer only after a section crossing; (4) `View#render` skips a document-less iframe.
   `animated` stays **off**; we animate turns ourselves. Content is in a **closed-shadow
@@ -128,10 +128,10 @@ npm run build    # production build → dist/ (base /epub/)
 - **iOS viewport:** a cold Home Screen launch reports a layout viewport short by the
   status-bar inset (852 → 793 on iPhone) until a rotation, and WebKit paints nothing below
   the document box. `viewport.ts` publishes the **screen** height when standalone at full
-  screen width as `--doc-height` (html/body/#app) and `--app-height` (fixed `.reader`);
+  screen width as `--doc-height` (html/body/#app) and `--app-height` (fixed `.reader` + loading screens);
   both depend only on screen size + window width, so they can't feed back into layout.
   Relies on `black-translucent` + `viewport-fit=cover` in `index.html`.
-- **Highlight volume is a perf constraint:** `reapplyHighlights` paints 24 per task in
+- **Highlight volume is a perf constraint:** `#drawSections` paints 24 per task in
   `nearestFirst` order (`src/services/cfi.ts`), seeded before `open()`, generation-guarded.
   The `annotations` store is an immutable `$state.raw` array with lookup maps; all
   create/remove goes through `addHighlight`/`removeHighlight` in `Reader.svelte` (paint

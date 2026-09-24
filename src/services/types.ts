@@ -1,7 +1,4 @@
-/**
- * Core data model shared across the app. These shapes are persisted:
- * book files live in OPFS, everything here lives in IndexedDB (see services/storage/db.ts).
- */
+/** Persisted data model (IndexedDB, see storage/db.ts; EPUB bytes live in OPFS). */
 
 /** Writing-mode override the reader can apply on top of what the EPUB declares. */
 export type WritingModePref = 'auto' | 'horizontal' | 'vertical'
@@ -12,7 +9,7 @@ export type ResolvedTheme = 'light' | 'sepia' | 'dark'
 /** The theme *preference*. 'auto' follows the OS (`prefers-color-scheme`): light ↔ dark. */
 export type ThemeName = 'auto' | ResolvedTheme
 
-/** Metadata for a book on the shelf. The actual .epub bytes live in OPFS under its id. */
+/** A shelf entry. */
 export interface BookMeta {
   id: string // sha-256 of the file bytes
   title: string
@@ -36,21 +33,14 @@ export interface ReadingProgress {
   updatedAt: number
 }
 
-export type AnnotationKind = 'highlight' | 'bookmark'
-
-/**
- * Highlights are a single colour — a yellow that reads well behind text at the
- * overlay's ~0.3 opacity. (The reader used to offer a colour picker; it was
- * dropped in favour of one consistent yellow that doubles as a vocab marker for
- * words you've looked up.)
- */
+/** The single highlight colour; reads well behind text at the overlay's ~0.3 opacity. */
 export const HIGHLIGHT_HEX = '#ffd54a'
 
 /** A highlight or bookmark, anchored by CFI so it survives reflow / font changes. */
 export interface Annotation {
   id: string
   bookId: string
-  kind: AnnotationKind
+  kind: 'highlight' | 'bookmark'
   cfi: string
   /** Selected text (highlights) or a short context snippet (bookmarks). */
   text: string
@@ -68,8 +58,7 @@ export interface ReaderSettings {
   marginScale: number // multiplies the base page margin
   fontFamily: 'serif' | 'sans'
   writingMode: WritingModePref
-  /** Tap-to-define also highlights the looked-up word yellow (a vocab record). Lookup
-   *  itself is always on. Replaces the retired `tapToDefine` switch. */
+  /** Tap-to-define also highlights the looked-up word (a vocab record). */
   highlightLookups: boolean
 }
 

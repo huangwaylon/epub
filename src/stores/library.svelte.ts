@@ -7,9 +7,9 @@ export const library = $state<{
   books: BookMeta[]
   progress: Record<string, ReadingProgress | undefined>
   loading: boolean
-  importing: number // count of in-flight imports
-  /** Last import error, surfaced on the shelf (there's no visible console in a
-   *  standalone iOS PWA, so a silent failure would just look like "nothing happened"). */
+  /** In-flight imports. */
+  importing: number
+  /** Shown on the shelf: a standalone iOS PWA has no visible console. */
   importError: string | null
 }>({
   books: [],
@@ -19,9 +19,8 @@ export const library = $state<{
   importError: null,
 })
 
-/** Display-affecting fields only. Cover blobs are re-read from IDB on every refresh
- *  (so they're never identity-equal); a book's cover image never changes once
- *  imported, so comparing presence is enough to know the row is unchanged. */
+/** Display fields only. Cover blobs are re-read (never identity-equal) but never change
+ *  after import, so presence is enough. */
 function bookMetaEqual(a: BookMeta, b: BookMeta): boolean {
   return (
     a.title === b.title &&
@@ -39,8 +38,7 @@ function progressEqual(a: ReadingProgress | undefined, b: ReadingProgress | unde
   return a.cfi === b.cfi && a.fraction === b.fraction && a.updatedAt === b.updatedAt
 }
 
-/** Bumped per refresh; a refresh whose reads finish after a newer one started drops
- *  its (stale) snapshot instead of overwriting the newer state. */
+/** Lets a slow refresh drop its stale snapshot instead of overwriting a newer one. */
 let refreshGen = 0
 
 export async function refreshLibrary(): Promise<void> {
@@ -52,19 +50,15 @@ export async function refreshLibrary(): Promise<void> {
   for (const p of all) if (ids.has(p.bookId)) progress[p.bookId] = p
   for (const id of ids) if (!(id in progress)) progress[id] = undefined
 
-  // Reconcile against the current list so unchanged books keep their existing
-  // reactive object identity. Replacing the whole array (as before) handed every
-  // BookCover a brand-new `book` proxy on each refresh — fired after every import,
-  // delete, and book-open — which re-ran its objectURL effect and forced the browser
-  // to re-decode every cover. Only books whose display fields actually changed get a
-  // new reference; the rest (and their object URLs) are reused as-is.
+  // Keep unchanged books' object identity so BookCover doesn't re-create object URLs
+  // (and re-decode every cover) on each refresh.
   const prev = new Map(library.books.map((b) => [b.id, b]))
   library.books = books.map((b) => {
     const old = prev.get(b.id)
     return old && bookMetaEqual(old, b) ? old : b
   })
 
-  // Update progress per key so one changed book doesn't invalidate the whole map.
+  // Per key, so one changed book doesn't invalidate the whole map.
   const next = library.progress
   for (const id of Object.keys(next)) if (!(id in progress)) delete next[id]
   for (const [id, p] of Object.entries(progress)) {
@@ -86,7 +80,6 @@ export async function importFiles(files: FileList | File[]): Promise<void> {
     for (const file of list) {
       try {
         await importEpub(file)
-        // Show each book as soon as it lands rather than after the whole batch.
         if (list.length > 1) refreshLibrary().catch(() => {})
       } catch (err) {
         failures += 1

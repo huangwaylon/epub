@@ -4,7 +4,6 @@
   import Icon from './Icon.svelte'
   import { DUR, dur } from '../util/motion.svelte'
 
-  /** Presentational glass pill: message + optional action + optional dismiss. */
   let {
     message,
     actionLabel,
@@ -68,7 +67,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* A lone message pads evenly. */
   .msg:last-child {
     padding-inline-end: var(--sp-4);
   }

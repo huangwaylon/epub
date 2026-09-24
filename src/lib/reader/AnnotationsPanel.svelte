@@ -3,14 +3,13 @@
   import { HIGHLIGHT_HEX, type Annotation } from '../../services/types'
   import Icon from '../components/Icon.svelte'
   import Segmented from '../components/Segmented.svelte'
-  // `onremove` is owned by the reader: deleting a highlight must also unpaint its overlay
-  // (which only the reader controller can do), not just drop the stored record.
   let {
     onnavigate,
     onremove,
     chapterOrder = [],
   }: {
     onnavigate: (cfi: string) => void
+    /** The reader removes it: a highlight must also be unpainted. */
     onremove: (a: Annotation) => void
     /** TOC labels in reading order — highlight groups follow the book, not the clock. */
     chapterOrder?: string[]
@@ -18,8 +17,7 @@
 
   let tab = $state<'highlights' | 'bookmarks'>('highlights')
 
-  // Newest first, with a stable id tiebreaker so items sharing a createdAt ms
-  // (rapid/batch highlights) keep a deterministic order across re-renders.
+  // Newest first; id tiebreak keeps same-ms items in a stable order.
   const newestFirst = (a: Annotation, b: Annotation) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)
   const highlights = $derived(annotations.items.filter((a) => a.kind === 'highlight').sort(newestFirst))
   const bookmarks = $derived(annotations.items.filter((a) => a.kind === 'bookmark').sort(newestFirst))
@@ -110,7 +108,7 @@
     flex-direction: column;
     gap: var(--sp-3);
   }
-  /* Stable height across tabs, so switching doesn't make the sheet jump. */
+  /* Same height for both tabs, so the sheet doesn't jump. */
   .list {
     min-height: min(360px, 50dvh);
     padding-bottom: var(--sp-3);

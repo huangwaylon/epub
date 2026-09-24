@@ -1,19 +1,9 @@
 /**
- * Dictionary lookup worker. Runs the whole Japanese lookup pipeline — kuromoji
- * segmentation (incl. the IPADIC trie build), deinflection, and the JMdict IndexedDB
- * queries — off the main thread, so tap-to-define never stalls the reader or janks a
- * page-turn on iPad. The DOM-touching parts (glyph resolution, building the highlight
- * Range) stay on the main thread; this worker only takes `{ text, tapOffset }` and
- * returns a `LookupResult`.
- *
- * jpdict-idb's `getWords` opens its own read-only connection to the shared "jpdict"
- * IndexedDB, so the worker reads exactly the data the main thread downloaded — no
- * duplicate download, no message-passing of dictionary bytes.
- *
- * Protocol (every reply is `{ id, result, ready? }`):
- *   warmup → result: boolean  (kuromoji built; also opens the IndexedDB connection)
- *   ping   → result: true, ready: segmenter built   (liveness probe, answered at once)
- *   lookup → result: LookupResult | null, ready: whether the *path taken* was kuromoji's
+ * Lookup worker: kuromoji, deinflection and JMdict reads (jpdict-idb opens its own
+ * connection to the shared "jpdict" IndexedDB). Replies are `{ id, result, ready? }`:
+ *   warmup → result: boolean (kuromoji built)
+ *   ping   → result: true, ready: segmenter built
+ *   lookup → result: LookupResult | null, ready: whether the path taken was kuromoji's
  */
 import { resolveLookup, warmup, isSegmenterReady } from './lookup'
 
@@ -36,9 +26,8 @@ self.onmessage = async (e: MessageEvent<Incoming>) => {
   }
   if (msg.type === 'lookup') {
     try {
-      // `ready` is the readiness captured when the lookup chose its path — not re-read
-      // now, after the IndexedDB awaits: a build finishing mid-lookup would otherwise
-      // tag a provisional greedy answer as authoritative, and the client would cache it.
+      // `ready` is captured when the path was chosen, not re-read now: a build finishing
+      // mid-lookup must not mark a greedy answer as cacheable.
       const { result, ready } = await resolveLookup(msg.text, msg.tapOffset)
       post({ id: msg.id, result, ready })
     } catch (err) {

@@ -1,360 +1,163 @@
 # Tsuzuri — System Architecture
 
-System-level map for **Tsuzuri** (綴), an installable iOS PWA for reading
-Japanese EPUBs, paginated like Apple Books. Written for engineers and LLM agents
-extending the code. Claims here are derived from `src/`, `scripts/`, and
-`.github/workflows/`. For subsystem depth, see the [cross-references](#9-cross-references).
-
----
+The system map: layers, entry point, stores, data flows and a file index. Subsystem
+depth lives in [reader-engine.md](./reader-engine.md) (foliate, pagination, taps,
+highlights), [japanese.md](./japanese.md) (dictionary and lookup),
+[storage-pwa-ios.md](./storage-pwa-ios.md) (persistence, service worker, iOS),
+[ui-and-design.md](./ui-and-design.md) (components, tokens) and
+[development.md](./development.md) (scripts, testing, verification).
 
 ## 1. Overview
 
-A single-page, offline-first, **backend-free** reader. Built for Japanese books;
-works for any EPUB. Defining features:
+A single-page, offline-first, **backend-free** EPUB reader for Japanese books, shipped as
+static files to GitHub Pages ([deployment.md](./deployment.md)). Features: paginated
+縦書き/横書き reading via vendored foliate-js, offline tap-to-define (kuromoji segmentation +
+vendored 10ten deinflection + JMdict via jpdict-idb, run in a Web Worker), CFI-anchored
+highlights (always yellow) and bookmarks, and an installable iOS PWA.
 
-- **Paginated 縦書き / 横書き reading** via CSS multi-column pagination (vendored
-  foliate-js), honouring each book's writing mode and page-progression direction
-  (`dir: 'ltr' | 'rtl'`), with a manual 縦/横 override (`settings.writingMode`).
-- **Offline 10ten-style tap-to-define.** Tap a Japanese word → the surrounding run
-  is extracted (skipping `<rt>/<rp>` furigana), segmented (kuromoji), deinflected
-  (vendored 10ten engine), and looked up in JMdict (jpdict-idb). Shows reading,
-  pitch accent, POS, and deinflection reasons. The whole pipeline runs in a Web
-  Worker. The dictionary is the only language feature.
-- **Highlights & bookmarks**, CFI-anchored so they survive reflow / font changes.
-  Highlights are a **single colour (yellow)** — no colour picker; a looked-up word
-  is auto-highlighted as a vocab record.
-- **Installable PWA** — Add-to-Home-Screen on iOS, edge-to-edge layout, persistent
-  storage, service-worker app-shell precache, "update ready" toast.
+**Runtime npm deps (4):** `@birchill/jpdict-idb`, `@birchill/normal-jp`, `@sglkc/kuromoji`,
+`idb`. foliate-js (MIT) and the 10ten deinflector (**GPL-3.0-or-later**, which makes the
+app GPL) are vendored.
 
-See [reader-engine.md](./reader-engine.md) and [japanese.md](./japanese.md) for the
-reading and dictionary subsystems.
+## 2. Layers
 
----
-
-## 2. Tech stack
-
-| Tech | Where | Why |
-|---|---|---|
-| **Svelte 5 (runes)** | all UI + stores | `$state`/`$derived`/`$effect`; stores are module-level rune singletons (no store contract). Mounted via `mount()`. |
-| **Vite + vite-plugin-pwa** | build / SW | ESM dev server; PWA plugin generates the Workbox service worker + manifest. |
-| **foliate-js** (vendored, **MIT**) | `src/vendor/foliate-js` | EPUB parsing + paginated rendering as a `<foliate-view>` custom element. Vendored so `pdf.js` could be removed and `view.js`/`paginator.js` patched (two "TSUZURI PATCH" edits). |
-| **@birchill/jpdict-idb** | `src/services/jp/dictdb.ts` | Downloads JMdict from data.10ten.life into its own IndexedDB; serves offline `getWords` lookups. |
-| **@birchill/normal-jp** | jp lookup/deinflect | Lookup-window normalisation and kana handling. |
-| **@sglkc/kuromoji** | `src/services/jp/segment.ts` | MeCab/IPADIC morphological analyser → word segmentation for tap-to-define (Apache-2.0). Ships a trimmed ~11 MB dict (staged to `public/kuromoji/dict/`, runtime-cached). |
-| **idb** | `src/services/storage/db.ts` | Promise wrapper over IndexedDB for structured data. |
-| **vendored 10ten deinflect (GPL-3.0)** | `src/services/jp/deinflect.ts` | Verb/adjective deinflection copied from 10ten-ja-reader. **⚠ GPL-3.0-or-later — see [§8](#8-key-design-decisions--trade-offs).** License at `src/services/jp/LICENSE-10ten`. |
-| **sharp** (devDep) | `scripts/*.mjs` | Dev tooling only: `gen-icons.mjs` rasterises PWA icons. Stripped from the CI build. |
-| **vitest** (devDep) | `*.test.ts` | Unit tests (deinflection engine). |
-
-**Four runtime npm dependencies:** `@birchill/jpdict-idb`, `@birchill/normal-jp`,
-`@sglkc/kuromoji`, `idb`. foliate-js and the 10ten deinflect engine are
-vendored into the tree, not installed.
-
----
-
-## 3. Layered architecture
-
-Strict downward dependency: UI imports stores and services; stores import services;
-services import vendored engines and browser APIs. Vendored engines import nothing
-from the app. **No Svelte imports in `src/services/**`.**
+Dependencies point strictly downward. No Svelte imports in `src/services/**`.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  UI — Svelte 5 components (src/App.svelte, src/lib/**)                  │
-│  Shelf, Reader, sheets, popups, toolbars. Read stores, call services.  │
-└───────────────┬──────────────────────────────────┬───────────────────┘
-                │ read/mutate                       │ call
-                ▼                                    ▼
-┌────────────────────────────────┐  ┌──────────────────────────────────┐
-│  STORES — src/stores/*.svelte.ts│ │  SERVICES — src/services/*         │
-│  Rune singletons ($state).      │ │  Framework-agnostic logic:         │
-│  settings, library, annotations,│─▶│  reader (ReaderController),        │
-│  dict, nav, pwa.                │ │  library, jp/* (+ lookup worker),  │
-│  Mutate via exported fns →      │ │  storage/*, viewport.              │
-│  call services + persist.       │ └───────────────┬──────────────────┘
-└─────────────────────────────────┘                │ wraps / drives
-                                                    ▼
-                                ┌──────────────────────────────────────┐
-                                │  VENDORED — src/vendor/foliate-js      │
-                                │  <foliate-view>, makeBook, Overlayer,  │
-                                │  epub/epubcfi/paginator…               │
-                                │  + jp/deinflect.ts (10ten, GPL)        │
-                                └────────────────┬───────────────────────┘
-                                                 │ browser platform
-                                                 ▼
-                       OPFS (EPUB bytes) · IndexedDB (idb: structured data;
-                       jpdict-idb: JMdict) · Service Worker
+UI          src/App.svelte, src/lib/**           Svelte 5 components
+  │ read/mutate stores, call services
+STORES      src/stores/*.svelte.ts               module-level rune singletons
+  │ call services, persist
+SERVICES    src/services/**                      framework-agnostic: reader, library,
+  │                                              storage, viewport, jp (+ lookup worker)
+VENDORED    src/vendor/foliate-js, jp/deinflect.ts
+  │
+PLATFORM    OPFS (EPUB bytes) · IndexedDB (idb: app data; jpdict-idb: JMdict)
+            · Cache API / service worker (app shell, kuromoji dict)
 ```
 
-`src/main.ts` is the entry point ([§7](#7-entry-point--routing)). The app ships as
-static files to GitHub Pages — no backend ([deployment.md](./deployment.md)).
+## 3. Entry point & routing
 
----
+1. **`index.html`** — an inline script reads the localStorage settings mirror
+   (`tsuzuri:settings`), resolves `'auto'` via `prefers-color-scheme`, and sets
+   `<html data-theme>` + the `theme-color` meta before first paint.
+2. **`src/main.ts`** (no top-level `await`):
+   - `void initSettings()`: seed from the mirror, apply the theme, hydrate from IndexedDB
+     in the background.
+   - `initViewport()`: publish `--doc-height` / `--app-height`
+     ([storage-pwa-ios.md §6](./storage-pwa-ios.md#6-ios-viewport--srcservicesviewportts)).
+   - `void validateRestoredRoute(...)`: a reader route restored from sessionStorage falls
+     back to the shelf if the book is gone.
+   - `void requestPersistence()`.
+   - `registerSW(...)`: wires the `pwa` store, and on return to the foreground calls
+     `registration.update()` at most hourly.
+   - Deletes the superseded `kuromoji-ipadic` cache, and 4 s later (online, dictionary
+     installed) re-fills the IPADIC cache via a dynamic `dictdb` import (`cacheIpadic()`).
+   - `mount(App)`.
+3. **`src/App.svelte`** — `nav.route.name === 'reader'` renders the lazily loaded
+   `Reader` (`loadReader()`, inside `{#key bookId}`), showing `LoadingScreen` while it
+   loads, and **Try again** (full reload) / **Back to library** if the chunk fails.
+   Otherwise it renders `Shelf`. `ToastHost` is always mounted. The reader chunk is warmed
+   ~1.5 s after mount (idle callback) and on pointerdown on a cover.
 
-## 4. Module map
+**Lazy loading.** The shelf's critical path has no foliate: `library.ts` imports
+`view.js` only on import, `ShelfSettings` is a dynamic import, the reader is its own chunk,
+and the reader prefetches foliate's zip/epub/paginator chunks at mount.
 
-### Root / build
-| Path | Responsibility |
+## 4. Stores
+
+Each store exports a `$state` object that components read directly. Mutate only through
+the exported functions, so persistence and side effects happen together.
+
+| Store | Holds | Key functions | Persisted in |
+|---|---|---|---|
+| `settings` | `settings: ReaderSettings`; `appearance.resolved` (theme with `'auto'` resolved, live) | `initSettings`, `updateSettings` | IDB `settings['reader']` (source of truth) + localStorage mirror `tsuzuri:settings` |
+| `library` | `books`, `progress` (by id), `loading`, `importing`, `importError` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` | IDB `books` / `progress`; bytes in OPFS |
+| `annotations` | `annotations.items`: an immutable `$state.raw` array for the open book, with non-reactive lookup maps | `loadAnnotations`, `clearAnnotations`, `isHighlighted`, `highlightAt`, `addHighlightRecord`, `removeHighlightRecord`, `saveAnnotation`, `removeAnnotation`, `newId` | IDB `annotations` (`byBook`) |
+| `dict` | `state` (`init`/`empty`/`ok`/`unavailable`), `updating`, `progress`, `warming`, `error?` | mutated by `jp/dictdb.ts` | jpdict-idb's own IndexedDB |
+| `nav` | `route`: `{name:'shelf'}` or `{name:'reader', bookId}` | `openReader`, `openShelf`, `rememberRouteForReload`, `validateRestoredRoute`, `loadReader`, `warmReader` | sessionStorage `tsuzuri:route`, written only just before a deliberate reload |
+| `pwa` | `needRefresh`, `offlineReady`, `update()` | set by `main.ts` | memory |
+| `toast` | `toast.current` (one toast at a time) | `showToast`, `actOnToast`, `dismissToast` | memory |
+
+`refreshLibrary` uses a generation counter to drop stale results, and keeps unchanged
+books' object identity so covers aren't re-decoded. Store conventions are covered in
+[ui-and-design.md §1](./ui-and-design.md).
+
+## 5. Data flows
+
+**Import.** Shelf `<input type=file>` → `importFiles` (filters `.epub` /
+`application/epub+zip`, imports sequentially, refreshes after each file of a batch) →
+`importEpub`: `id` = SHA-256 of the bytes. If the id already exists, restore the bytes if
+they're missing, bump `lastOpenedAt`, and return. Otherwise `putBook` (OPFS or IDB
+fallback) runs in parallel with foliate's `makeBook` (title, author, language, `dir`,
+cover → 320px WebP thumbnail), then `putBookMeta`. On failure the bytes are rolled back.
+Details: [storage-pwa-ios.md §4](./storage-pwa-ios.md#4-library-import--srcserviceslibraryts).
+
+**Open.** Cover tap → `openReader(id)` + background `markOpened(id)`. `Reader.onMount`
+calls `prefetchEngine()` and warms the lookup worker, then runs
+`Promise.all([getBookMeta, getBookFile, getProgress, loadAnnotations])`. A meta row with no
+bytes shows a "please re-import" error. Next it creates `new ReaderController(host,
+settings, callbacks)`, seeds highlights with `setHighlights(...)` **before**
+`controller.open(file, progress?.cfi)`, then builds the TOC and chapter index. See
+[reader-engine.md §3](./reader-engine.md).
+
+**Tap / swipe.** `ReaderController#trackGestures` turns a horizontal swipe into a page
+turn and a clean tap into `onTap`. With a card open, any tap only dismisses it. Otherwise
+a tap on a Japanese glyph defines it (even in the nav-bar band) → `extractTextAt` (main
+thread) → `lookupClient.lookupAt` (worker) → `DictionaryPopup` + yellow highlight. A tap
+on blank paper toggles chrome in the top/bottom band, otherwise hides the bars. Details: [reader-engine.md §8](./reader-engine.md), [japanese.md](./japanese.md).
+
+**Highlight / bookmark.** Selection → `SelectionToolbar` → `cfiForSelection` →
+`addHighlight` in `Reader.svelte` (paint first, persist in the background, dedupe on CFI).
+Bookmarks toggle a `bookmark` annotation at the current CFI. `AnnotationsPanel` lists both,
+grouped by chapter. Details: [reader-engine.md §9](./reader-engine.md).
+
+**Progress.** foliate `relocate` → `Reader.onRelocate` → debounced `saveProgress` →
+`putProgress` (flushed on `pagehide` / destroy). The next open passes `progress.cfi` to
+`view.init({ lastLocation })`, and the shelf ring reads `library.progress[id].fraction`.
+
+**Update.** SW `onNeedRefresh` → `pwa.needRefresh` → `ToastHost` "A new version is ready" →
+`pwa.update()` = `rememberRouteForReload()` + `updateSW(true)`. The reload reopens the
+book.
+
+## 6. File index
+
+### Root & build
+| Path | Role |
 |---|---|
-| `index.html` | App shell; iOS PWA meta (status-bar, `viewport-fit=cover`); mounts `/src/main.ts`. |
-| `vite.config.ts` | Vite + svelte + VitePWA (manifest, Workbox precache, `registerType: 'prompt'`, `clientsClaim: true`, dev SW); prod `base: '/epub/'`, dev `/`. kuromoji loader aliased in. |
-| `vitest.config.ts`, `svelte.config.js`, `tsconfig*.json` | Test / compiler config. |
-| `package.json` | Scripts (`dev`/`build`/`preview`/`test`/`check`; `predev`/`prebuild` stage the kuromoji dict); 5 runtime deps. |
-| `public/` | `favicon.svg`, `icons/*.png`; `kuromoji/` (staged dict, gitignored). |
-| `.github/workflows/deploy.yml` | CI: build on push to `main`, deploy `dist/` to Pages. See [deployment.md](./deployment.md). |
+| `index.html` | App shell, iOS PWA meta, generated splash links, inline first-paint theme script. |
+| `vite.config.ts` | Svelte + VitePWA (manifest, Workbox), `base` (`/epub/` build, `/` dev), kuromoji loader alias, `foliate-` chunk prefix, `__APP_VERSION__`. |
+| `vitest.config.ts`, `tsconfig*.json` | Node-env tests (`src/**/*.test.ts`); app / node TS projects. |
+| `.github/workflows/deploy.yml` | Build and deploy to Pages on push to `main`. |
+| `scripts/copy-kuromoji-dict.mjs` | `predev` / `prebuild`: stage and trim the IPADIC dict into `public/kuromoji/dict/` (gitignored). |
+| `scripts/gen-icons.mjs` | sharp: `public/icons/*.png`, `public/splash/*.png`, and the splash `<link>`s in `index.html`. |
+| `scripts/make-test-epub.mjs` | fflate + sharp: `test-books/tsuki-to-neko.epub`. |
 
-### Entry & app
-| Path | Responsibility |
+### App (`src/`)
+| Path | Role |
 |---|---|
-| `src/main.ts` | `void initSettings()` (never blocks mount on IDB), `initViewport()`, `validateRestoredRoute()`, `requestPersistence()`, `registerSW()` (wires `pwa` store; hourly-throttled `registration.update()` on return to foreground), drops the old `kuromoji-ipadic` runtime cache, `mount(App)`. |
-| `src/App.svelte` | Two-screen router view: `nav.route.name === 'reader'` → lazily-loaded `Reader` via `nav.loadReader()` (keyed on `bookId`), else `Shelf`; always renders `ToastHost`. Warms the reader chunk ~1.5 s after mount (idle). While the chunk loads it shows a paper-coloured pending screen (spinner fades in only after 0.4 s); a failed load shows **Try again** + **Back to library**. |
-| `src/app.css` | Design tokens (CSS vars) for light/sepia/dark via `[data-theme]`; fonts, safe-area insets. |
-| `src/vite-env.d.ts` | Ambient types (incl. `virtual:pwa-register`). |
+| `main.ts`, `App.svelte` | Entry and two-screen router view (§3). |
+| `app.css` | Design tokens and the light/sepia/dark palettes ([ui-and-design.md](./ui-and-design.md)). |
+| `stores/*.svelte.ts` | §4. |
+| `lib/library/` | `Shelf`, `BookCover`, `ShelfSettings`. |
+| `lib/reader/` | `Reader` (screen wiring), `DictionaryPopup`, `SelectionToolbar`, `AnnotationsPanel`, `TocSheet`, `ReaderSettings`, `ProgressScrubber`. |
+| `lib/components/` | `Sheet`, `Segmented`, `Icon`, `Toast`, `ToastHost`, `LoadingScreen`. |
+| `lib/actions/`, `lib/util/` | `longpress`; `debounce`, `anchoredPosition`, `chromeBand`, `motion`. |
 
-### Stores (`src/stores/*.svelte.ts`)
-| Path | Responsibility |
+### Services (`src/services/`)
+| Path | Role |
 |---|---|
-| `settings.svelte.ts` | Global `ReaderSettings` `$state` + `appearance.resolved` (the concrete palette, with `'auto'` resolved via `prefers-color-scheme`, live). `initSettings` seeds synchronously from the localStorage mirror `tsuzuri:settings`, then hydrates from IDB (source of truth; keys changed before hydration win). `updateSettings` mutates + mirrors + persists; the internal `applyTheme` sets `<html data-theme>` and the single theme-color meta. |
-| `library.svelte.ts` | Shelf `$state`: `books`, `progress`, `loading`, `importing`, `importError`. `refreshLibrary` (books + `getAllProgress` in parallel; a generation counter drops stale results from overlapping refreshes; reconciles object identity to avoid re-decoding covers), `importFiles` (refreshes after each file of a batch), `deleteBook`, `markOpened`. |
-| `annotations.svelte.ts` | Current book's `items` (highlights+bookmarks). `loadAnnotations`, `clearAnnotations`, `saveAnnotation`, `removeAnnotation` (in-place splice), `newId` (UUID). |
-| `dict.svelte.ts` | Dictionary status: `state` (`init`/`empty`/`ok`/`unavailable`), `updating`, `progress`, `warming`, `error`. Mutated by `jp/dictdb.ts`. |
-| `nav.svelte.ts` | Router: `route` (`{name:'shelf'}` \| `{name:'reader',bookId}`), mirrored to sessionStorage (`tsuzuri:route`) so an in-session reload (the SW update) reopens the book; `validateRestoredRoute`, `openReader`, `openShelf`. Also owns the reader chunk: `loadReader()` (memoised, retryable — a rejection clears the cache) and `warmReader()`. |
-| `pwa.svelte.ts` | SW update state: `needRefresh`, `offlineReady`, `update()`. Set by `main.ts`. |
+| `types.ts` | Persisted model: `BookMeta`, `ReadingProgress`, `Annotation`, `ReaderSettings`, `DEFAULT_SETTINGS`, `HIGHLIGHT_HEX`. |
+| `library.ts` | `importEpub`, `listBooks`, `touchBook`, `removeBook`, `flattenLangMap`; re-exports `getBookFile`. |
+| `reader.ts` | `ReaderController`: owns `<foliate-view>`; layout, appearance, gestures, page-turn slide, selection, highlights ([reader-engine.md](./reader-engine.md)). |
+| `cfi.ts` | CFI parsing / ordering for the highlight sweep. |
+| `viewport.ts` | `initViewport`, `viewportSize` ([storage-pwa-ios.md §6](./storage-pwa-ios.md#6-ios-viewport--srcservicesviewportts)). |
+| `storage/db.ts`, `storage/blobs.ts`, `storage/persist.ts` | IndexedDB, EPUB bytes, Storage API ([storage-pwa-ios.md](./storage-pwa-ios.md)). |
+| `jp/*` | `dictdb`, `lookupClient` ↔ `lookup.worker`, `lookup`, `segment`, `deinflect` (GPL), `extract`, `ipadic`, `kuromojiLoader.cjs` ([japanese.md](./japanese.md)). |
 
-### Components (`src/lib/**`)
-Owned by [ui-and-design.md](./ui-and-design.md). Briefly: `library/Shelf.svelte`
-(grid, import, long-press delete, settings sheet), `library/BookCover.svelte`,
-`library/ShelfSettings.svelte` (theme, dictionary download, storage usage);
-`reader/Reader.svelte` (the reader screen — owns a `ReaderController`, wires all
-callbacks, manages chrome bands, dictionary popup, selection toolbar, scrubber,
-sheets, progress, bookmarks), `reader/ReaderSettings.svelte`, `reader/TocSheet.svelte`,
-`reader/DictionaryPopup.svelte`, `reader/SelectionToolbar.svelte`,
-`reader/AnnotationsPanel.svelte`; `components/*` (Sheet, Segmented, Icon, Toast, ToastHost, LoadingScreen);
-`actions/longpress.ts`; `util/debounce.ts`, `util/anchoredPosition.ts`.
-
-### Services (`src/services/*.ts`)
-| Path | Responsibility |
-|---|---|
-| `types.ts` | Core persisted data model: `BookMeta`, `ReadingProgress`, `Annotation`, `ReaderSettings`, `DEFAULT_SETTINGS`, `HIGHLIGHT_HEX` (the single yellow). |
-| `library.ts` | `importEpub` (sha-256 dedupe — a dedupe hit whose bytes are missing rewrites them → `putBook` ∥ foliate `makeBook` (dynamically imported, so foliate stays off the shelf's critical path) for metadata/cover, downscaled to a ~320px WebP thumbnail; rolls back bytes on failure), `listBooks`, `touchBook`, `removeBook`; re-exports `getBookFile`. |
-| `reader.ts` | **`ReaderController`** — owns one `<foliate-view>`; injects appearance CSS from live theme tokens; derives page geometry (per writing mode, viewport-based for vertical); detects writing mode; custom pointer state machine → swipe-to-turn + `TapInfo`; animates turns as a horizontal slide; selection geometry → `SelectionInfo`; highlight add/remove/reapply (single yellow); `goToFraction`; CFI for selections. See [reader-engine.md](./reader-engine.md). |
-| `viewport.ts` | Publishes the visual-viewport height as `--app-height` (`initViewport`); `viewportSize()` (used by reader geometry). Papers over iOS cold-launch under-report and rotation jitter. See [storage-pwa-ios.md](./storage-pwa-ios.md). |
-
-### Services — storage (`src/services/storage/`)
-| Path | Responsibility |
-|---|---|
-| `db.ts` | `idb`-backed IndexedDB `tsuzuri` (v1): stores `books`, `progress`, `annotations` (`byBook` index), `settings`, `bookBlobs`. CRUD + `deleteBookCascade`. |
-| `blobs.ts` | EPUB bytes: OPFS (`navigator.storage.getDirectory`, `books/<id>.epub`) behind a `createWritable` feature check, with an **IndexedDB `bookBlobs` fallback** (non-quota OPFS write failures fall back; reads fall through to it on an OPFS miss). `putBook`, `getBookFile` (returns a `File`), `hasBook`, `deleteBook`. |
-| `persist.ts` | `requestPersistence` (`navigator.storage.persist`), `storageStatus` (`estimate`), `formatBytes`. |
-
-### Services — Japanese (`src/services/jp/`)
-| Path | Responsibility |
-|---|---|
-| `dictdb.ts` | Single shared `JpdictIdb`; download/`ensureDictionary` lifecycle (jpdict `updateWithRetry`), `cancelDownload`; mirrors state into the `dict` store. |
-| `extract.ts` | `extractTextAt(doc,x,y)`: caret-from-point → glyph hit-test → tree walker (rejecting `<rt>/<rp>`) gathering the word-char run on both sides of the tap → `{text, tapOffset}`. `rangeForSpan` (build a DOM range for the matched word). Main-thread (DOM) part of the pipeline. |
-| `lookupClient.ts` | Main-thread client for the lookup worker: owns the `Worker`, correlates requests by id, exposes `lookupAt`, `warmupLookup`, `disposeLookup`. Lazy singleton; worker construction failures self-heal (only ≥3 disable the feature). |
-| `lookup.worker.ts` | The lookup engine, off the main thread: kuromoji segment + deinflect + JMdict reads. Reads the same `jpdict` IndexedDB the main-thread download fills. |
-| `lookup.ts` | The lookup algorithm run by the worker (`lookupAt` segment-and-match; `lookup` forward-only wrapper). |
-| `lookupTypes.ts` | Dependency-free result types (`Sense`, `DictEntry`, `LookupResult`) shared by main thread and worker without pulling in the engine. |
-| `segment.ts` | kuromoji tokenizer singleton (`ensureSegmenter`, lazy ~11 MB dict load, SW-cached). |
-| `deinflect.ts` | **Vendored 10ten (GPL-3.0).** `deinflect(word)` → candidate words + reason chains; rule table. |
-| `kuromojiLoader.cjs` | `DecompressionStream` gzip loader shim + flat target maps for kuromoji (aliased in `vite.config.ts`). |
-| `deinflect.test.ts`, `LICENSE-10ten` | Vitest tests; GPL-3.0 license text. |
-
-### Vendored engine (`src/vendor/foliate-js/`)
-| Path | Responsibility |
-|---|---|
-| `view.js` | `<foliate-view>` element + `makeBook(file)`; the only entry the app imports (`reader.ts`, `library.ts`). PDF branch patched out. |
-| `overlayer.js` | `Overlayer` — draws highlight overlays. |
-| `epub.js`, `epubcfi.js` | EPUB container parsing; CFI generation/resolution. |
-| `paginator.js`, `fixed-layout.js` | Reflowable (CSS columns) and fixed-layout renderers. Native touch turn patched out in `paginator.js`. |
-| `mobi.js`, `fb2.js`, `comic-book.js`, `progress.js`, `search.js`, `tts.js`, `footnotes.js`, `dict.js`, `opds.js`, `quote-image.js`, `text-walker.js`, `uri-template.js` | Other formats / subsystems, mostly unused by Tsuzuri. |
-| `vendor/fflate.js`, `vendor/zip.js` | foliate's own zip/inflate deps. |
-| `LICENSE` | MIT (John Factotum). |
-
-### Scripts
-| Path | Responsibility |
-|---|---|
-| `scripts/copy-kuromoji-dict.mjs` | Stages (and trims) the ~11 MB IPADIC dict into `public/kuromoji/dict/` (run via `predev`/`prebuild`). |
-| `scripts/gen-icons.mjs` | Rasterises inline SVG → `public/icons/*.png` (sharp). |
-| `scripts/make-test-epub.mjs` | Generates a vertical-RTL JP EPUB3 test fixture (fflate + sharp). |
-
----
-
-## 5. Runtime data flows
-
-### (a) Import an EPUB
-`Shelf` file input → `library.importFiles(files)` (filters `.epub` /
-`application/epub+zip`, tracks `importing` and `importError`) →
-`services/library.importEpub(file)`: `sha256Hex(bytes)` = `id`. If `getBookMeta(id)`
-exists, rewrite the bytes if `hasBook(id)` is false, bump `lastOpenedAt` and return
-(dedupe). Else, concurrently, `blobs.putBook(id, file)` (OPFS or IDB fallback) and
-`makeBook(file)` (lazy `import()` of foliate's `view.js`) extracting
-title/author/language/`dir`/cover (cover downscaled to a ~320px WebP thumbnail) →
-`putBookMeta`. Any failure rolls the bytes back. In a batch, `refreshLibrary()` runs after
-each file (so books appear as they land) and once at the end; it reads `books` +
-`getAllProgress` (one transaction).
-
-### (b) Open & read a book
-`Shelf` → `nav.openReader(id)` immediately, `void markOpened(id)` in the background
-(pointerdown on a cover already started `warmReader()`). `App` swaps to the lazily-loaded
-`Reader` (keyed on `bookId`, so a new book remounts cleanly). `Reader.onMount`:
-`Promise.all([getBookMeta, getBookFile, getProgress])` → `new ReaderController(host, settings, callbacks)`
-→ `controller.open(file, progress?.cfi)`: `view.open(file)`, wire events, apply
-appearance + layout, `view.init({lastLocation, showTextStart})`, one `#nudgeLayout()`
-re-render (~250ms) plus a 150ms-debounced resize/visualViewport listener as hedges
-against first-paint under-measurement. TOC from `controller.view.book.toc`. Then
-`loadAnnotations(bookId)` + `setHighlights(...)` seed overlays. If the dictionary is
-present, `warmupLookup()` is fired so the first tap is fast.
-
-### (c) Tap & swipe model
-The reader's only gestures are **swipe** and **tap**, both detected in
-`ReaderController`'s pointer state machine (`#trackGestures`), attached to each content
-document and to the host (for taps in the margins outside the iframe). foliate's own
-touch page-turn is patched out (`paginator.js`), so all navigation is ours.
-
-- **Swipe** (horizontal, `|dx| ≥ 45px` and `|dx| > |dy|`, no active selection, not
-  pinch-zoomed) turns the page: drag left → `goRight()`, drag right → `goLeft()`
-  ("page follows the finger"). `goLeft`/`goRight` are foliate's direction-aware nav,
-  so the turn goes the right way in LTR, RTL, and 縦書き; they animate as a horizontal
-  slide and fire `onTurn`.
-- **Tap** (clean, quick, no swipe) → `onTap` → `Reader.onTap`, in priority order:
-  1. The dictionary popup is open → dismiss it, wherever the tap landed (even on another
-     word). Nothing else.
-  2. On a Japanese glyph → `tryDefine(info)` defines it (and, with
-     `settings.highlightLookups`, highlights it) — even inside the edge band.
-  3. Else, blank tap in the **top/bottom edge band** (`inChromeToggleBand`,
-     ~12% of viewport height, 80–160px) → toggle the chrome bars.
-  4. Else, chrome visible → hide it; otherwise (blank centre) do nothing.
-
-  **A tap never turns the page, and a blank-centre tap does nothing** (there are no
-  tap edge-rails). With a card open, any tap only dismisses it. Otherwise a tap on a glyph
-  **defines it in preference to the chrome** — including inside the edge band; blank taps
-  are what drive the chrome. Taps run immediately (no defer); a highlight hit-test
-  (`show-annotation`) arriving on the same gesture stands down instead.
-
-`tryDefine`: `extract.extractTextAt(doc, ix, iy)` returns `{text, tapOffset}` (null on
-a blank/non-word tap, so blank taps fall through to no-op). Opens `DictionaryPopup`
-(loading) and `runLookup` → `lookupClient.lookupAt(text, tapOffset)` (worker). If the
-dictionary isn't ready the popup shows a download CTA → `downloadDictionary` then
-`warmupLookup`. A stale-tap guard (`lastKey`) discards superseded lookups; the matched
-span is auto-highlighted via `rangeForSpan` + `cfiForSelection`. See
-[japanese.md](./japanese.md).
-
-### (d) Highlight / bookmark
-**Selection:** `selectionchange` (debounced 250ms, per-document) → `onSelection` →
-`SelectionToolbar` over the rect. **Highlight:** `cfiForSelection(doc, range)` →
-`annotations.saveAnnotation` (IDB + store) → `controller.addHighlight(cfi)` → foliate
-`addAnnotation`, drawn **yellow** (`HIGHLIGHT_HEX`) via `draw-annotation`. Tap-to-define
-auto-highlights the looked-up word the same way. Tapping an existing highlight fires
-`show-annotation` → reopens the dictionary popup with a remove toggle. **Bookmark:**
-footer button toggles a `bookmark`-kind `Annotation` at `currentCFI`.
-`AnnotationsPanel` lists both and navigates via `goTo(cfi)`.
-
-### (e) Progress persistence
-foliate `relocate` → `ReaderController` → `Reader.onRelocate` (updates `fraction`,
-`currentCFI`, `sectionLabel`) → `saveProgress` (debounced), but only once a gesture
-has marked user interaction (`relocate` carries no reason, so intent is tracked on the
-gesture side) → `db.putProgress`. On next open, `getProgress(bookId).cfi` feeds
-`view.init({lastLocation})`. The shelf reads `library.progress[id].fraction` for the
-cover ring.
-
----
-
-## 6. State management model
-
-State lives in **module-level Svelte 5 rune singletons** (`src/stores/*.svelte.ts`).
-Each exports a deep-reactive `$state(...)` object components read directly (e.g.
-`library.books`, `settings.theme`). **Mutation goes through exported functions**, never
-raw assignment from UI, so side effects (persistence, theme, derived reloads) happen
-together. Because `$state` is deep-reactive, in-place mutation (`items.push`,
-`Object.assign(settings, patch)`) is reactive. No global store framework.
-
-| Store | Holds | Persisted via |
-|---|---|---|
-| `settings` | `ReaderSettings` (theme incl. `'auto'`, fontScale, lineHeight, marginScale, fontFamily, writingMode, highlightLookups) | `db.saveSettings`/`loadSettings` (IDB key `reader`, source of truth) + localStorage mirror `tsuzuri:settings` (sync first-paint hint) |
-| `library` | `books: BookMeta[]`, `progress`, `loading`, `importing`, `importError` | books/progress in IDB; bytes in OPFS |
-| `annotations` | `items: Annotation[]` for the open book | `db` annotations store (`byBook` index) |
-| `dict` | `state` / `updating` / `progress` / `warming` / `error` | reflects jpdict-idb's own IndexedDB |
-| `nav` | `route` (shelf vs reader+bookId) | sessionStorage `tsuzuri:route` (per session; validated on restore) |
-| `pwa` | `needRefresh`, `offlineReady`, `update()` | in-memory; driven by `registerSW` |
-
----
-
-## 7. Entry point & routing
-
-Before any module runs, an **inline script in `index.html`** reads the localStorage
-settings mirror (`tsuzuri:settings`), resolves `'auto'` via `prefers-color-scheme`, and
-sets `<html data-theme>` + the theme-color meta — so first paint is already themed.
-`src/main.ts` then runs at module top level (no top-level `await`):
-1. `void initSettings()` — seed from the mirror, `applyTheme()`, subscribe to
-   `prefers-color-scheme` changes; hydrate from IndexedDB in the background.
-2. `initViewport()` — start publishing `--app-height` from the visual viewport.
-3. `void validateRestoredRoute(...)` — a reader route restored from sessionStorage falls
-   back to the shelf if the book no longer exists.
-4. `void requestPersistence()` — request durable storage (fire-and-forget).
-5. `registerSW({ onNeedRefresh, onOfflineReady, onRegisteredSW })` — wires the `pwa`
-   store (`pwa.update = () => updateSW(true)`); `onRegisteredSW` calls
-   `registration.update()` on `visibilitychange → visible`, at most hourly.
-6. Delete the superseded `kuromoji-ipadic` runtime cache (now `kuromoji-ipadic-v2`).
-7. `mount(App, { target: #app })`.
-
-**Routing** is a two-screen router (`nav.svelte.ts`), mirrored to sessionStorage.
-`App.svelte` renders `<Reader>` (via the retryable `loadReader()`, inside
-`{#key nav.route.bookId}` for a clean remount per book) when in the reader route, else
-`<Shelf>`. `<ToastHost>` is always mounted. The critical path is one entry chunk
-(Svelte runtime + stores + shelf); foliate, the reader and the settings sheet are lazy.
-
----
-
-## 8. Key design decisions & trade-offs
-
-- **foliate-js vendored, not npm.** No stable release; vendoring lets us (1) delete
-  `pdf.js` (EPUB-only; `globIgnores` also keeps it out of precache) and (2) patch it —
-  two documented "TSUZURI PATCH" edits: removing the PDF branch in `view.js`, and
-  disabling foliate's own touch page-turn in `paginator.js` (`#onTouchMove` keeps
-  `preventDefault()` but drops `scrollBy`; `#onTouchEnd` drops the velocity snap) so our
-  swipe handler owns navigation. MIT, so fine to ship.
-- **Single `ReaderController` owns the `<foliate-view>`.** All foliate interaction (open,
-  layout, appearance, taps/swipes, selections, CFIs, highlights) funnels through one
-  class; `Reader.svelte` only wires callbacks and renders chrome. Custom pointer handling
-  replaces native gestures — see [§5(c)](#c-tap--swipe-model).
-- **Lookup runs in a Web Worker.** kuromoji build + tokenize + deinflect + JMdict reads
-  live only in `lookup.worker.ts` (no main-thread copy), so a tap never janks a page-turn
-  and the heavy engine stays out of the startup bundle. Lazy singleton, warmed on book
-  open, disposed on reader exit; rebuilds from the SW-cached dict with no network. See
-  [japanese.md](./japanese.md).
-- **Theme tokens are CSS vars applied two ways.** `applyTheme()` sets `<html data-theme>`
-  to the *resolved* palette (`light`/`sepia`/`dark`; `settings.theme` may be `'auto'`)
-  and syncs `theme-color`. The reader reads those live tokens back (`getComputedStyle`)
-  and injects them into the content iframe via `appearanceCSS()` (`renderer.setStyles`),
-  so the rendered page matches the app chrome across themes/fonts.
-- **Writing-mode override requires a reopen.** Vertical vs horizontal is re-detected from
-  the rendered document, so changing `settings.writingMode` calls
-  `reopenForWritingMode(file)` (reopen at current CFI) rather than a live restyle. The
-  reopen `close()`s and `destroy()`s the old renderer + Book to avoid leaking a paginator
-  / blob URLs per toggle.
-- **Storage is split.** Large EPUB bytes → OPFS (durable, large quota on iOS 16.4+) with
-  an IndexedDB `bookBlobs` fallback; structured data → IndexedDB (`idb`); JMdict →
-  jpdict-idb's own IndexedDB. None go through the service worker (which precaches only the
-  app shell + runtime-caches the kuromoji dict). See [storage-pwa-ios.md](./storage-pwa-ios.md).
-- **⚠ GPL-3.0 constraint.** `src/services/jp/deinflect.ts` is copied from 10ten-ja-reader
-  (GPL-3.0-or-later; `const enum`→`enum` is the only change). This imposes GPL obligations
-  on the distributed app; `LICENSE-10ten` governs. To relicense, reimplement deinflection.
-- **Backend-free static deploy.** Fully client-side, shipped to GitHub Pages at
-  <https://huangwaylon.github.io/epub/> via `deploy.yml` (push to `main`). Production build
-  uses `base: '/epub/'` (dev `/`); PWA `start_url`/`scope`/`navigateFallback` derive from
-  it. CI strips the local-only `sharp` dep. See [deployment.md](./deployment.md).
-
----
-
-## 9. Cross-references
-
-- [`./reader-engine.md`](./reader-engine.md) — foliate integration, pagination, CFIs, tap/selection geometry, vertical layout.
-- [`./japanese.md`](./japanese.md) — extraction, deinflection, JMdict lookup, the worker pipeline, dictionary lifecycle.
-- [`./storage-pwa-ios.md`](./storage-pwa-ios.md) — OPFS/IndexedDB, persistence, viewport handling, service worker, iOS install.
-- [`./ui-and-design.md`](./ui-and-design.md) — Svelte components, design tokens, theming, sheets.
-- [`./deployment.md`](./deployment.md) — GitHub Pages CI, base path, PWA manifest, local-only `sharp`.
-- [`./development.md`](./development.md) — scripts, build, test, local on-device setup.
-</content>
-</invoke>
+### Vendored (`src/vendor/foliate-js/`, MIT)
+`view.js` (`<foliate-view>`, `makeBook`; the only module the app imports directly),
+`paginator.js`, `epub.js`, `epubcfi.js`, `overlayer.js`, `vendor/zip.js`, plus unused
+format modules (mobi, fb2, comic-book, tts, search, …), which are excluded from the
+precache. The local patches (PDF removed from `view.js`; three `TSUZURI PATCH` edits in
+`paginator.js`) are listed in [reader-engine.md §1](./reader-engine.md).

@@ -54,11 +54,8 @@ for (const { svg, size, name } of jobs) {
 }
 
 // ── iPad launch screens ────────────────────────────────────────────────────
-// iOS shows an `apple-touch-startup-image` only when its media query matches the
-// device exactly (CSS device size, DPR, orientation), so each iPad screen size needs
-// its own image per orientation — plus a dark variant for `prefers-color-scheme`.
-// Plain paper with the app mark centred: it matches the first frame of the app, so
-// the launch reads as one continuous surface. Paper colours mirror app.css.
+// iOS uses a startup image only on an exact media-query match (device size, DPR,
+// orientation), so each size needs one per orientation and colour scheme. Colours mirror app.css.
 const PAPER = { light: '#f6f3ec', dark: '#16140f' }
 const IPADS = [
   // [CSS portrait width, height] — all 2× DPR

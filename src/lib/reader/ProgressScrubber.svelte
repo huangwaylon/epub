@@ -1,13 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
-  /**
-   * The bottom-bar reading-progress control. At rest it's a calm hairline track
-   * with the section label + percentage. Press-and-drag turns it into a scrubber
-   * for fast-scrolling the whole book: an 8px (touch) / 4px (mouse) dead-zone has
-   * to be crossed before it arms (so a stray graze never skips), the seek is
-   * committed only on release (no re-paginating on every move), and a clean tap
-   * is a no-op that just flashes the thumb to teach the affordance. Apple-Books-ish.
-   */
+  // Drag arms past an 8px (touch) / 4px (mouse) dead-zone and seeks on release; a clean
+  // tap never seeks, it only flashes the thumb.
   let {
     fraction = 0,
     sectionLabel = '',
@@ -16,7 +10,7 @@
   }: {
     fraction?: number
     sectionLabel?: string
-    /** Chapter title at an overall-book fraction — previewed above the % while dragging. */
+    /** Chapter title at a book fraction, shown in the drag bubble. */
     labelAt?: (frac: number) => string
     onseek?: (frac: number) => void
   } = $props()
@@ -26,13 +20,11 @@
   let flashing = $state(false)
   let previewFraction = $state(0)
 
-  // Non-reactive gesture bookkeeping.
   let armed = false
   let startX = 0
   let armThreshold = 8
   let flashTimer: number | undefined
 
-  // The fraction we render: the live preview while scrubbing, else the real one.
   const shown = $derived(scrubbing ? previewFraction : fraction)
   const pct = $derived(Math.round(shown * 100))
   const previewLabel = $derived(scrubbing && labelAt ? labelAt(previewFraction) : '')
@@ -45,7 +37,7 @@
 
   function onPointerDown(e: PointerEvent) {
     if (!e.isPrimary) return
-    // Keep the press from bubbling to the bar's chrome-dismiss handler.
+    // Don't reach the bar's chrome-dismiss handler.
     e.stopPropagation()
     armed = true
     startX = e.clientX
@@ -81,8 +73,6 @@
       scrubbing = false
       onseek?.(fractionFromX(e.clientX))
     } else {
-      // A clean tap: don't seek (that's the big accidental-skip risk). Briefly
-      // reveal the thumb so the drag affordance is discoverable.
       flashing = true
       flashTimer = window.setTimeout(() => (flashing = false), 650)
     }
@@ -93,14 +83,12 @@
     scrubbing = false
   }
 
-  // The thumb-flash timer can outlive the component: hiding the chrome unmounts this
-  // scrubber, and a clean tap right before that leaves a pending 650ms timer. Clear it
-  // so it can't fire into a destroyed component (and so its closure is released).
+  // Hiding the chrome unmounts the scrubber while a flash timer may be pending.
   onDestroy(() => {
     if (flashTimer) clearTimeout(flashTimer)
   })
 
-  // Keyboard a11y: arrow keys nudge (±1%, ±5% with shift); Home/End jump.
+  // Arrows nudge ±1% (±5% with Shift); Home/End jump.
   function onKeyDown(e: KeyboardEvent) {
     let next: number | null = null
     const step = e.shiftKey ? 0.05 : 0.01
@@ -114,8 +102,7 @@
   }
 </script>
 
-<!-- onclick stops the synthesized click from reaching the bar's dismiss handler.
-     The real control is the .hit slider inside; this wrapper is presentational. -->
+<!-- Stops the synthesized click reaching the bar's dismiss handler; .hit is the control. -->
 <div class="scrubber" class:active={scrubbing} role="presentation" onclick={(e) => e.stopPropagation()}>
   <div class="lane">
     <div bind:this={track} class="track">
@@ -123,12 +110,11 @@
     </div>
     <div class="thumb" class:show={scrubbing || flashing} style="left:{shown * 100}%"></div>
     {#if scrubbing}
-      <div class="bubble" style="--x:{shown}">
+      <div class="bubble glass" style="--x:{shown}">
         {#if previewLabel}<span class="chap" lang="ja">{previewLabel}</span>{/if}
         <span class="bpct">{pct}%</span>
       </div>
     {/if}
-    <!-- 44px invisible hit band carrying all the pointer logic + a11y role. -->
     <div
       class="hit"
       role="slider"
@@ -181,7 +167,6 @@
     background: var(--accent);
     transition: width var(--dur-base) var(--ease-out);
   }
-  /* While dragging the fill must track the finger 1:1 — no width easing. */
   .fill.live {
     transition: none;
   }
@@ -212,9 +197,8 @@
   .scrubber.active .thumb {
     transition:
       opacity var(--dur-fast) var(--ease-out),
-      transform var(--dur-fast) var(--ease-out); /* no left easing while dragging */
+      transform var(--dur-fast) var(--ease-out);
   }
-  /* Mouse/trackpad users get a discoverable resting dot. */
   @media (hover: hover) {
     .scrubber:hover .thumb {
       opacity: 1;
@@ -222,8 +206,6 @@
     }
   }
 
-  /* Preview bubble: chapter title over the target %. Follows the thumb but is clamped so
-     a long title never runs off the capsule's ends. */
   .bubble {
     position: absolute;
     bottom: 100%;
@@ -239,12 +221,9 @@
     border-radius: var(--r-md);
     color: var(--ink);
     background: var(--glass-bg-strong);
-    -webkit-backdrop-filter: var(--glass-filter);
-    backdrop-filter: var(--glass-filter);
-    box-shadow: var(--glass-shadow);
     pointer-events: none;
     white-space: nowrap;
-    animation: pop var(--dur-fast) var(--ease-out);
+    animation: t-pop var(--dur-fast) var(--ease-out);
   }
   .chap {
     max-width: 100%;
@@ -260,13 +239,6 @@
     font-weight: 650;
     font-variant-numeric: tabular-nums;
   }
-  @keyframes pop {
-    from {
-      opacity: 0;
-      transform: translateY(4px) scale(0.96);
-    }
-  }
-
   .hit {
     position: absolute;
     left: 0;

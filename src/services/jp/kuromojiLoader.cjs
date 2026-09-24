@@ -1,37 +1,22 @@
 /*
- * Tsuzuri's kuromoji dictionary loader. Replaces @sglkc/kuromoji's
- * BrowserDictionaryLoader (via a Vite resolve alias on NodeDictionaryLoader — see
- * vite.config.ts). Three jobs, all about memory and robustness on an iPad PWA:
+ * Tsuzuri's kuromoji dictionary loader, aliased over @sglkc/kuromoji's loaders in
+ * vite.config.ts. For memory and robustness on iOS:
  *
- * 1. **Native, defensive gunzip.** If the response is the raw gzip stream (magic
- *    0x1f 0x8b — what GitHub Pages / most static hosts return) it is inflated with the
- *    platform `DecompressionStream('gzip')`; if the server already decompressed it (it
- *    tagged the response `Content-Encoding: gzip`, so the browser inflated it
- *    transparently — Vite's dev/preview server does this) the bytes are used as-is. The
- *    upstream loader assumed the former and hung silently in the latter case (its gunzip
- *    throw wasn't routed to the callback). No JS inflate library ships in the bundle.
- *
- * 2. **No feature strings.** `tid_pos.dat.gz` (≈40 MB inflated: every token's POS /
- *    reading line) is only read by `Tokenizer#tokenize` → `getFeatures`. Tsuzuri takes
- *    token boundaries from the lattice + Viterbi path instead (segment.ts), so this
- *    loader answers that file with an empty buffer **without fetching it** — and the
- *    staging script (scripts/copy-kuromoji-dict.mjs) doesn't even stage it.
- *
- * 3. **Flat target maps.** Upstream `loadTargetMap` builds a JS object with one Array
- *    per trie id (~326k arrays for IPADIC — tens of MB of heap and a long GC-heavy
- *    parse). Here it is two Int32Arrays (offsets + values, ~3 MB) behind an object
- *    whose `target_map[id]` returns a `subarray` — the only way kuromoji reads it
- *    (`ViterbiBuilder#build`: `.length` and `[i]`). Installed per loader *instance*, so
- *    kuromoji's shared prototypes are left untouched.
+ * 1. Gunzips with native `DecompressionStream` only if the bytes carry the gzip magic —
+ *    servers that send `Content-Encoding: gzip` (Vite dev) hand over inflated bytes.
+ * 2. Answers `tid_pos.dat.gz` (≈40 MB of POS/reading strings, only read by `tokenize()`)
+ *    with an empty buffer, unfetched; segment.ts takes boundaries from the lattice.
+ * 3. Replaces `loadTargetMap`'s ~326k JS arrays with two Int32Arrays behind a Proxy whose
+ *    `target_map[id]` is a subarray (kuromoji only reads `.length` and `[i]`). Installed
+ *    per instance, leaving kuromoji's prototypes untouched.
  */
 'use strict'
 
 const DictionaryLoader = require('@sglkc/kuromoji/src/loader/DictionaryLoader')
 
-/** Dictionary files the runtime never needs (see header, point 2). */
+/** Never fetched (header, point 2). */
 const SKIPPED = /(?:^|\/)tid_pos\.dat\.gz$/
 
-/** Inflate gzip bytes with the platform decompressor. */
 function gunzip(bytes) {
   const stream = new Response(bytes).body.pipeThrough(new DecompressionStream('gzip'))
   return new Response(stream).arrayBuffer()
@@ -42,14 +27,11 @@ function readInt(bytes, view, p) {
   return p + 4 <= bytes.length ? view.getInt32(p, true) : 0
 }
 
-/** An empty, frozen value for ids with no mapping (never happens for a valid trie). */
+/** For ids with no mapping (never happens for a valid trie). */
 const EMPTY = new Int32Array(0)
 
-/**
- * Parse a kuromoji target map (`[count] ([key] [n] [value × n])*`, little endian) into
- * flat arrays. Uses the header count rather than looping to the end of the buffer, so
- * trailing zero padding (present in the stock files) is never walked.
- */
+/** Parse a target map (`[count] ([key] [n] [value × n])*`, LE) by its header count, so
+ *  trailing zero padding is never walked. */
 function flatTargetMap(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const count = readInt(bytes, view, 0)
@@ -64,8 +46,7 @@ function flatTargetMap(bytes) {
     total += n
     p += 8 + 4 * n
   }
-  // Pass 2: bucket values by key (a counting sort, so duplicate keys concatenate in
-  // file order exactly like upstream `addMapping`).
+  // Pass 2: counting sort, so duplicate keys concatenate in file order like upstream.
   const starts = new Int32Array(maxKey + 2)
   p = 4
   for (let k = 0; k < count && p < bytes.length; k++) {
@@ -105,8 +86,6 @@ function loadFlatTargetMap(arrayBuffer) {
 
 function TsuzuriDictionaryLoader(dicPath) {
   DictionaryLoader.apply(this, [dicPath])
-  // Shadow the prototype method on just these two instances; the stock Tokenizer /
-  // ViterbiBuilder read `target_map[id]` and are otherwise unchanged.
   this.dic.token_info_dictionary.loadTargetMap = loadFlatTargetMap
   this.dic.unknown_dictionary.loadTargetMap = loadFlatTargetMap
 }
@@ -115,14 +94,12 @@ TsuzuriDictionaryLoader.prototype = Object.create(DictionaryLoader.prototype)
 
 TsuzuriDictionaryLoader.prototype.loadArrayBuffer = function (url, callback) {
   if (SKIPPED.test(url)) {
-    // Not needed for boundary-only segmentation — skip the ~6 MB (40 MB inflated) file.
     queueMicrotask(function () {
       callback(null, new ArrayBuffer(0))
     })
     return
   }
-  // Network (or the service worker) first; if that fails — offline in a worker the SW
-  // doesn't control — fall back to the Cache API copy cacheIpadic() stored.
+  // Network / SW first; offline in a worker the SW doesn't control, use cacheIpadic()'s copy.
   fetch(url)
     .catch(function (err) {
       if (typeof caches === 'undefined') throw err
@@ -149,13 +126,9 @@ TsuzuriDictionaryLoader.prototype.loadArrayBuffer = function (url, callback) {
     )
 }
 
-/**
- * Invoke kuromoji's callback outside the promise chain. The callback runs the
- * dictionary assembly (and, for the last file, the whole build continuation), so a
- * throw from it must not be swallowed as an unhandled rejection — that would leave
- * `ensureSegmenter()` pending forever. Rethrown on a fresh task, it surfaces as a
- * worker `error` event, which the client treats as a dead worker and replaces.
- */
+/** Call kuromoji's callback outside the promise chain: a throw inside it would otherwise
+ *  be swallowed and hang `ensureSegmenter()`. Rethrown on a fresh task it becomes a worker
+ *  `error`, and the client replaces the worker. */
 function deliver(callback, err, buffer) {
   try {
     callback(err, buffer)

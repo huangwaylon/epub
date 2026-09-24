@@ -10,10 +10,7 @@
 
   let status = $state<StorageStatus | null>(null)
   onMount(async () => {
-    // Initialise dictionary state for the status readout. If JMdict is already installed
-    // (e.g. downloaded by an older build that only cached IPADIC via a trie build), top up
-    // the IPADIC Cache API copy so offline segmentation doesn't depend on having opened a
-    // book since — a no-op when every file is already cached.
+    // Initialise dict state; if JMdict is installed, top up the IPADIC cache (no-op if full).
     void getDb().then(
       () => {
         if (dict.state === 'ok') void cacheIpadic()
@@ -23,17 +20,14 @@
     status = await storageStatus()
   })
 
-  /** One reactive status for the section: see `DictPhase` in dictdb.ts. */
   const phase = $derived(dictPhase())
   const pct = $derived(Math.round(dict.progress * 100))
 
   async function getDict() {
     try {
-      // JMdict + the IPADIC files into the Cache API — no kuromoji trie is built (or held
-      // in memory) from the shelf; the reader warms it when a book opens.
-      await downloadAndCacheDictionary('en')
+      await downloadAndCacheDictionary('en') // no kuromoji trie built here; the reader warms it
     } catch {
-      /* error shown via store */
+      /* shown via dict.error */
     }
   }
 

@@ -1,439 +1,200 @@
 # Storage, Data Model, PWA & iOS Constraints
 
-How **Tsuzuri** persists data, the shape of that data, how it ships as an installable
-PWA, and the iOS constraints behind those choices. Paths are relative to the repo root.
+How Tsuzuri persists data, ships as an installable PWA, and works around iOS. Deployment
+and the `/epub/` base are in [deployment.md](./deployment.md). The JMdict database and the
+IPADIC download/warm flow are in [japanese.md](./japanese.md).
 
-**Two-tier persistence:**
+- **Structured data** → IndexedDB `tsuzuri` via `idb` (`src/services/storage/db.ts`).
+- **EPUB bytes** → OPFS, with an IndexedDB fallback (`src/services/storage/blobs.ts`).
+- **JMdict** → jpdict-idb's own IndexedDB. **kuromoji dict** → Cache API (service worker).
 
-- **Structured data** (book metadata, progress, annotations, settings) → **IndexedDB**
-  via [`idb`](https://github.com/jakearchibald/idb) — `src/services/storage/db.ts`.
-- **Raw EPUB bytes** (multi-MB) → **Origin Private File System (OPFS)** with a
-  transparent IndexedDB fallback — `src/services/storage/blobs.ts`.
-
-CFI (EPUB Canonical Fragment Identifier) strings anchor both progress and annotations, so
-they survive reflow, font-size, and writing-mode changes.
-
----
+Progress and annotations are CFI-anchored ([reader-engine.md §9](./reader-engine.md)).
 
 ## 1. Data model — `src/services/types.ts`
 
-Single source of truth for every persisted shape.
-
-A **CFI** (EPUB Canonical Fragment Identifier) is an opaque EPUB anchor for a
-position or range, stable across reflow/font/writing-mode changes — see
-[`docs/reader-engine.md`](./reader-engine.md) §10.
-
-| Export | Kind | Value / store |
-| --- | --- | --- |
-| `WritingModePref` | type | `'auto' \| 'horizontal' \| 'vertical'` — reader override on top of the EPUB's declared mode. |
-| `ResolvedTheme` | type | `'light' \| 'sepia' \| 'dark'` — a concrete palette; what `<html data-theme>` is set to. |
-| `ThemeName` | type | `'auto' \| ResolvedTheme` — the stored preference; `'auto'` follows `prefers-color-scheme` (light ↔ dark). |
-| `AnnotationKind` | type | `'highlight' \| 'bookmark'`. |
-| `HIGHLIGHT_HEX` | const | `'#ffd54a'` — the single highlight colour (reads well behind text at ~0.3 overlay opacity). No colour picker, no per-highlight `color` field. |
-| `BookMeta` | interface | Shelf entry, one per book → `books` store. |
-| `ReadingProgress` | interface | Last-read position, one per book → `progress` store. |
-| `Annotation` | interface | A CFI-anchored highlight or bookmark → `annotations` store. |
-| `ReaderSettings` | interface | Global (not per-book) appearance/behaviour → `settings` store under key `'reader'`. |
-| `DEFAULT_SETTINGS` | const | Seed `ReaderSettings`. |
-
-### `BookMeta`
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `id` | `string` | **SHA-256 of the raw bytes** (lowercase hex). Also the OPFS filename stem and dedupe key. |
-| `title` | `string` | EPUB metadata; falls back to filename minus `.epub`. |
-| `author` | `string` | EPUB metadata; multiple authors joined with `、` (U+3001). |
-| `language` | `string` | BCP-47 tag, e.g. `"ja"`. |
-| `dir` | `'ltr' \| 'rtl'` | EPUB page-progression direction (`'rtl'` for most vertical JP novels). |
-| `cover?` | `Blob` | Downscaled WebP thumbnail (see import flow). Stored inline in IndexedDB. |
-| `fileName` | `string` | Original imported filename. |
-| `fileSize` | `number` | `file.size`. |
-| `addedAt` | `number` | Epoch ms of import. |
-| `lastOpenedAt` | `number` | Epoch ms; drives shelf sort (desc), bumped on open/re-import. |
-
-### `ReadingProgress`
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `bookId` | `string` | keyPath; equals `BookMeta.id`. |
-| `cfi` | `string` | CFI from foliate's `relocate` event — survives reflow. |
-| `fraction` | `number` | `0..1` overall progress; drives the shelf ring. |
-| `label?` | `string` | Current TOC section label. |
-| `updatedAt` | `number` | Epoch ms. |
-
-### `Annotation`
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `id` | `string` | Primary key. |
-| `bookId` | `string` | Indexed by `byBook` for per-book queries and cascade delete. |
-| `kind` | `AnnotationKind` | `'highlight'` or `'bookmark'`. |
-| `cfi` | `string` | Range (highlights) or point (bookmarks). |
-| `text` | `string` | Selected text (highlights) / context snippet (bookmarks). For tap-to-define highlights, the looked-up word. |
-| `note?` | `string` | Optional user note. |
-| `sectionLabel?` | `string` | TOC label for grouping in the annotations panel. |
-| `createdAt` | `number` | Epoch ms. |
-
-### `ReaderSettings` / `DEFAULT_SETTINGS`
-
-| Field | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `theme` | `ThemeName` | `'auto'` | New users follow the OS; existing users keep their stored value. |
-| `fontScale` | `number` | `1` | `1` = 100%. |
-| `lineHeight` | `number` | `1.9` | |
-| `marginScale` | `number` | `1` | Multiplies the base page margin. |
-| `fontFamily` | `'serif' \| 'sans'` | `'serif'` | |
-| `writingMode` | `WritingModePref` | `'auto'` | |
-| `highlightLookups` | `boolean` | `true` | Highlight (and record as vocab) every looked-up word; lookup itself is always on. Replaces the retired `tapToDefine`. |
-
-> Settings semantics and UI wiring: [`docs/ui-and-design.md`](./ui-and-design.md).
-
----
-
-## 2. Blob storage (OPFS) — `src/services/storage/blobs.ts`
-
-Layout: OPFS root (`navigator.storage.getDirectory()`) → `books/` directory → one
-`${id}.epub` per book. The IndexedDB-backed `*BlobFallback` helpers from `db.ts` are the
-fallback path.
-
-**Feature detection — `opfsSupported()`.** A synchronous check for
-`navigator.storage.getDirectory` **and** `FileSystemFileHandle.prototype.createWritable`
-(older WebKit exposed OPFS with only worker-side sync access handles). This replaced a
-per-session `.probe` file create/write/remove. Runtime failures are still handled:
-`getBooksDir()` returns `null` (rather than throwing) when `getDirectory` rejects (e.g. a
-private-mode `SecurityError`), and a failed OPFS write in `putBook` removes the partial file
-and then **falls back to `bookBlobs`** — except for `QuotaExceededError`, which is rethrown
-(IDB shares the origin quota, so writing the bytes again would just fail slower).
-
-| Function | Signature | Behaviour |
-| --- | --- | --- |
-| `putBook` | `(id, data: Blob \| ArrayBuffer) => Promise<void>` | Normalises to `Blob`; writes `books/${id}.epub` via OPFS, else (unsupported, or a non-quota write failure) `putBlobFallback`. |
-| `getBookFile` | `(id) => Promise<File \| null>` | Reads the OPFS file; on an OPFS **miss** (absent or zero-length) falls through to `getBlobFallback`. **Re-wraps** as `new File([...], '${id}.epub', { type: 'application/epub+zip' })`. `null` if absent from both. |
-| `hasBook` | `(id) => Promise<boolean>` | `getBookFile(id) !== null` — used by the re-import path to restore lost bytes. |
-| `deleteBook` | `(id) => Promise<void>` | Removes the OPFS entry (best-effort) **and** always calls `deleteBlobFallback` — covers bytes written before OPFS became usable. |
-
-The normalised name/MIME on `getBookFile` let the `File` pass straight to foliate's
-`view.open` / `makeBook` type-sniffing (see [`docs/architecture.md`](./architecture.md)).
-`getBookFile` returning `null` is the "missing" signal callers rely on.
-
----
-
-## 3. IndexedDB schema — `src/services/storage/db.ts`
-
-Opened lazily via a memoised `db()` promise: `openDB<TsuzuriDB>('tsuzuri', 1, { upgrade,
-blocking, terminated })`. DB name `tsuzuri`, **version 1**; `upgrade` creates every store
-inside an `if (oldVersion < 1)` step (so future versions append steps — see §8).
-
-**Connection lifecycle.** The cached promise is dropped (so the next `db()` reopens) when
-the connection dies: `terminated` (iOS WebKit can sever IDB connections after long
-backgrounding), `blocking` (a newer build in another tab wants to upgrade — we also
-`close()` so it can proceed), or a failed open. Without this a dead handle would be reused
-forever.
-
-| Store | keyPath / key | Indexes | Value | Purpose |
-| --- | --- | --- | --- | --- |
-| `books` | `id` | — | `BookMeta` | Shelf metadata. |
-| `progress` | `bookId` | — | `ReadingProgress` | One row per book. |
-| `annotations` | `id` | `byBook` → `bookId` | `Annotation` | Highlights & bookmarks; `byBook` enables per-book listing and cascade delete. |
-| `settings` | *(out-of-line)* | — | `ReaderSettings` | Single row under explicit key `'reader'`. |
-| `bookBlobs` | `id` | — | `StoredBlob` (`{ id, blob }`) | OPFS fallback for EPUB bytes. |
-
-### CRUD helpers
-
-All `await db()` first, so they are safe before the DB has opened.
-
-| Group | Functions |
-| --- | --- |
-| Books | `putBookMeta`, `getBookMeta`, `getAllBooks`, `deleteBookMeta` |
-| Progress | `getProgress`, `getAllProgress` (every row, one transaction — the shelf), `putProgress` |
-| Annotations | `getAnnotations` (via `getAllFromIndex('annotations','byBook',id)`), `putAnnotation`, `deleteAnnotation`, `deleteBookCascade` |
-| Settings | `loadSettings` (`get('settings','reader')`), `saveSettings` (`put('settings', s, 'reader')`) |
-| Blob fallback | `putBlobFallback`, `getBlobFallback` (unwraps `.blob`), `deleteBlobFallback` |
-
-**`deleteBookCascade(id)`** atomically removes the book + dependent rows in **one**
-`readwrite` transaction over `books`, `progress`, `annotations`. Annotations are deleted by
-walking a cursor on the `byBook` index (no single-key delete for one-to-many). The EPUB
-blob is **not** deleted here — the source comment says "blob deletion handled by caller";
-`removeBook` in `library.ts` calls `deleteBook(id)` afterwards (see §5, §9).
-
----
-
-## 4. Persistence helpers — `src/services/storage/persist.ts`
-
-Wrappers over the Storage API, all defensively guarded (`navigator.storage?.…`, try/catch)
-so the app never throws on engines lacking the API.
-
-| Export | Signature | Behaviour |
-| --- | --- | --- |
-| `StorageStatus` | interface | `{ persisted: boolean; usage: number; quota: number }`. |
-| `requestPersistence` | `() => Promise<boolean>` | Returns `true` early if already `persisted()`; else calls `persist()`. Safe to call repeatedly. |
-| `storageStatus` | `() => Promise<StorageStatus>` | Reads `persisted()` + `estimate()` (usage/quota, default `0`). Zeroed on failure. |
-| `formatBytes` | `(n) => string` | Base-1024 B/KB/MB/GB; whole number for bytes, one decimal otherwise; `0 → '0 B'`. |
-
-**Call sites:** `src/main.ts` fires `void requestPersistence()` on startup (fire-and-forget,
-before mount). `src/lib/library/ShelfSettings.svelte` calls `storageStatus()` in `onMount`
-and renders a usage bar (`{usage} used` plus `of {quota}` when quota is known) and a
-**"Persistent"** badge when `persisted`; fill width is `min(100, usage/quota*100)%`, guarded
-for `quota === 0`.
-
----
-
-## 5. Library import flow — `src/services/library.ts`
-
-`importEpub(file: File): Promise<BookMeta>`:
-
-1. `id = sha256Hex(await file.arrayBuffer())` (content hash via `crypto.subtle.digest`,
-   hex-encoded). The ArrayBuffer isn't held long-term, keeping peak heap near 1× file size.
-2. **Dedupe:** if `getBookMeta(id)` exists, bump `lastOpenedAt`, `putBookMeta`, return it.
-   If its bytes are gone (`!hasBook(id)` — evicted/cleared), `putBook` rewrites them first;
-   that's what the reader's "please re-import the EPUB" message relies on.
-3. **Persist bytes ∥ parse:** `Promise.all([putBook(id, file), parseMeta(file)])` — both only
-   read the `File` (OPFS → IndexedDB fallback, §2).
-4. **Rollback guard:** the whole step 3 + the `putBookMeta` write run in a `try/catch`; on any
-   throw it calls `deleteBook(id)` and rethrows. Once bytes are persisted, a throw — most
-   plausibly `putBookMeta` hitting quota on a near-full iPad — would otherwise orphan
-   multi-MB OPFS bytes with no `books` row, invisible to the shelf and to `removeBook`,
-   leaking against quota.
-5. **Parse metadata** (best-effort nested try/catch; failures fall back to defaults +
-   `console.warn`; `parseMeta` never rejects): `makeBook(file)` from vendored
-   `src/vendor/foliate-js/view.js` — **dynamically imported**, so foliate (view.js + epubcfi
-   + zip) stays off the shelf's cold-start critical path — then
-   `title` ← `flattenLangMap(meta.title)` else filename; `author` ← array joined with `、`
-   else single; `language` ← `meta.language[0]` or string or `''`; `dir` ← `'rtl'`/`'ltr'`;
-   `cover` ← `thumbnailCover(book.getCover())` (320px-wide WebP `Blob`) or `undefined`.
-6. Build `BookMeta` (`addedAt = lastOpenedAt = now`, `fileSize = file.size`), `putBookMeta`.
-
-`flattenLangMap(x)` collapses EPUB language-map values, **preferring Japanese**:
-`map.ja ?? map.ja_JP ?? Object.values(map)[0] ?? ''`; plain strings pass through.
-
-| Function | Behaviour |
-| --- | --- |
-| `importEpub` | The flow above. |
-| `listBooks` | `getAllBooks()` sorted by `lastOpenedAt` **descending**. |
-| `touchBook` | Loads meta, bumps `lastOpenedAt`, saves. No-op if missing. |
-| `removeBook` | `deleteBookCascade(id)` **then** `deleteBook(id)` (blob). Both required. |
-| `getBookFile` | Re-export of `blobs.getBookFile`. |
-
-**UI wiring:** `src/stores/library.svelte.ts` holds reactive shelf state and exposes
-`importFiles(files)` (filters to `.epub` / `application/epub+zip`, tracks an `importing`
-counter, imports sequentially, refreshing the shelf after each file of a batch and once at the
-end). `refreshLibrary` reads `listBooks` + `getAllProgress` in parallel and carries a
-generation counter, so an older refresh finishing late can't overwrite a newer one. Failures surface via `library.importError`
-(a dismissible shelf alert) — a standalone iOS PWA has no visible console, so a silent error
-would just read as "the book never appeared." `Shelf.svelte` triggers import from a hidden
-`<input>` (§6/§7) and routes long-press delete to `removeBook`.
-
----
-
-## 6. PWA setup
-
-### `vite.config.ts` — VitePWA
-
-| Option | Value / effect |
-| --- | --- |
-| `includeManifestIcons` | `false` — the manifest icons are read by the OS at install, not by the page, so they aren't precached. |
-| `registerType` | `'prompt'` — SW does **not** auto-activate an update; the app surfaces a refresh prompt. No `skipWaiting`, so a reading user is never reloaded out from under. |
-| `manifest` | `name: 'Tsuzuri — Japanese Reader'`, `short_name: 'Tsuzuri'`, `display: 'standalone'`, `orientation: 'any'`, `background_color`/`theme_color: '#f6f3ec'`. `start_url`/`scope` = `base`. Icons: `icon-192`, `icon-512` (`any`), `maskable-512` (`maskable`). |
-| `workbox.clientsClaim` | `true` — a freshly-installed SW takes control of the already-loaded page immediately, so the IPADIC dict fetched *in that first session* (right after download → `warmupLookup`) is runtime-cached while still online. |
-| `workbox.globPatterns` | `**/*.{js,css,html}`, `favicon.svg`, `icons/apple-touch-icon-180.png` — **app shell only** (no web fonts are bundled; the app uses the system JP stack). Manifest icons and `public/splash/*` are fetched by the OS at install, so they're not precached. |
-| `workbox.globIgnores` | `**/kuromoji/**` and dead foliate format loaders `assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js` — keeps the ~19 MB IPADIC dict and ~37 KB of unreachable chunks out of the install-time precache. The `foliate-` prefix comes from `build.rolldownOptions.output.chunkFileNames` (any chunk whose facade — or every module — is under `src/vendor/foliate-js/`), so the pattern can't catch an app chunk. |
-| `workbox.maximumFileSizeToCacheInBytes` | `6 * 1024 * 1024`. |
-| `workbox.navigateFallback` | `${base}index.html` — SPA works offline for any in-scope route. |
-| `workbox.cleanupOutdatedCaches` | `true` — drops stale caches across deploys. |
-| `workbox.runtimeCaching` | The ~11 MB IPADIC `*.dat.gz` under `/kuromoji/dict/`: `CacheFirst`, `cacheName: 'kuromoji-ipadic-v2'` (bump with the dict contents; `main.ts` deletes the superseded `kuromoji-ipadic` at startup, since `cleanupOutdatedCaches` only prunes precaches), `cacheableResponse.statuses: [0, 200]`. **No `expiration`** — neither `maxAgeSeconds` *nor* `maxEntries`. The dict is build-versioned immutable data and an all-or-nothing set of 11 shards; any LRU/age purge could evict one shard and leave a partial dict (a failed trie build, with no way to refetch offline). `cleanupOutdatedCaches` handles cross-deploy staleness instead. |
-| `devOptions` | `{ enabled: true, type: 'module' }` — SW runs under `vite dev` (with `server.host: true` exposing the dev server on the LAN) so install/offline can be tested on-device. |
-
-The `base` is `'/epub/'` for `vite build` (GitHub Pages project site) and `'/'` for
-`vite dev`; `start_url`/`scope`/`navigateFallback` all derive from it. Precache is the app
-shell only — books live in OPFS and the JP dictionary lives in jpdict's own IndexedDB, so
-neither is fetched through the SW. The deploy pipeline, base-path handling, and `sharp` CI
-gotcha live in [`docs/deployment.md`](./deployment.md); the dictionary download/warm flow in
-[`docs/japanese.md`](./japanese.md).
-
-### `index.html` — iOS meta tags
-
-```html
-<meta name="viewport"
-  content="width=device-width, initial-scale=1.0, maximum-scale=1.0,
-           user-scalable=no, viewport-fit=cover" />
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Tsuzuri" />
-<link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
-<!-- splash:start … 36 apple-touch-startup-image links … splash:end -->
-<meta name="theme-color" content="#f6f3ec" />
-<script>/* inline: data-theme + theme-color from localStorage 'tsuzuri:settings' */</script>
-```
-
-- `viewport-fit=cover` + `maximum-scale=1, user-scalable=no` → edge-to-edge layout under the
-  notch/home indicator, no pinch-zoom. Chrome stays clear of indicators via
-  `safe-area-inset-*` (e.g. `--safe-bottom` in `ToastHost.svelte`).
-- `black-translucent` status bar → content renders under the status bar in standalone.
-- **One** `theme-color` meta (no `media` variants — they'd fight the runtime value). The inline
-  script sets it and `<html data-theme>` synchronously before first paint from the
-  localStorage settings mirror (`'auto'` → `prefers-color-scheme`); `applyTheme()` in
-  `settings.svelte.ts` then keeps it at the resolved theme's `--paper`, including live OS
-  appearance flips while on `'auto'`. The inline script's key and paper colours must stay in
-  sync with `settings.svelte.ts` / `app.css`. First launch after upgrading from a pre-mirror
-  build has no mirror yet, so it paints `'auto'` for a moment until IDB hydrates.
-- **iPad launch screens** (`apple-touch-startup-image`): 9 iPad screen sizes × portrait/landscape
-  × light/dark (`prefers-color-scheme`) = 36 PNGs in `public/splash/` (~320 KB total), plain
-  paper + the centred app mark. iOS only uses an image whose media query (device-width/height,
-  DPR 2, orientation) matches exactly, and fetches them at Add to Home Screen — hence not
-  precached. Whether iOS honours the `prefers-color-scheme` variant is **unverified on device**.
-  An unlisted iPad size just gets the default blank launch.
-
-### SW registration & update UI
-
-- `src/main.ts` — `registerSW` (from `virtual:pwa-register`) wires `onNeedRefresh` →
-  `pwa.needRefresh = true` + `pwa.update = () => updateSW(true)` (skip-waiting reload),
-  `onOfflineReady` → `pwa.offlineReady = true`, and `onRegisteredSW` → on
-  `visibilitychange → visible` (and online) call `registration.update()`, **at most hourly**.
-  An installed PWA is resumed far more often than it's navigated, so the browser's own
-  navigation-time update check rarely runs.
-- **Update reload returns to the book.** `nav.route` is mirrored to sessionStorage
-  (`tsuzuri:route`); after the update reload `main.ts` restores it and `validateRestoredRoute`
-  drops back to the shelf if the book was removed. A cold launch is a new session → shelf.
-- `src/stores/pwa.svelte.ts` — Svelte 5 `$state`:
-  `{ needRefresh, offlineReady, update }`, initialised falsy / no-op.
-- `src/lib/components/ToastHost.svelte` (via the `toast` store) — shows "A new version is ready." + **Refresh**
-  (`pwa.update()`) when `needRefresh`; otherwise the one-time "Ready to read offline."
-  confirmation when `offlineReady`, auto-dismissed after 4 s via a `$effect` whose cleanup
-  clears the timer. Positioned above the bottom safe area
-  (`bottom: calc(var(--safe-bottom) + 18px)`).
-
-### Icons — `scripts/gen-icons.mjs`
-
-Run manually (`node scripts/gen-icons.mjs`). Uses **sharp** to rasterise two inline SVGs into
-`public/icons/`: a **rounded** mark (rust `#b5552e` square, cream book) → `icon-192.png`,
-`icon-512.png`, `apple-touch-icon-180.png`; and a **maskable** variant (full-bleed
-background, artwork in the inner 80% safe zone) → `maskable-512.png`. All four PNGs are
-present in `public/icons/`. It also renders the iPad launch screens into `public/splash/` and
-**rewrites the `<link rel="apple-touch-startup-image">` tags in `index.html`** between the
-`splash:start` / `splash:end` markers (edit the `IPADS` list / `PAPER` colours there, not the
-HTML).
-
----
-
-## 7. iOS-specific constraints
-
-The app **targets iOS 26+**. iOS 26 specifics below are the project's stated assumption, not
-independently confirmed in-source.
-
-| Capability | iOS Safari status | Accommodation |
-| --- | --- | --- |
-| **OPFS** (`getDirectory`, `createWritable`) | Supported **16.4+** | Primary EPUB-byte store. `opfsSupported()` feature-checks `createWritable`; non-quota write failures and read misses fall back to `bookBlobs`. |
-| **Storage eviction** | Installed (Add-to-Home-Screen / standalone) PWAs are **exempt** from WebKit's 7-day script-writable-storage eviction. | Books survive across sessions when installed; storage is eviction-exempt for the whole origin. Also calls `navigator.storage.persist()` (`requestPersistence`) as belt-and-braces. If a *non-installed* tab is evicted, a `books` row can outlive its OPFS bytes; opening it (`getBookFile` → `null` with meta present) surfaces a specific *"this book's file is no longer on this device — please re-import"* message (`Reader.svelte`). |
-| **Storage quota** | **GB-scale** (≈10 GB observed) — not the old 50 MB myth. | `storageStatus()` reads the real `estimate()` quota; no artificial cap. |
-| **File System Access API** (`showOpenFilePicker`) | **Not available.** | Import uses a hidden `<input type="file" accept=".epub,application/epub+zip" multiple>` in `Shelf.svelte`, programmatically `.click()`ed. |
-| **Web Share Target / file-handler registration** | **Not available.** | No share-sheet / "Open with" entry; import is `<input>`-only. No manifest `share_target` or `file_handlers`. |
-
-The eviction-exemption and ≈10 GB quota are **empirical/behavioural facts asserted by the
-project** (recorded in `persist.ts`/`blobs.ts` comments), not API guarantees — treat them as
-observed behaviour that can shift between WebKit versions.
-
-### iOS viewport — `src/services/viewport.ts`
-
-**The iOS bug.** A freshly opened Home Screen app on iPhone lays out as if the window were
-shorter by the status-bar inset — 852 → 793 px on a 393×852 phone. `100dvh`, `innerHeight` and
-`visualViewport.height` all report the short value until a rotation. WebKit also paints
-nothing below the *document's* box, so a screen-tall fixed overlay is clipped at 793 px (the
-reader's bottom bar cut off, with the under-page background below it); sizing the overlay to
-the reported viewport instead leaves a gap below the bar.
-
-**The fix.** `fullScreenHeight(width)` returns the screen height when running standalone
-(`navigator.standalone` / `display-mode: standalone`) **and** the window's width equals a full
-screen side (±2px — not an iPad Split View / Slide Over / Stage Manager window). `screen`
-dimensions don't swap on rotation in iOS, so orientation is read from the width. It relies on
-`black-translucent` + `viewport-fit=cover` (the web view extends under the status bar).
-`initViewport()` (called once from `src/main.ts`) publishes:
-
-- `--doc-height` — the screen height, or unset → `html`, `body`, `#app` (`app.css`, fallback
-  `100dvh`). Makes the document itself screen-tall so WebKit paints the full screen. A `scroll`
-  listener pins the (overflow-hidden) root at 0 in case anything scrolls it programmatically.
-- `--app-height` — `viewportSize().h` (the visual viewport, lifted to `fullScreenHeight`) → the
-  fixed `.reader` overlay and the loading/error screens.
-
-Both depend only on the screen size and the window **width**, which document layout can't
-change — so, unlike an earlier `visualViewport`-driven in-flow height, they can't oscillate.
-`viewportSize()` falls back to the layout viewport while pinch-zoomed, and is also used by the
-dictionary card's placement (`anchoredPosition.ts`). Writes are rAF-coalesced, gated by a 2px
-threshold, and re-asserted on `load` + 300 ms. Tests: `viewport.test.ts`.
-The **consumer side and reader layout are documented in
-[`docs/reader-engine.md`](./reader-engine.md)** (§11).
-
----
-
-## 8. How to extend
-
-**New IndexedDB store (needs a version bump + migration).** Bump `DB_VERSION` in `db.ts` and
-branch on `oldVersion` inside `upgrade()`:
-
-```ts
-const DB_VERSION = 2 // was 1
-openDB<TsuzuriDB>(DB_NAME, DB_VERSION, {
-  upgrade(database, oldVersion /*, newVersion, tx */) {
-    if (oldVersion < 1) { /* …existing v1 stores… */ }
-    if (oldVersion < 2) database.createObjectStore('shelves', { keyPath: 'id' })
-  },
-})
-```
-
-Also add the store to the `TsuzuriDB extends DBSchema` interface so the typed helpers compile,
-then add CRUD wrappers.
-
-**Add a `BookMeta` field.** Add to the interface in `types.ts`, populate in `importEpub`, and
-handle older rows where it's `undefined` (a default, or a backfill migration). No store change
-needed.
-
-**Change the blob backend.** `blobs.ts` is the only module that touches raw bytes; keep the
-contract (`putBook` / `getBookFile` / `hasBook` / `deleteBook`) and the `getBookFile → File`
-(`type 'application/epub+zip'`) normalisation. `getBookFile` returning `null` is the "missing"
-signal.
-
-**Add a settings field.** Extend `ReaderSettings` + `DEFAULT_SETTINGS` in `types.ts`, then wire
-through the settings store/UI. The settings store merge backfills missing keys from
-`DEFAULT_SETTINGS`, so no DB migration is needed (the row is stored whole under `'reader'`). See
-[`docs/ui-and-design.md`](./ui-and-design.md).
-
----
-
-## 9. Gotchas
-
-- **Import is `<input>`-only on iOS.** No share-target / file-handler / file-picker path; don't
-  reach for `showOpenFilePicker`.
-- **OPFS detection checks `createWritable`, not just `getDirectory`.** Presence of
-  `getDirectory` ≠ main-thread writes. The check is a feature test; the safety net is
-  `putBook`'s catch → IDB fallback and `getBookFile`'s fall-through, so keep both.
-- **Settings use an out-of-line key.** The `settings` store has no `keyPath`; reads/writes must
-  pass the literal key `'reader'`.
-- **`storage.estimate()` is approximate** (coarse for privacy) — only a usage indicator, never
-  exact free space.
-- **Deleting a book is two steps.** `deleteBookCascade` removes metadata/progress/annotations but
-  **not** the blob; always pair with `deleteBook(id)` (this is what `removeBook` does). Bypassing
-  `removeBook` orphans EPUB bytes.
-- **Dedupe is by content hash.** Re-importing identical bytes bumps `lastOpenedAt` (and restores
-  the bytes if they were lost);
-  identical content under different filenames collapses to one shelf entry.
-- **The IDB blob fallback is always cleaned up.** `deleteBook` deletes from both OPFS and
-  `bookBlobs`, so an engine that gained/lost OPFS mid-life never leaks.
-
----
-
-## 10. Cross-references
-
-- [`docs/architecture.md`](./architecture.md) — overall structure; foliate `view.open` /
-  `makeBook` pipeline that consumes `getBookFile`.
-- [`docs/reader-engine.md`](./reader-engine.md) — the `--app-height` consumer side and reader
-  layout (§11 / app-shell viewport).
-- [`docs/deployment.md`](./deployment.md) — GitHub Pages deploy, the `/epub/` base path
-  (manifest fields derive from it), and the `sharp` CI gotcha.
-- [`docs/japanese.md`](./japanese.md) — the `jpdict` IndexedDB the dictionary fills, and the
-  dict download/warm flow.
-- [`docs/ui-and-design.md`](./ui-and-design.md) — settings UI, theme-color/safe-area handling,
-  `ReaderSettings` semantics.
-- [`docs/development.md`](./development.md) — dev server, `devOptions` SW in dev, running
-  `scripts/gen-icons.mjs`.
-</content>
-</invoke>
+| Type | Fields |
+|---|---|
+| `BookMeta` (`books`) | `id` (SHA-256 hex of the bytes; also the OPFS file stem and dedupe key), `title` (falls back to the file name), `author` (multiple joined with `、`), `language`, `dir: 'ltr' \| 'rtl'` (page progression), `cover?: Blob` (≤320px-wide WebP thumbnail), `fileName`, `fileSize`, `addedAt`, `lastOpenedAt` (shelf sort, descending) |
+| `ReadingProgress` (`progress`) | `bookId`, `cfi`, `fraction` (0..1, shelf ring), `label?` (TOC section), `updatedAt` |
+| `Annotation` (`annotations`) | `id`, `bookId`, `kind: 'highlight' \| 'bookmark'`, `cfi`, `text` (selection, looked-up word, or bookmark snippet), `note?`, `sectionLabel?`, `createdAt` |
+| `ReaderSettings` (`settings['reader']`) | see below |
+
+Also exported: `WritingModePref` (`'auto' | 'horizontal' | 'vertical'`), `ResolvedTheme`
+(`'light' | 'sepia' | 'dark'`), `ThemeName` (`'auto' | ResolvedTheme`), and
+`HIGHLIGHT_HEX = '#ffd54a'` (the only highlight colour; annotations have no colour field).
+
+`DEFAULT_SETTINGS`:
+
+| Field | Default | |
+|---|---|---|
+| `theme` | `'auto'` | follows `prefers-color-scheme` (light ↔ dark) |
+| `fontScale` | `1` | 1 = 100% |
+| `lineHeight` | `1.9` | |
+| `marginScale` | `1` | multiplies the base page margin |
+| `fontFamily` | `'serif'` | or `'sans'` |
+| `writingMode` | `'auto'` | override of the EPUB's mode |
+| `highlightLookups` | `true` | tap-to-define also highlights the word; lookup itself is always on |
+
+The settings store keeps only keys present in `DEFAULT_SETTINGS` and backfills missing ones
+from it, so adding a field needs no migration. Settings UI:
+[ui-and-design.md](./ui-and-design.md).
+
+## 2. IndexedDB — `src/services/storage/db.ts`
+
+`openDB('tsuzuri', 1)`. `upgrade` creates everything in an `if (oldVersion < 1)` step; a
+new version adds its own `if (oldVersion < N)` step, and the new store must also be added to
+the `TsuzuriDB` schema interface.
+
+| Store | Key | Index | Value |
+|---|---|---|---|
+| `books` | `id` | — | `BookMeta` |
+| `progress` | `bookId` | — | `ReadingProgress` |
+| `annotations` | `id` | `byBook` → `bookId` | `Annotation` |
+| `settings` | out-of-line, always `'reader'` | — | `ReaderSettings` |
+| `bookBlobs` | `id` | — | `{ id, blob }` (OPFS fallback) |
+
+**Connection lifecycle.** `db()` memoises the open promise and drops it on `terminated`
+(iOS WebKit severs connections after long backgrounding), on `blocking` (it also closes, so
+a newer build's upgrade can proceed), and on a failed open. The next call reopens.
+
+**Helpers:** `putBookMeta`, `getBookMeta`, `getAllBooks`, `getProgress`, `getAllProgress`,
+`putProgress`, `getAnnotations` (via `byBook`), `putAnnotation`, `deleteAnnotation`,
+`loadSettings`, `saveSettings`, `put/get/deleteBlobFallback`, and `deleteBookCascade(id)`.
+`deleteBookCascade` deletes `books` + `progress` + the book's annotations (cursor over
+`byBook`) in one transaction. It does **not** delete the bytes; `removeBook` deletes those
+afterwards.
+
+## 3. EPUB bytes — `src/services/storage/blobs.ts`
+
+Stored as OPFS `books/<id>.epub`.
+- `opfsSupported()` checks `navigator.storage.getDirectory` **and**
+  `FileSystemFileHandle.prototype.createWritable` (older WebKit had only worker-side sync
+  handles). `getBooksDir()` returns `null` if the directory is refused (for example, a
+  private-mode `SecurityError`).
+- `putBook(id, data)` writes to OPFS. On a failed write it removes the partial file and
+  falls back to `bookBlobs`, **except** on `QuotaExceededError`, which is rethrown
+  (IndexedDB shares the origin quota).
+- `getBookFile(id)` reads OPFS; if the file is missing or empty it falls through to
+  `bookBlobs`. The result is re-wrapped as `File('<id>.epub', 'application/epub+zip')` for
+  foliate's type sniffing. `null` means the bytes are missing.
+- `hasBook(id)` returns `getBookFile(id) !== null`.
+- `deleteBook(id)` removes from OPFS **and** `bookBlobs`, both best-effort.
+
+## 4. Library import — `src/services/library.ts`
+
+`importEpub(file)`:
+1. `id = sha256Hex(await file.arrayBuffer())`. The buffer isn't bound, so peak heap stays
+   near 1× the file size.
+2. **Dedupe:** if the meta row exists, restore the bytes if `!hasBook(id)`, bump
+   `lastOpenedAt`, and return it. The reader's "please re-import" error relies on this.
+3. `Promise.all([putBook(id, file), parseMeta(file)])`. `parseMeta` dynamically imports
+   foliate's `makeBook` and never throws; on failure it keeps the file-name title and no
+   cover. `flattenLangMap` prefers `ja`, then `ja_JP`, then the first value. The cover is
+   downscaled to a 320px-wide WebP via `OffscreenCanvas`; the original is kept if that
+   fails or would be larger.
+4. `putBookMeta`. If step 3 or 4 throws, `deleteBook(id)` rolls back the bytes so they
+   aren't orphaned against quota.
+
+Also: `listBooks` (sorted by `lastOpenedAt` descending), `touchBook`, and `removeBook`
+(`deleteBookCascade` then `deleteBook`; always use it, since calling the cascade alone
+orphans the bytes). The `library` store surfaces failures in `library.importError`,
+because a standalone iOS PWA has no visible console.
+
+## 5. PWA — `vite.config.ts`, `index.html`, `src/main.ts`
+
+### VitePWA / Workbox
+| Option | Value |
+|---|---|
+| `registerType` | `'prompt'`: an update waits for the user (no `skipWaiting` mid-read) |
+| `includeManifestIcons` | `false` |
+| `manifest` | `name` "Tsuzuri — Japanese Reader", `short_name` "Tsuzuri", `display: 'standalone'`, `orientation: 'any'`, `background_color`/`theme_color` `#f6f3ec`, `start_url`/`scope` = `base`; icons `icon-192`, `icon-512` (`any`), `maskable-512` (`maskable`) |
+| `clientsClaim` | `true`, so the first-visit page is controlled and the IPADIC dict fetched in that session gets runtime-cached |
+| `globPatterns` | `**/*.{js,css,html}`, `favicon.svg`, `icons/apple-touch-icon-180.png` (app shell only; manifest icons and splash screens are fetched by the OS at install) |
+| `globIgnores` | `**/kuromoji/**`, `assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js` (the `foliate-` prefix is set by `build.rolldownOptions.output.chunkFileNames`) |
+| `maximumFileSizeToCacheInBytes` | 6 MiB |
+| `navigateFallback` | `` `${base}index.html` `` |
+| `cleanupOutdatedCaches` | `true` (precaches only) |
+| `runtimeCaching` | `/\/kuromoji\/dict\/.*\.dat\.gz$/`, `CacheFirst`, `cacheName: 'kuromoji-ipadic-v2'` (must equal `IPADIC_CACHE` in `jp/ipadic.ts`), `statuses: [0, 200]`, **no `expiration`** (a partial shard set builds no trie) |
+| `devOptions` | `{ enabled: true, type: 'module' }`, so the SW also runs under `vite dev` (`server.host: true`) |
+
+`main.ts` deletes the superseded `kuromoji-ipadic` cache, since `cleanupOutdatedCaches`
+doesn't touch runtime caches. 4 s after launch (online, dictionary installed) it calls
+`cacheIpadic()` to re-fill any missing shards.
+
+### Registration & updates
+`registerSW` → `onNeedRefresh` sets `pwa.needRefresh` and
+`pwa.update = () => { rememberRouteForReload(); updateSW(true) }`. `onOfflineReady` sets
+`pwa.offlineReady`. `onRegisteredSW` calls `registration.update()` on `visibilitychange →
+visible` while online, at most hourly, because an installed PWA is resumed far more often
+than it's navigated. `ToastHost` shows "A new version is ready." + **Refresh**, or "Ready
+to read offline." (auto-dismissed after 4 s). The update reload restores the route from
+sessionStorage `tsuzuri:route`; `validateRestoredRoute` falls back to the shelf if the
+book was removed.
+
+### `index.html`
+- `viewport`: `width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no,
+  viewport-fit=cover`. Edge-to-edge; chrome pads with `env(safe-area-inset-*)`.
+- `apple-mobile-web-app-capable`, `mobile-web-app-capable`,
+  `apple-mobile-web-app-status-bar-style: black-translucent` (content runs under the
+  status bar; `viewport.ts` depends on this), `apple-mobile-web-app-title`,
+  `apple-touch-icon` (180px).
+- **Splash screens:** 36 `apple-touch-startup-image` links (9 iPad sizes × 2 orientations ×
+  light/dark), between `splash:start` / `splash:end`, generated with the PNGs in
+  `public/splash/` (~320 KB) by `scripts/gen-icons.mjs`. Edit the `IPADS` / `PAPER` lists
+  there, not the HTML. iOS uses an image only on an exact media match. Whether iOS honours
+  the dark variant is unverified on device.
+- **One `theme-color` meta** (no `media` variants). The inline script sets it and
+  `data-theme` from the localStorage mirror before first paint, and `applyTheme()` in
+  `settings.svelte.ts` keeps it at the live `--paper`. Keep the inline script's key and
+  colours in sync with `settings.svelte.ts` / `app.css`.
+
+### Icons
+`node scripts/gen-icons.mjs` (sharp, local only) rasterises the inline SVG mark into
+`public/icons/`: `icon-192.png`, `icon-512.png`, `apple-touch-icon-180.png`, and
+`maskable-512.png` (artwork within the 80% safe zone).
+
+## 6. iOS viewport — `src/services/viewport.ts`
+
+**Problem.** On a cold Home Screen launch, iPhone lays out as if the window were shorter
+by the status-bar inset (852 → 793 px on a 393×852 phone). `100dvh`, `innerHeight` and
+`visualViewport.height` all report the short value until a rotation, and WebKit paints
+nothing below the document's box, so a screen-tall fixed overlay is still clipped.
+
+**Fix.** `fullScreenHeight(width)` returns the screen height when running standalone
+(`navigator.standalone` or `display-mode: standalone`) **and** the window width equals a
+screen side ±2px, which excludes Split View, Slide Over and Stage Manager. iOS doesn't
+swap `screen.width/height` on rotation, so orientation comes from the width. This relies
+on `black-translucent` + `viewport-fit=cover`. `initViewport()` publishes:
+
+- `--doc-height` → `html`, `body`, `#app` in `app.css` (fallback `100dvh`); unset when not
+  full-screen standalone.
+- `--app-height` → `viewportSize().h` (the visual viewport, lifted to the screen height) →
+  the fixed `.reader` overlay, `LoadingScreen` and the reader-chunk error screen.
+
+Both depend only on the screen size and the window width, so they can't feed back into
+layout. Writes are rAF-coalesced, gated at 2px, and re-asserted at `load` and again 300 ms
+later. A `scroll` listener pins the overflow-hidden root at 0.
+`viewportSize()` falls back to the layout viewport while pinch-zoomed, and is also used by
+the reader geometry and `anchoredPosition.ts`. Tests: `viewport.test.ts`. The reader side
+is in [reader-engine.md §5a](./reader-engine.md).
+
+## 7. iOS constraints
+
+| Capability | iOS | What we do |
+|---|---|---|
+| OPFS with `createWritable` | available | Primary byte store; IndexedDB fallback (§3). |
+| 7-day script-storage eviction | installed PWAs are exempt | `requestPersistence()` at startup as a backstop. If a Safari-tab origin is evicted, a `books` row can outlive its bytes; opening it shows "please re-import", and re-importing restores the bytes. |
+| `showOpenFilePicker` | unavailable | Hidden `<input type="file" accept=".epub,application/epub+zip" multiple>` in `Shelf.svelte`. |
+| Web Share Target / file handlers | unavailable | None in the manifest; import is `<input>`-only. |
+| Storage quota | `estimate()` is coarse | `storageStatus()` + `formatBytes` (`persist.ts`) feed a text line in ShelfSettings → About: "Storage: X used of Y · persistent". |
+
+## 8. Gotchas
+
+- The `settings` store has no keyPath; always pass the key `'reader'`.
+- Deleting a book takes two steps; use `removeBook`.
+- Dedupe is by content: identical bytes under another file name collapse to one entry.
+- Keep both OPFS safety nets (`putBook`'s fallback and `getBookFile`'s fall-through).
+- The kuromoji runtime cache must never get an `expiration`. Rename it (and update
+  `IPADIC_CACHE`) when the dict contents change, and delete the old name in `main.ts`.
+- Never hard-code a root-relative URL in app code; see
+  [deployment.md §2](./deployment.md#2-the-epub-base-path).

@@ -4,7 +4,6 @@
   import Icon from '../components/Icon.svelte'
   import type { ThemeName, WritingModePref } from '../../services/types'
 
-  // Notifies the reader which aspect changed, so it can re-apply efficiently.
   let { onchange }: { onchange: (kind: 'appearance' | 'layout' | 'writingmode') => void } = $props()
 
   const themeOpts: { value: ThemeName; label: string }[] = [
@@ -155,7 +154,7 @@
     padding: 3px;
     transition: background var(--dur-base) var(--ease-out);
   }
-  /* 44pt hit area around the 32pt track. */
+  /* 44pt hit area */
   .switch::after {
     content: '';
     position: absolute;

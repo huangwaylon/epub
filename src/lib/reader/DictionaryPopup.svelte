@@ -37,13 +37,9 @@
 
   let card = $state<HTMLDivElement>()
 
-  // Move focus into the popup on open (so VoiceOver / keyboard users land inside it)
-  // and restore it to the trigger on close. Edge-gated on a real closed→open
-  // transition: the effect also re-runs when `bind:this` sets `card` while `open` is
-  // still true, and without the gate that pass would re-capture the now-focused popup
-  // as the restore target. Mirrors Sheet.svelte. (No aria-modal: this is a
-  // tap-anywhere-to-dismiss popover with no inert backdrop, so it must not advertise
-  // background inertness it doesn't implement.)
+  // Focus the card on open and restore focus on close. Gated on a real closed→open edge:
+  // the effect re-runs when `bind:this` sets `card`, which must not re-capture the popup
+  // as the restore target. No aria-modal: there is no inert backdrop.
   let restoreFocus: HTMLElement | null = null
   let wasOpen = false
   $effect(() => {
@@ -56,8 +52,7 @@
     wasOpen = open
   })
 
-  // Most lookups resolve well inside 150ms (cached, or a warm worker); flashing a spinner
-  // for those reads as flicker. Show one only when a lookup is genuinely slow.
+  // Show loading UI only after 150 ms; most lookups finish sooner and would just flicker.
   let slow = $state(false)
   $effect(() => {
     if (!open || !loading) {
@@ -68,16 +63,12 @@
     return () => clearTimeout(t)
   })
 
-  // The highlight toggle only makes sense once we have a real match to anchor it to.
   const showActions = $derived(!loading && !needsDownload && !!result?.entries.length)
-  // One status for the not-installed card: never re-offer Download while a download is
-  // running, waiting to retry, or the segmenter is being prepared.
+  // Never re-offer Download while one is running, retrying, or preparing.
   const phase = $derived(dictPhase())
 
-  // Place the card against the word, re-running when the anchor or the content (hence the
-  // card's size) changes. Synchronous — measured and placed in the same flush that mounted
-  // it, before the browser paints — so the card never shows a first frame at 0,0 and then
-  // jumps (the old requestAnimationFrame placement did exactly that).
+  // Place against the word whenever the anchor or content (hence size) changes — in the
+  // same flush, before paint, so there is never a frame at 0,0.
   let pos = $state<{ left: number; top: number } | null>(null)
   $effect(() => {
     if (!open) {
@@ -120,8 +111,7 @@
             <p class="dl-title">Waiting to resume the download…</p>
             {#if dict.error}<p class="dl-sub">{dict.error}</p>{/if}
           {:else if phase === 'preparing' || phase === 'ready' || phase === 'checking'}
-            <!-- Installed (or still being checked), with the segmenter being prepared:
-                 never re-offer the download for a dictionary that is already here. -->
+            <!-- Installed (or still being checked): never re-offer the download. -->
             <p class="dl-title">Preparing the dictionary…</p>
             <div class="progress-indeterminate prep" role="progressbar" aria-label="Preparing the dictionary"></div>
             <p class="dl-sub">Getting word lookup ready — this only happens once.</p>
@@ -140,8 +130,7 @@
         <div class="entries">
           {#each result.entries as entry, i (entry.id ?? entry.headword + entry.reading + ':' + i)}
             <div class="entry">
-              <!-- Per entry: one result can mix entries reached by different deinflections
-                   (した → する "past", alongside the noun 下 with none). -->
+              <!-- Per entry: one result can mix した → する "past" with the noun 下. -->
               {#if entry.reasons?.length}
                 <div class="reasons">
                   {#each entry.reasons as r}<span class="chip">{r}</span>{/each}
@@ -171,7 +160,6 @@
           {/each}
         </div>
       {:else if loading}
-        <!-- A slow first lookup shows the shape of an entry rather than a bare spinner. -->
         <div class="skel" role="status" aria-label="Looking up" class:show={slow}>
           <div class="skeleton sk-head"></div>
           <div class="skeleton sk-line"></div>

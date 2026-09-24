@@ -1,11 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte'
 
-  /**
-   * The calm "opening a book" screen, shared by App (reader chunk in flight) and Reader
-   * (book opening): the title in serif over a thin indeterminate bar. Everything fades in
-   * after a short delay, so a fast open never flashes it.
-   */
   let { title, onback }: { title?: string; onback?: () => void } = $props()
 </script>
 

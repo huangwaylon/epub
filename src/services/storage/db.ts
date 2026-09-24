@@ -1,13 +1,8 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { Annotation, BookMeta, ReaderSettings, ReadingProgress } from '../types'
 
-/**
- * IndexedDB holds all structured data: book metadata, reading progress,
- * annotations, and settings. The (potentially large) EPUB bytes are stored
- * separately — see blobs.ts (OPFS with an IDB fallback).
- */
+/** All structured data. EPUB bytes live in OPFS (blobs.ts); `bookBlobs` is its fallback. */
 
-/** Fallback object store for EPUB bytes when OPFS is unavailable. */
 interface StoredBlob {
   id: string
   blob: Blob
@@ -31,18 +26,15 @@ const DB_VERSION = 1
 let dbPromise: Promise<IDBPDatabase<TsuzuriDB>> | null = null
 
 /**
- * The shared connection, opened lazily and cached. The cache is dropped whenever the
- * connection dies so the next call reopens instead of reusing a dead handle: iOS
- * WebKit can sever IDB connections after long backgrounding (`terminated`), and a
- * newer build in another tab asking to upgrade fires `blocking` (we close so it can).
- * A failed open isn't cached either.
+ * Lazily opened shared connection. The cache is dropped when the connection dies so the
+ * next call reopens: iOS WebKit severs IDB connections after long backgrounding
+ * (`terminated`), and a newer build's upgrade fires `blocking` (we close so it can).
  */
 export function db(): Promise<IDBPDatabase<TsuzuriDB>> {
   if (!dbPromise) {
     const p: Promise<IDBPDatabase<TsuzuriDB>> = openDB<TsuzuriDB>(DB_NAME, DB_VERSION, {
       upgrade(database, oldVersion) {
-        // Each block migrates *from* its version, so a future DB_VERSION bump adds a
-        // new `if (oldVersion < N)` step without re-creating existing stores.
+        // One `if (oldVersion < N)` step per version.
         if (oldVersion < 1) {
           database.createObjectStore('books', { keyPath: 'id' })
           database.createObjectStore('progress', { keyPath: 'bookId' })
@@ -82,17 +74,13 @@ export async function getAllBooks(): Promise<BookMeta[]> {
   return (await db()).getAll('books')
 }
 
-export async function deleteBookMeta(id: string): Promise<void> {
-  await (await db()).delete('books', id)
-}
-
 /* ── Progress ──────────────────────────────────────────────────────────── */
 
 export async function getProgress(bookId: string): Promise<ReadingProgress | undefined> {
   return (await db()).get('progress', bookId)
 }
 
-/** Every book's progress in one transaction (the shelf's rings). */
+/** Every book's progress in one read (the shelf's rings). */
 export async function getAllProgress(): Promise<ReadingProgress[]> {
   return (await db()).getAll('progress')
 }
@@ -115,7 +103,7 @@ export async function deleteAnnotation(id: string): Promise<void> {
   await (await db()).delete('annotations', id)
 }
 
-/** Remove a book and everything attached to it (blob deletion handled by caller). */
+/** Remove a book's metadata, progress and annotations. The caller deletes the bytes. */
 export async function deleteBookCascade(id: string): Promise<void> {
   const database = await db()
   const tx = database.transaction(['books', 'progress', 'annotations'], 'readwrite')
@@ -140,7 +128,7 @@ export async function saveSettings(s: ReaderSettings): Promise<void> {
   await (await db()).put('settings', s, 'reader')
 }
 
-/* ── Blob fallback (used by blobs.ts when OPFS is unavailable) ──────────── */
+/* ── Blob fallback (blobs.ts) ─────────────────────────────────────────── */
 
 export async function putBlobFallback(id: string, blob: Blob): Promise<void> {
   await (await db()).put('bookBlobs', { id, blob })

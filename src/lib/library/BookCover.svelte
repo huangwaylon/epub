@@ -3,7 +3,6 @@
 
   let { book }: { book: BookMeta } = $props()
 
-  // Manage the object URL for the cover blob across the component's life.
   let url = $state<string | undefined>()
   $effect(() => {
     if (book.cover) {
@@ -14,7 +13,7 @@
     url = undefined
   })
 
-  // Stable accent for the placeholder spine, derived from the id.
+  // Stable placeholder hue from the id.
   const hue = $derived(
     [...book.id].slice(0, 6).reduce((a, c) => a + c.charCodeAt(0), 0) % 360,
   )
@@ -47,11 +46,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-2);
-    background: linear-gradient(
-      150deg,
-      hsl(var(--h) 38% 92%),
-      hsl(var(--h) 30% 82%)
-    );
+    background: linear-gradient(150deg, hsl(var(--h) 38% 92%), hsl(var(--h) 30% 82%));
     color: hsl(var(--h) 45% 24%);
   }
   :global([data-theme='dark']) .placeholder {

@@ -4,8 +4,7 @@
   import { toast, actOnToast, dismissToast } from '../../stores/toast.svelte'
   import Toast from './Toast.svelte'
 
-  // The one-time "ready offline" confirmation auto-dismisses; the update prompt stays
-  // until the user acts on it. The effect cleanup clears the timer if it's dismissed first.
+  // "Ready offline" auto-dismisses; the update prompt waits for the user.
   $effect(() => {
     if (!pwa.offlineReady) return
     const t = setTimeout(() => (pwa.offlineReady = false), 4000)

@@ -1,8 +1,5 @@
-/**
- * Storage durability helpers. Installed (home-screen) PWAs on iOS are exempt
- * from WebKit's 7-day script-writable-storage eviction, but we still request
- * persistent storage explicitly and expose usage so the UI can warn near quota.
- */
+/** Installed iOS PWAs are exempt from WebKit's 7-day eviction; we still request
+ *  persistence, and expose usage for the settings sheet. */
 
 export interface StorageStatus {
   persisted: boolean
@@ -10,7 +7,7 @@ export interface StorageStatus {
   quota: number
 }
 
-/** Ask the browser to keep our data; safe to call repeatedly. Returns the result. */
+/** Safe to call repeatedly. */
 export async function requestPersistence(): Promise<boolean> {
   try {
     if (navigator.storage?.persisted && (await navigator.storage.persisted())) return true

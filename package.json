@@ -16,7 +16,6 @@
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.12.3",
-    "@vitest/browser": "^4.1.9",
     "fake-indexeddb": "^6.2.5",
     "fflate": "^0.8.3",
     "sharp": "^0.35.2",
@@ -32,5 +31,6 @@
     "@birchill/normal-jp": "^1.7.1",
     "@sglkc/kuromoji": "^1.1.0",
     "idb": "^8.0.3"
-  }
+  },
+  "license": "GPL-3.0-or-later"
 }

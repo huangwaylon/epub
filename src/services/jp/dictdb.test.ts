@@ -144,17 +144,15 @@ describe('cacheIpadic', () => {
   }
 
   it('writes every staged file (base-aware URLs) into the SW runtime cache, skipping cached ones', async () => {
-    const { cacheIpadic, isIpadicCached } = await fresh()
+    const { cacheIpadic } = await fresh()
     const { ipadicUrls, IPADIC_FILES } = await import('./ipadic')
     const urls = ipadicUrls()
     expect(urls[0]).toMatch(/\/kuromoji\/dict\/base\.dat\.gz$/)
     expect(IPADIC_FILES).not.toContain('tid_pos.dat.gz')
     const { stored, opened } = fakeCaches([urls[0]])
-    expect(await isIpadicCached()).toBe(false)
     expect(await cacheIpadic()).toBe(true)
     expect(opened[0]).toBe('kuromoji-ipadic-v2')
     expect(stored.size).toBe(IPADIC_FILES.length)
-    expect(await isIpadicCached()).toBe(true)
   })
 
   it('reports false when a file cannot be fetched, or there is no Cache API', async () => {

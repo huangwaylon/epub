@@ -2,21 +2,9 @@ import * as kuromoji from '@sglkc/kuromoji'
 import { IPADIC_DIR } from './ipadic'
 
 /**
- * Japanese word *boundaries* via kuromoji (MeCab-style IPADIC morphological analysis).
- * This is far better than greedy dictionary-longest-match — so a tap anywhere in a word
- * resolves the whole word.
- *
- * Only the boundaries are used: each token's start and length on the Viterbi best path
- * through kuromoji's word lattice. Kuromoji's own `tokenize()` additionally decodes every
- * token's POS/reading feature line from `tid_pos.dat` (≈40 MB inflated) — nothing in the
- * lookup needs those (JMdict supplies POS and readings), so that file is never staged or
- * fetched and `tokenize()` is never called (see kuromojiLoader.cjs).
- *
- * The trimmed IPADIC dictionary (~11 MB of *.dat.gz, ~27 MB inflated) is staged into
- * `public/kuromoji/dict` by `scripts/copy-kuromoji-dict.mjs` and fetched from
- * `${BASE_URL}kuromoji/dict/` at runtime; `cacheIpadic()` (dictdb.ts) pre-caches it for
- * offline use. It loads lazily on first use; until it's ready, `lookup.ts` falls back to
- * greedy segmentation.
+ * Word boundaries via kuromoji (IPADIC). Boundaries only: token spans come from the
+ * lattice's Viterbi best path, never `tokenize()`, whose feature strings need
+ * `tid_pos.dat` — which is not shipped (see kuromojiLoader.cjs).
  */
 
 /** The parts of a kuromoji `ViterbiNode` this module reads. */
@@ -41,11 +29,7 @@ export interface TokenSpan {
 let tokenizer: LatticeTokenizer | null = null
 let buildPromise: Promise<LatticeTokenizer> | null = null
 
-/**
- * Lazily build the kuromoji tokenizer (fetches the IPADIC dict — from the Cache API once
- * `cacheIpadic()` has run). Idempotent — safe to call on every tap. Rejects (and clears so
- * a later tap can retry) if the dictionary can't be loaded.
- */
+/** Build the tokenizer once (idempotent). A failed build is cleared so a later call retries. */
 export function ensureSegmenter(): Promise<LatticeTokenizer> {
   if (!buildPromise) {
     buildPromise = new Promise<LatticeTokenizer>((resolve, reject) => {
@@ -59,7 +43,7 @@ export function ensureSegmenter(): Promise<LatticeTokenizer> {
         return tok
       },
       (err) => {
-        buildPromise = null // allow a later tap to retry the download
+        buildPromise = null
         throw err
       },
     )
@@ -67,7 +51,7 @@ export function ensureSegmenter(): Promise<LatticeTokenizer> {
   return buildPromise
 }
 
-/** Whether the tokenizer has finished loading (synchronous). */
+/** Whether the tokenizer is built. */
 export function segmenterReady(): boolean {
   return tokenizer !== null
 }
@@ -76,15 +60,9 @@ export function segmenterReady(): boolean {
 const PUNCTUATION = /、|。/
 
 /**
- * Token spans of `text` on kuromoji's best (Viterbi) path — the same boundaries
- * `tokenizer.tokenize(text)` produces (asserted by the golden test in segment.test.ts),
- * without decoding any feature strings. Like `tokenize`, the text is first split into
- * sentences after each 、/。; a sentence with no complete path contributes no spans.
- *
- * One deliberate difference: `tokenize` offsets each sentence by the *start* of the
- * previous sentence's last token, which is only right when that token is a single
- * character. Here each sentence is offset by its real position. The runs `extract.ts`
- * produces never contain 、/。, so for real taps there is exactly one sentence.
+ * Token spans on kuromoji's best path — the same boundaries as `tokenize()` (pinned by
+ * segment.golden.test.ts). Like `tokenize`, splits after each 、/。, but offsets each
+ * sentence by its real position (`tokenize` uses the previous last token's *start*).
  */
 export function tokenSpans(tok: LatticeTokenizer, text: string): TokenSpan[] {
   const spans: TokenSpan[] = []
@@ -104,11 +82,7 @@ export function tokenSpans(tok: LatticeTokenizer, text: string): TokenSpan[] {
   return spans
 }
 
-/**
- * The morphological token containing `tapOffset` in `text`, per kuromoji — or `null` if
- * the tokenizer isn't loaded yet (callers fall back to greedy segmentation), segmentation
- * threw, or no token covers the offset.
- */
+/** The token containing `tapOffset`, or `null` (not built, segmentation threw, no cover). */
 export function tokenSpanAt(text: string, tapOffset: number): TokenSpan | null {
   if (!tokenizer) return null
   let spans: TokenSpan[]

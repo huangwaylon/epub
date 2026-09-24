@@ -1,10 +1,8 @@
-// Pure EPUB-CFI helpers over foliate's parser (no DOM, no foliate-view), so the reader
-// controller and the reader UI can share them and they can be unit-tested in Node.
+// Pure EPUB-CFI helpers over foliate's parser (no DOM), unit-tested in Node.
 // @ts-ignore — vendored JS module, no type declarations
 import { parse, collapse, compare } from '../vendor/foliate-js/epubcfi.js'
 
-/** A CFI parsed once and collapsed to its start point, so repeated comparisons don't
- *  re-tokenise the string (foliate's `compare` parses string arguments on every call). */
+/** A CFI parsed once and collapsed to its start (`compare` re-parses strings per call). */
 type Point = unknown
 
 function startPoint(cfi: string): Point | null {
@@ -26,14 +24,9 @@ function cmp(a: Point, b: Point): number {
 }
 
 /**
- * Order `cfis` so the ones nearest to `here` come first: parse each CFI once, sort into
- * document order, binary-search where `here` falls, then walk outward from that point
- * (alternating the next one at/after `here` with the next one before it).
- *
- * This is what lets a section with hundreds of vocab highlights paint the page the reader
- * is actually looking at in the first draw chunk. (Sorting by `Math.abs(compare(...))`
- * does not work: `compare` returns only -1/0/1, so every CFI had "distance" 1 and the
- * sort was a no-op.) CFIs that fail to parse keep their relative order at the end.
+ * Order `cfis` nearest-first around `here`: sort in document order, binary-search `here`,
+ * then alternate outward (at/after, before). Unparseable CFIs go last, in input order.
+ * (`compare` returns only -1/0/1, so it can't serve as a distance.)
  */
 export function nearestFirst(cfis: readonly string[], here: string): string[] {
   const h = startPoint(here)
@@ -65,11 +58,8 @@ export function nearestFirst(cfis: readonly string[], here: string): string[] {
 }
 
 /**
- * Whether `cfi` (its start point) lies within the page described by `pageCfi` — the range
- * CFI foliate reports on `relocate` for the visible page: start inclusive, end exclusive
- * (the next page begins where this one ends). A non-range `pageCfi` degrades to equality.
- * Used for "is this page bookmarked?", which must survive a reflow (font size, rotation)
- * that moves the page boundaries away from the exact CFI the bookmark was saved at.
+ * Whether `cfi`'s start lies in the page range `pageCfi` (relocate's CFI): start inclusive,
+ * end exclusive; a non-range `pageCfi` means equality. Survives reflow, unlike `===`.
  */
 export function cfiWithinPage(cfi: string, pageCfi: string): boolean {
   if (!cfi || !pageCfi) return false
