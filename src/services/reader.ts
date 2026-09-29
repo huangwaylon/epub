@@ -133,13 +133,21 @@ function appearanceCSS(s: ReaderSettings): string {
   const translation = s.showTranslations
     ? `.tsuzuri-en {
         display: block;
-        font-size: 0.85em;
+        font-size: 0.88em;
         color: ${tok('--ink-soft')};
-        margin-top: 0.2em;
-        margin-bottom: 0.6em;
+        margin-top: 0.4em;
+        margin-bottom: 0.8em;
+        padding-left: 0.5em;
+        border-left: 2px solid ${tok('--accent-soft')};
         text-indent: 0;
+        line-height: 1.5;
+        font-style: italic;
+      }
+      .tsuzuri-ja {
+        display: block;
+        margin-bottom: 0.2em;
       }`
-    : '.tsuzuri-en { display: none !important; }'
+    : '.tsuzuri-en { display: none !important; } .tsuzuri-ja { display: contents; }'
 
   return `
     @namespace epub "http://www.idpf.org/2007/ops";

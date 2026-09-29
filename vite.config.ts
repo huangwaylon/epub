@@ -73,7 +73,7 @@ export default defineConfig(({ command }) => {
           // runtime-cached. Updates still wait for the prompt (no skipWaiting mid-read).
           clientsClaim: true,
           // App shell only. Manifest icons and splash screens are fetched by the OS at install.
-          globPatterns: ['**/*.{js,css,html}', 'favicon.svg', 'icons/apple-touch-icon-180.png'],
+          globPatterns: ['**/*.{js,css,html}', 'favicon.svg', 'icons/apple-touch-icon-180.png', 'books/*.epub'],
           // The IPADIC dict is runtime-cached (below). The foliate loaders are unreachable
           // (EPUB only, no TTS/search); the `foliate-` prefix comes from chunkFileNames.
           globIgnores: ['**/kuromoji/**', 'assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js'],

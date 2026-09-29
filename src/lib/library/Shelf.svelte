@@ -15,6 +15,8 @@
   import Sheet from '../components/Sheet.svelte'
   import BookCover from './BookCover.svelte'
 
+  import { importBundledBooks } from '../../services/bundledBooks'
+
   let fileInput: HTMLInputElement
   let menuFor = $state<BookMeta | null>(null)
   let settingsOpen = $state(false)
@@ -29,7 +31,16 @@
     }
   })
 
-  onMount(refreshLibrary)
+  onMount(() => {
+    refreshLibrary().then(async () => {
+      if (library.books.length === 0) {
+        library.importing += 1
+        await importBundledBooks()
+        library.importing -= 1
+        await refreshLibrary()
+      }
+    })
+  })
 
   const books = $derived(library.books.filter((b) => !removing.has(b.id)))
 

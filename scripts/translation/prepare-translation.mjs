@@ -9,7 +9,7 @@ if (!filePath) {
 }
 
 const buffer = readFileSync(filePath)
-const files = unzipSync(new Uint8Array(buffer))
+const files = fflate.unzipSync(new Uint8Array(buffer))
 
 console.log('EPUB Structure:')
 for (const name of Object.keys(files)) {
