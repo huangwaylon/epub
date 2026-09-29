@@ -130,6 +130,17 @@ function appearanceCSS(s: ReaderSettings): string {
   if (s.writingMode === 'vertical') wm = 'writing-mode: vertical-rl !important;'
   else if (s.writingMode === 'horizontal') wm = 'writing-mode: horizontal-tb !important;'
 
+  const translation = s.showTranslations
+    ? `.tsuzuri-en {
+        display: block;
+        font-size: 0.85em;
+        color: ${tok('--ink-soft')};
+        margin-top: 0.2em;
+        margin-bottom: 0.6em;
+        text-indent: 0;
+      }`
+    : '.tsuzuri-en { display: none !important; }'
+
   return `
     @namespace epub "http://www.idpf.org/2007/ops";
     html {
@@ -148,6 +159,7 @@ function appearanceCSS(s: ReaderSettings): string {
       /* No double-tap zoom (iOS ignores user-scalable): taps and swipes bail while zoomed. */
       touch-action: manipulation;
     }
+    ${translation}
     p, li, blockquote, dd {
       line-height: ${s.lineHeight};
       text-align: justify;
@@ -189,6 +201,8 @@ export class ReaderController {
   #pendingDir: 'left' | 'right' | null = null
   /** Re-checked after every await. */
   #destroyed = false
+  /** The current book has English translations (detected from meta tag). */
+  hasTranslations = false
 
   constructor(container: HTMLElement, settings: ReaderSettings, callbacks: ReaderCallbacks) {
     this.#settings = settings
@@ -253,6 +267,9 @@ export class ReaderController {
     this.view.addEventListener('load', (e: any) => {
       const { doc, index } = e.detail
       this.#docIndex.set(doc, index)
+      if (doc.querySelector('meta[name="tsuzuri-translated"]')) {
+        this.hasTranslations = true
+      }
       // Must run before the writing mode is read (and before foliate's getDirection).
       this.#applyIntendedWritingMode(doc)
       // Read `body`, like foliate's getDirection, so our measure and its axis agree.

@@ -66,6 +66,7 @@
   let sectionLabel = $state('')
   let currentTocId = $state<number | undefined>(undefined)
   let toc = $state<TocItem[]>([])
+  let hasTranslations = $state(false)
 
   let tocOpen = $state(false)
   let settingsOpen = $state(false)
@@ -621,6 +622,7 @@
   let lastDoc: Document | null = null
   function onLoad(doc: Document) {
     if (import.meta.env.DEV) lastDoc = doc
+    if (controller) hasTranslations = controller.hasTranslations
   }
 
   /** DEV-only hook: the content document is in a closed shadow DOM, so the tap-accuracy
@@ -797,7 +799,7 @@
 
 <!-- Undimmed, so text changes are judged against the page. -->
 <Sheet bind:open={settingsOpen} title="Display" variant="popover" anchor={displayBtn}>
-  <ReaderSettings onchange={onSettingChange} />
+  <ReaderSettings {hasTranslations} onchange={onSettingChange} />
 </Sheet>
 
 <Sheet bind:open={annotationsOpen} title="Highlights & Bookmarks">

@@ -4,7 +4,13 @@
   import Icon from '../components/Icon.svelte'
   import type { ThemeName, WritingModePref } from '../../services/types'
 
-  let { onchange }: { onchange: (kind: 'appearance' | 'layout' | 'writingmode') => void } = $props()
+  let {
+    hasTranslations = false,
+    onchange,
+  }: {
+    hasTranslations?: boolean
+    onchange: (kind: 'appearance' | 'layout' | 'writingmode') => void
+  } = $props()
 
   const themeOpts: { value: ThemeName; label: string }[] = [
     { value: 'auto', label: 'Auto' },
@@ -115,6 +121,24 @@
         <span class="knob"></span>
       </button>
     </div>
+    {#if hasTranslations}
+      <div class="settings-row">
+        <span id="show-translations">Show translations</span>
+        <button
+          class="switch"
+          class:on={settings.showTranslations}
+          role="switch"
+          aria-checked={settings.showTranslations}
+          aria-labelledby="show-translations"
+          onclick={() => {
+            updateSettings({ showTranslations: !settings.showTranslations })
+            onchange('appearance')
+          }}
+        >
+          <span class="knob"></span>
+        </button>
+      </div>
+    {/if}
     <p class="settings-hint">Tap any word to look it up. When on, each word you look up is marked yellow and saved to Highlights &amp; Bookmarks.</p>
   </section>
 </div>

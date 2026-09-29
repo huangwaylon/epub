@@ -60,6 +60,8 @@ export interface ReaderSettings {
   writingMode: WritingModePref
   /** Tap-to-define also highlights the looked-up word (a vocab record). */
   highlightLookups: boolean
+  /** Show English translations in dual-language EPUBs. */
+  showTranslations: boolean
 }
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
@@ -70,4 +72,5 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   fontFamily: 'serif',
   writingMode: 'auto',
   highlightLookups: true,
+  showTranslations: true,
 }
