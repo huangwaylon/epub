@@ -136,25 +136,34 @@ One `getComputedStyle(document.documentElement)` read supplies `--ink`, `--paper
 
 Bundled books carry English after each unit ([translation.md](translation.md)).
 
-- **Detection** (`hasEnglish`, `onEnglish` fired once): a loaded section with
-  `meta[name="tsuzuri-translated"]`, or `#probeEnglish` — after `init` (first paint), one
-  spine section per task, `book.loadText(id)` searched for the meta; stops at the first hit.
+- **Detection** (`hasEnglish`, `onEnglish` fired once): at open, the package metadata's
+  `tsuzuri:translation` meta (`packageHasEnglish` on foliate's parsed OPF,
+  `book.resources.opf`); else, as a fallback for books built without it, a loaded section
+  with `meta[name="tsuzuri-translated"]`. No spine scan.
 - **Show all** is `settings.showEnglish` (CSS only). `applyAppearance` notices a change
   (`#showEnglish`), clears individual reveals and re-anchors (below).
-- **Single reveal:** `setRevealed(en, on)` toggles `tsuzuri-shown` and records `data-tz`
+- **Single reveal:** `setRevealed(en, on, at?)` toggles `tsuzuri-shown` and records `data-tz`
   in `#revealed` (spine index → set, this session only); `load` re-applies it.
   `isRevealed(en)` reads the class.
 - **Re-anchor (`#keepPage`).** foliate re-scrolls to its own anchor on the reflow, but that
-  anchor is refreshed only by page turns and may start in now-hidden English. So a single
-  reveal / hide anchors on the unit's last Japanese character (nothing before its English
-  moves); a show-all change on the character at the view centre sampled before the change
-  (moved to the Japanese before it if that English is now hidden) — `renderer.scrollToAnchor`.
+  anchor can be stale or start in now-hidden English. So each change anchors on one
+  character sampled before it (`renderer.scrollToAnchor`). A card's Show / Hide English
+  passes `at` — the tapped glyph, or a reopened highlight's first character — which nothing
+  before the English moves. Without it, a reveal keeps the page's first character
+  (`textFrom` on `view.lastLocation.range`; the unit's last character is no anchor, since the
+  unit may continue onto the next page) and a hide (tapping the English) the unit's last
+  Japanese character. A show-all change keeps the character at the view centre, moved to
+  the Japanese before it if that English is now hidden.
 - **Unit lookup** (`unitEnglish(node)`): climb to the leaf block's child holding the node,
   scan next siblings until a `.tsuzuri-en` (the unit's English) or `<br>` (none). A node
   inside English returns that English.
 - **Extraction** never reads English ([japanese.md](japanese.md) §3). **CFIs** ignore it
   (patch 5); `cfiForSelection` also clamps ends inside English to the Japanese
   (`clampOutOfEnglish`; `null` if nothing remains), so a highlight never spans into English.
+- **Highlights across units** skip visible English: the `draw-annotation` callback draws
+  `rectsOutsideEnglish(range, rects)` (range rects inside a displayed `.tsuzuri-en` the range
+  crosses are dropped), re-evaluated on every overlay redraw. foliate's hit-test still uses
+  the full rects, so a click on that English reopens the highlight.
 
 ---
 

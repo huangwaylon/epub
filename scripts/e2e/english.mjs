@@ -47,19 +47,41 @@ const HELPERS = () => {
     r.setEnd(t, i + 1)
     return r.getBoundingClientRect()
   }
-  /** A visible Japanese glyph whose unit has English: iframe-local centre + the unit's tz. */
-  window.__findUnitGlyph = () => {
+  /** A visible Japanese glyph whose unit has English: iframe-local centre + the unit's tz.
+   *  `spanning`: a unit that continues onto the next page (its last character off screen) —
+   *  anchoring a reveal on the unit's end would push the tapped word away — else one that
+   *  ends on this page (so its revealed English is on screen too). */
+  window.__findUnitGlyph = (spanning = false) => {
     const doc = T().doc
+    const JA = /[぀-ヿ一-鿿]/
+    /** The unit's text nodes (furigana excluded): the siblings before its English, back to
+     *  the previous English or <br>. */
+    const unitTexts = (en) => {
+      const out = []
+      const collect = (n) => {
+        if (n.nodeType === 3) out.push(n)
+        else if (n.nodeType === 1 && !/^(rt|rp)$/i.test(n.localName)) for (const c of n.childNodes) collect(c)
+      }
+      const nodes = []
+      for (let s = en.previousSibling; s && !(s.nodeType === 1 && (s.localName === 'br' || s.classList.contains('tsuzuri-en'))); s = s.previousSibling) nodes.unshift(s)
+      nodes.forEach(collect)
+      return out
+    }
     for (const en of doc.querySelectorAll('.tsuzuri-en')) {
-      let n = en.previousSibling
-      while (n && !(n.nodeType === 3 && /[぀-ヿ一-鿿]/.test(n.data))) n = n.previousSibling
-      if (!n) continue
-      for (let i = 0; i < n.data.length; i++) {
-        if (!/[぀-ヿ一-鿿]/.test(n.data[i])) continue
-        const r = charRect(n, i)
-        if (!onScreen(r)) continue
-        window.__glyph = { node: n, offset: i }
-        return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2, tz: en.dataset.tz }
+      const texts = unitTexts(en)
+      const last = texts.findLast((t) => JA.test(t.data))
+      if (!last) continue
+      let li = last.data.length - 1
+      while (li > 0 && !JA.test(last.data[li])) li--
+      if (!onScreen(charRect(last, li), 0) !== spanning) continue
+      for (const n of texts) {
+        for (let i = 0; i < n.data.length; i++) {
+          if (!JA.test(n.data[i])) continue
+          const r = charRect(n, i)
+          if (!onScreen(r)) continue
+          window.__glyph = { node: n, offset: i }
+          return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2, tz: en.dataset.tz }
+        }
       }
     }
     return null
@@ -171,6 +193,36 @@ async function run(device, url) {
       const start1 = await page.evaluate(() => window.__pageStart())
       check(`${p}: 'e' hides all English`, await page.evaluate(() => [...window.__tsuzuri.doc.querySelectorAll('.tsuzuri-en')].every((e) => getComputedStyle(e).display === 'none')))
       console.log(`     page start: all=${JSON.stringify(start0)} hidden=${JSON.stringify(start1)}`)
+
+      // A unit continuing onto the next page (a few pages on, if this one has none): reveal
+      // and hide from the card keep the tapped word.
+      let gs = await page.evaluate(() => window.__findUnitGlyph(true))
+      for (let k = 0; !gs && k < 3; k++) {
+        await page.evaluate(() => window.__tsuzuri.controller.goForward())
+        await sleep(700)
+        gs = await page.evaluate(() => window.__findUnitGlyph(true))
+      }
+      if (gs) {
+        const clickCard = (label) =>
+          page.evaluate((l) => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === l)?.click(), label)
+        await page.evaluate(({ x, y }) => window.__tapDoc(x, y), gs)
+        await sleep(600)
+        await clickCard('Show English')
+        await sleep(900)
+        const shown = await page.evaluate((tz) => window.__enState(tz), gs.tz)
+        const at = await page.evaluate(() => window.__glyphPoint())
+        check(`${p}: a reveal keeps the tapped word on screen when its unit continues on the next page`, shown.shown && !!at, JSON.stringify(shown))
+        if (at) {
+          await page.evaluate(({ x, y }) => window.__tapDoc(x, y), at)
+          await sleep(600)
+          await clickCard('Hide English')
+          await sleep(900)
+          const hidden = await page.evaluate((tz) => window.__enState(tz), gs.tz)
+          check(`${p}: hiding from the card keeps the tapped word on screen`, !hidden.shown && !!(await page.evaluate(() => window.__glyphPoint())), JSON.stringify(hidden))
+        }
+        await page.evaluate(() => window.__tapHost(5, innerHeight / 2)) // nothing open: a no-op
+        await sleep(300)
+      } else console.log('     (no unit on this page continues onto the next)')
 
       const g = await page.evaluate(() => window.__findUnitGlyph())
       check(`${p}: a translated unit is on screen`, !!g)

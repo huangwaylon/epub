@@ -133,10 +133,11 @@ npm run build    # production build → dist/ (base /epub/)
   idempotent; `#expectVertical()` pre-sets writing mode before `view.init`. Books that
   mark 縦書き only via calibre's `class="vrtl"` get `html{writing-mode:vertical-rl}`
   prepended (`#applyIntendedWritingMode`) — only that explicit marker counts.
-- **English:** `hasEnglish` from a loaded section's meta or a post-paint spine probe;
-  per-unit reveals live in `ReaderController.#revealed` (session only). Any show/hide
-  re-anchors the page on one sampled character (`#keepPage`) — foliate's own anchor can be
-  stale. Extraction and CFIs ignore English; selection highlights clamp out of it.
+- **English:** `hasEnglish` from the package's `tsuzuri:translation` meta at open (fallback: a
+  loaded section's `tsuzuri-translated` meta; no spine scan). Per-unit reveals live in
+  `ReaderController.#revealed` (session only). Any show/hide re-anchors the page on one
+  sampled character (`#keepPage`; a reveal on the tapped glyph) — foliate's own anchor can
+  be stale. Extraction and CFIs ignore English; selection highlights clamp out of it.
   Contract: [translation.md](docs/translation.md), depth: reader-engine.md §4a.
 - **iOS viewport:** a cold Home Screen launch reports a layout viewport short by the
   status-bar inset (852 → 793 on iPhone) until a rotation, and WebKit paints nothing below

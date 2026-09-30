@@ -42,7 +42,10 @@ numbered per chapter in document order after Kobo markup is stripped.
 ```
 
 and `<meta name="tsuzuri-translated" content="en"/>` into the head of every chapter that
-has one. The Japanese is never wrapped or modified. It also strips Kobo sync markup
+has one. A book with any English also gets `<meta property="tsuzuri:translation">en</meta>`
+in its package metadata (EPUB 3, with the `tsuzuri:` prefix declared on `<package>`; EPUB 2
+books get `<meta name="tsuzuri:translation" content="en"/>`), so the reader knows at open.
+The Japanese is never wrapped or modified. It also strips Kobo sync markup
 (`koboSpan`, `kobo.js`), and re-encodes JPEGs over 400 KB (mozjpeg q80).
 
 ## Translation standard

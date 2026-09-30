@@ -9,6 +9,18 @@ export const EN_CLASS = 'tsuzuri-en'
 export const EN_SHOWN_CLASS = 'tsuzuri-shown'
 /** In the `<head>` of every chapter that carries English. */
 export const EN_META_SELECTOR = 'meta[name="tsuzuri-translated"]'
+/** In the package (OPF) metadata of a book with any English: `<meta property=…>en</meta>`
+ *  (EPUB 3) or `<meta name=… content="en"/>` (EPUB 2). */
+export const EN_PACKAGE_META = 'tsuzuri:translation'
+
+/** The package document declares English (`EN_PACKAGE_META`). */
+export function packageHasEnglish(opf: Document | null | undefined): boolean {
+  for (const m of Array.from(opf?.getElementsByTagNameNS?.('*', 'meta') ?? [])) {
+    if (m.getAttribute('property') === EN_PACKAGE_META && m.textContent?.trim() === 'en') return true
+    if (m.getAttribute('name') === EN_PACKAGE_META && m.getAttribute('content') === 'en') return true
+  }
+  return false
+}
 
 const EN_RE = /(^|\s)tsuzuri-en(\s|$)/
 
@@ -55,10 +67,19 @@ export function unitEnglish(node: Node | null | undefined): Element | null {
   return null
 }
 
-/** The first / last text node under `root` in document order, outside any translation. */
+/** One character in a content document. */
+export interface TextPoint {
+  node: Text
+  offset: number
+}
+
+const isFurigana = (n: Node): boolean => n.nodeType === 1 && (tag(n) === 'rt' || tag(n) === 'rp')
+
+/** The first / last non-blank text node under `root` in document order, outside
+ *  translations and furigana. */
 function edgeText(root: Node, last: boolean): Text | null {
-  if (root.nodeType === 3) return root as Text
-  if (isEnglish(root)) return null
+  if (root.nodeType === 3) return /\S/.test((root as Text).data) ? (root as Text) : null
+  if (isEnglish(root) || isFurigana(root)) return null
   for (let c = last ? root.lastChild : root.firstChild; c; c = last ? c.previousSibling : c.nextSibling) {
     const t = edgeText(c, last)
     if (t) return t
@@ -66,15 +87,36 @@ function edgeText(root: Node, last: boolean): Text | null {
   return null
 }
 
-/** The nearest text before (`'prev'`) / after (`'next'`) element `el`, outside translations. */
+/** The nearest non-blank text before (`'prev'`) / after (`'next'`) node `el` within
+ *  `<body>`, outside translations and furigana. */
 export function textBeside(el: Node, dir: 'prev' | 'next'): Text | null {
-  for (let n: Node | null = el; n; n = n.parentNode) {
+  for (let n: Node | null = el; n && tag(n) !== 'body'; n = n.parentNode) {
     for (let s = dir === 'prev' ? n.previousSibling : n.nextSibling; s; s = dir === 'prev' ? s.previousSibling : s.nextSibling) {
       const t = edgeText(s, dir === 'prev')
       if (t) return t
     }
   }
   return null
+}
+
+/** The first non-blank character at or after the boundary (`node`, `offset`), outside
+ *  translations and furigana — e.g. the start of a page's visible range. */
+export function textFrom(node: Node, offset: number): TextPoint | null {
+  const first = (t: Text, from = 0): TextPoint | null => {
+    const i = t.data.slice(from).search(/\S/)
+    return i < 0 ? null : { node: t, offset: from + i }
+  }
+  let t: Text | null
+  if (node.nodeType === 3) {
+    const out = englishAncestor(node) ?? (node.parentNode && isFurigana(node.parentNode) ? node.parentNode : null)
+    const here = out ? null : first(node as Text, offset)
+    if (here) return here
+    t = textBeside(out ?? node, 'next')
+  } else {
+    const child = node.childNodes[offset]
+    t = child ? (edgeText(child, false) ?? textBeside(child, 'next')) : textBeside(node, 'next')
+  }
+  return t && first(t)
 }
 
 /**
@@ -155,4 +197,23 @@ export function selectionText(range: Range): string {
 /** The selection lies wholly inside one translation (nothing to highlight). */
 export function selectionIsEnglish(range: Range): boolean {
   return !!englishAncestor(range.commonAncestorContainer)
+}
+
+type Box = { left: number; top: number; right: number; bottom: number }
+
+/**
+ * `rects` (a highlight range's client rects) minus those inside a displayed translation
+ * the range crosses, so a highlight spanning units doesn't paint over visible English.
+ * Hidden English has no boxes. A range within one text node returns `rects` as is.
+ */
+export function rectsOutsideEnglish<R extends Box>(range: Range, rects: ArrayLike<R>): ArrayLike<R> {
+  const root = range.commonAncestorContainer as Element
+  if (root.nodeType !== 1 || englishAncestor(root)) return rects
+  const boxes: Box[] = []
+  for (const el of Array.from(root.getElementsByClassName(EN_CLASS)))
+    if (range.intersectsNode(el)) for (const b of Array.from(el.getClientRects())) boxes.push(b)
+  if (!boxes.length) return rects
+  const inside = (r: Box, b: Box) =>
+    r.left >= b.left - 1 && r.right <= b.right + 1 && r.top >= b.top - 1 && r.bottom <= b.bottom + 1
+  return Array.from(rects).filter((r) => !boxes.some((b) => inside(r, b)))
 }

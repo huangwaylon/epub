@@ -5,7 +5,18 @@ import { Overlayer } from '../vendor/foliate-js/overlayer.js'
 import { HIGHLIGHT_HEX, type ReaderSettings } from './types'
 import { viewportSize } from './viewport'
 import { nearestFirst } from './cfi'
-import { EN_CLASS, EN_META_SELECTOR, EN_SHOWN_CLASS, clampOutOfEnglish, englishAncestor, textBeside } from './translation'
+import {
+  EN_CLASS,
+  EN_META_SELECTOR,
+  EN_SHOWN_CLASS,
+  clampOutOfEnglish,
+  englishAncestor,
+  packageHasEnglish,
+  rectsOutsideEnglish,
+  textBeside,
+  textFrom,
+  type TextPoint,
+} from './translation'
 
 /**
  * Prefetch the chunks `view.open()` imports one inside another (zip → epub → paginator),
@@ -54,6 +65,8 @@ export interface TapInfo {
 interface FoliateView extends HTMLElement {
   book: any
   renderer: any
+  /** The last `relocate` detail (foliate's own). */
+  lastLocation?: { range?: Range }
   open(book: File | Blob | string): Promise<void>
   init(opts: { lastLocation?: string; showTextStart?: boolean }): Promise<void>
   goTo(target: string | number): Promise<any>
@@ -113,7 +126,7 @@ const BOUNCE_MS = 110
 const HIGHLIGHT_DRAW_CHUNK = 24
 
 /** One character in a content document. */
-type CharAt = { node: Text; offset: number }
+type CharAt = TextPoint
 
 function reducedMotion(): boolean {
   return globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
@@ -254,6 +267,7 @@ export class ReaderController {
     if (this.#destroyed) return this.#closeBook()
     this.bookDir = this.view.book?.dir === 'rtl' ? 'rtl' : 'ltr'
     this.#vertical = this.#expectVertical()
+    this.#detectEnglish()
     this.#wireView()
 
     this.applyAppearance(this.#settings)
@@ -265,7 +279,6 @@ export class ReaderController {
     await this.view.init({ lastLocation: lastCFI || undefined, showTextStart: true })
     if (this.#destroyed) return
     this.#nudgeLayout()
-    this.#probeEnglish()
   }
 
   #markEnglish(): void {
@@ -274,29 +287,11 @@ export class ReaderController {
     this.#cb.onEnglish?.()
   }
 
-  /**
-   * After first paint, scan the spine's raw XHTML for the translation meta so `hasEnglish`
-   * is known even when the book opens at an untranslated section (e.g. the cover). One
-   * section per task; stops at the first hit.
-   */
-  #probeEnglish(): void {
-    const book = this.view.book
-    const sections: { id?: string }[] = book?.sections ?? []
-    const loadText: ((id: string) => Promise<string | null>) | undefined = book?.loadText?.bind(book)
-    if (!loadText) return
-    const step = async (i: number) => {
-      if (this.#destroyed || this.#hasEnglish || i >= sections.length || this.view.book !== book) return
-      const id = sections[i]?.id
-      try {
-        if (id && (await loadText(id))?.includes('tsuzuri-translated')) return this.#markEnglish()
-      } catch {
-        return // the book was closed under us
-      }
-      this.#probeTimer = window.setTimeout(() => void step(i + 1), 0)
-    }
-    this.#probeTimer = window.setTimeout(() => void step(0), 0)
+  /** The package metadata declares English, so `hasEnglish` is known at open even on an
+   *  untranslated section (e.g. the cover); a translated section's meta also counts (`load`). */
+  #detectEnglish(): void {
+    if (packageHasEnglish(this.view.book?.resources?.opf)) this.#markEnglish()
   }
-  #probeTimer: number | undefined
 
   /**
    * Guess the writing mode before the first section loads, so the pre-init `applyLayout`
@@ -358,8 +353,11 @@ export class ReaderController {
       this.#drawSections(index === undefined ? this.#loadedIndices() : new Set([index]))
     }, { signal })
     this.view.addEventListener('draw-annotation', (e: any) => {
-      const { draw } = e.detail
-      draw(Overlayer.highlight, { color: HIGHLIGHT_HEX })
+      const { draw, range } = e.detail
+      // Re-run on every overlay redraw, so English shown / hidden since is honoured.
+      draw((rects: DOMRectList, opts: object) => Overlayer.highlight(rectsOutsideEnglish(range, rects), opts), {
+        color: HIGHLIGHT_HEX,
+      })
     }, { signal })
   }
 
@@ -431,8 +429,13 @@ export class ReaderController {
     return en.classList.contains(EN_SHOWN_CLASS)
   }
 
-  /** Reveal / hide one unit's English (while show-all is off); kept for the session. */
-  setRevealed(en: Element, on: boolean): void {
+  /**
+   * Reveal / hide one unit's English (while show-all is off); kept for the session. The
+   * page stays on `at` (the tapped glyph) when given — nothing before the English moves.
+   * Else a reveal keeps the page's first character (the unit may continue onto the next
+   * page, so its last character is no anchor) and a hide the unit's last Japanese one.
+   */
+  setRevealed(en: Element, on: boolean, at?: CharAt | null): void {
     const index = this.#docIndex.get(en.ownerDocument)
     const tz = en.getAttribute('data-tz')
     if (index === undefined || tz === null) return
@@ -441,9 +444,25 @@ export class ReaderController {
       if (!set) this.#revealed.set(index, (set = new Set()))
       set.add(tz)
     } else set?.delete(tz)
-    const t = textBeside(en, 'prev')
+    let keep: CharAt | null = at?.node.isConnected ? at : null
+    if (!keep && on) keep = this.#pageStart()
+    else if (!keep) {
+      const t = textBeside(en, 'prev')
+      if (t) keep = { node: t, offset: t.data.length - 1 }
+    }
     en.classList.toggle(EN_SHOWN_CLASS, on)
-    if (t?.data.length) this.#keepPage({ node: t, offset: t.data.length - 1 })
+    this.#keepPage(keep)
+  }
+
+  /** The first character of the visible range (refreshed after every scroll, including our
+   *  re-anchors), outside English and furigana. */
+  #pageStart(): CharAt | null {
+    const r: Range | undefined = this.view.lastLocation?.range
+    try {
+      return r ? textFrom(r.startContainer, r.startOffset) : null
+    } catch {
+      return null
+    }
   }
 
   #applyReveals(doc: Document, index: number): void {
@@ -459,11 +478,10 @@ export class ReaderController {
 
   /**
    * Keep the page across an English show / hide. foliate re-scrolls to its own anchor on
-   * the reflow, but that anchor (the visible range, refreshed only by page turns) can be
-   * stale, start in now-hidden English, or have its first rect on the previous page. So
-   * anchor on one character sampled before the change: the unit's last Japanese character
-   * for a single reveal / hide (nothing before its English moves), else the character at
-   * the page centre — moved to the Japanese before it if it is English now hidden.
+   * the reflow, but that anchor can be stale, start in now-hidden English, or have its
+   * first rect on the previous page. So anchor on one character sampled before the change
+   * (see `setRevealed` for a single unit; for show-all, the character at the page centre)
+   * — moved to the Japanese before it if it is English now hidden.
    */
   #keepPage(at: CharAt | null): void {
     if (!at) return
@@ -589,7 +607,6 @@ export class ReaderController {
   async #reopen(file: File): Promise<void> {
     const at = this.lastCFI
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
-    if (this.#probeTimer) clearTimeout(this.#probeTimer)
     if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
     this.#redrawTimer = undefined
     this.#redrawGen++
@@ -606,7 +623,6 @@ export class ReaderController {
     await this.view.init({ lastLocation: at || undefined, showTextStart: true })
     if (this.#destroyed) return
     this.#nudgeLayout()
-    this.#probeEnglish()
   }
 
   /** `close()` doesn't destroy the Book, whose Loader holds a blob URL per resource. */
@@ -856,7 +872,6 @@ export class ReaderController {
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
     if (this.#slideTimer) clearTimeout(this.#slideTimer)
     if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
-    if (this.#probeTimer) clearTimeout(this.#probeTimer)
     this.#redrawGen++
     this.#pendingDir = null
     this.#abortDocListeners()

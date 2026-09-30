@@ -20,7 +20,14 @@
   } from '../../services/reader'
   import { cfiWithinPage } from '../../services/cfi'
   import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
-  import { englishAncestor, selectionIsEnglish, selectionText, unitEnglish } from '../../services/translation'
+  import {
+    englishAncestor,
+    selectionIsEnglish,
+    selectionText,
+    textFrom,
+    unitEnglish,
+    type TextPoint,
+  } from '../../services/translation'
   import { lookupAt, warmupLookup, disposeLookup, pingLookup, type LookupResult } from '../../services/jp/lookupClient'
   import { isDictReady, downloadAndWarmDictionary } from '../../services/jp/dictdb'
   import {
@@ -135,6 +142,8 @@
   let definePositions: CharPosition[] = []
   /** The tapped unit's `.tsuzuri-en`, backing `dictState.english`. */
   let defineEnglish: Element | null = null
+  /** The tapped glyph (or a highlight's first character): a reveal keeps it on the page. */
+  let defineGlyph: TextPoint | null = null
 
   // Persist progress only after the user moved: startup relocations can report a bogus
   // fraction, and `relocate` carries no reason to tell them apart.
@@ -174,6 +183,7 @@
     defineDoc = null
     definePositions = []
     defineEnglish = null
+    defineGlyph = null
   }
 
   // ── English ───────────────────────────────────────────────────────────────
@@ -189,7 +199,7 @@
   /** Card action: reveal / hide the tapped unit's English, then close the card. */
   function toggleUnitEnglish() {
     const en = defineEnglish
-    if (en && controller) controller.setRevealed(en, !controller.isRevealed(en))
+    if (en && controller) controller.setRevealed(en, !controller.isRevealed(en), defineGlyph)
     closeOverlays()
   }
   /** A blank tap on an individually revealed unit's English hides it. */
@@ -302,6 +312,7 @@
       existingCfi: value,
       word,
       english: englishFor(range.startContainer),
+      glyph: textFrom(range.startContainer, range.startOffset),
     })
   }
 
@@ -462,6 +473,7 @@
       doc: info.doc,
       positions: ex.positions,
       english: englishFor(ex.positions[ex.tapOffset]?.node),
+      glyph: ex.positions[ex.tapOffset],
     })
     return true
   }
@@ -481,12 +493,14 @@
     word?: string
     /** The unit's English, for the card's Show / Hide English action. */
     english?: Element | null
+    glyph?: TextPoint | null
   }) {
     const key = `${o.existingCfi ?? ''}:${o.tapOffset}:${o.text}`
     const retarget = dictState.open
     defineDoc = o.doc ?? null
     definePositions = o.positions ?? []
     defineEnglish = o.english ?? null
+    defineGlyph = o.glyph ?? null
     dictState.english = defineEnglish ? (controller?.isRevealed(defineEnglish) ? 'hide' : 'show') : ''
     dictState.open = true
     dictState.anchor = o.anchor
@@ -779,6 +793,7 @@
     clearAnnotations()
     defineDoc = null
     definePositions = []
+    defineGlyph = null
     clearSel()
     lastDoc = null
     if (import.meta.env.DEV) delete (window as any).__tsuzuri

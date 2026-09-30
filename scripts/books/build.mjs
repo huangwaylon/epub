@@ -4,7 +4,8 @@
 //
 // Per book: Kobo markup stripped, English inserted after each unit as
 // <span class="tsuzuri-en" lang="en" data-tz="N">, a `tsuzuri-translated` meta added to
-// translated chapters, oversized JPEGs re-encoded. Writes <slug>.epub, a <slug>.webp
+// translated chapters and a `tsuzuri:translation` meta to the package, oversized JPEGs
+// re-encoded. Writes <slug>.epub, a <slug>.webp
 // cover thumbnail, and catalog.json (the shelf's list of downloadable books).
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
@@ -16,6 +17,9 @@ import {
 } from './lib.mjs'
 
 const OUT = 'public/books'
+const OPF_NS = 'http://www.idpf.org/2007/opf'
+/** The `tsuzuri:` metadata prefix (EPUB 3 requires undeclared prefixes to be declared). */
+const TSUZURI_PREFIX = 'tsuzuri: https://huangwaylon.github.io/epub/vocab#'
 /** JPEGs above this are re-encoded (publisher art is often 300 dpi, near-lossless). */
 const JPEG_MAX_BYTES = 400_000
 /** Fixed zip timestamps so an unchanged book keeps its SHA-256 (= its library id). Local
@@ -80,6 +84,23 @@ async function buildBook(slug) {
   for (const path of Object.keys(files)) if (/(^|\/)js\/kobo\.js$/.test(path)) delete files[path]
   for (const item of Array.from(pkg.opf.getElementsByTagName('item'))) {
     if (/kobo\.js$/.test(item.getAttribute('href'))) item.parentNode.removeChild(item)
+  }
+  // Declare the English in the package, so the reader knows at open without scanning the
+  // spine (EPUB 3 `property` with a declared prefix; EPUB 2 `name`/`content`).
+  if (translated) {
+    const root = pkg.opf.documentElement
+    const metadata = pkg.opf.getElementsByTagNameNS(OPF_NS, 'metadata')[0]
+    const meta = pkg.opf.createElementNS(OPF_NS, 'meta')
+    if (/^3/.test(root.getAttribute('version') ?? '')) {
+      const prefix = root.getAttribute('prefix')?.trim()
+      root.setAttribute('prefix', `${prefix ? `${prefix} ` : ''}${TSUZURI_PREFIX}`)
+      meta.setAttribute('property', 'tsuzuri:translation')
+      meta.appendChild(pkg.opf.createTextNode('en'))
+    } else {
+      meta.setAttribute('name', 'tsuzuri:translation')
+      meta.setAttribute('content', 'en')
+    }
+    metadata.appendChild(meta)
   }
   files[pkg.opfPath] = strToU8(serialize(pkg.opf))
 

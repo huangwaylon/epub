@@ -2,7 +2,15 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { DOMParser } from '@xmldom/xmldom'
 // @ts-ignore — vendored JS module, no type declarations
 import * as CFI from '../vendor/foliate-js/epubcfi.js'
-import { unitEnglish, englishAncestor, clampOutOfEnglish, selectionText } from './translation'
+import {
+  unitEnglish,
+  englishAncestor,
+  clampOutOfEnglish,
+  selectionText,
+  textFrom,
+  packageHasEnglish,
+  rectsOutsideEnglish,
+} from './translation'
 
 // xmldom supplies the tree (childNodes, siblings, attributes); the node env lacks the
 // NodeFilter constants epubcfi.js reads, and xmldom has no Range, so both are faked.
@@ -219,5 +227,58 @@ describe('selectionText', () => {
   it('copies English when the selection lies inside one translation', () => {
     const en = textStarting(parse(JA_EN), 'Rain')
     expect(selectionText(over(en.parentNode!, en))).toBe('Rain today.')
+  })
+})
+
+describe('textFrom', () => {
+  const doc = parse(JA_EN)
+  it('returns the boundary itself in Japanese text', () => {
+    const t = textStarting(doc, '明日')
+    expect(textFrom(t, 2)).toEqual({ node: t, offset: 2 })
+  })
+  it('moves out of English to the next Japanese', () => {
+    expect(textFrom(textStarting(doc, 'Rain'), 3)).toEqual({ node: textStarting(doc, '明日'), offset: 0 })
+    expect(textFrom(textStarting(doc, 'Sunny'), 0)?.node).toBe(textStarting(doc, '三つ目'))
+  })
+  it('skips furigana and resolves element boundaries', () => {
+    expect(textFrom(textStarting(doc, 'あめ'), 0)?.node).toBe(textStarting(doc, 'だ。'))
+    const p = doc.getElementsByTagName('p')[1]
+    expect(textFrom(p.parentNode!, 1)?.node).toBe(textStarting(doc, '三つ目')) // body, before the 2nd <p>
+  })
+})
+
+describe('packageHasEnglish', () => {
+  const opf = (meta: string) =>
+    new DOMParser().parseFromString(
+      `<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata>${meta}</metadata></package>`,
+      'application/xml',
+    ) as any
+  it('reads the EPUB 3 and EPUB 2 forms', () => {
+    expect(packageHasEnglish(opf('<meta property="tsuzuri:translation">en</meta>'))).toBe(true)
+    expect(packageHasEnglish(opf('<meta name="tsuzuri:translation" content="en"/>'))).toBe(true)
+  })
+  it('is false without the meta or a package', () => {
+    expect(packageHasEnglish(opf('<meta property="dcterms:modified">2026</meta>'))).toBe(false)
+    expect(packageHasEnglish(undefined)).toBe(false)
+  })
+})
+
+describe('rectsOutsideEnglish', () => {
+  const box = (left: number, top: number, right: number, bottom: number) => ({ left, top, right, bottom })
+  it('drops the rects inside a displayed translation the range crosses', () => {
+    const doc = parse(JA_EN)
+    const p = doc.getElementsByTagName('p')[0] as any
+    const [en0, en1] = Array.from(doc.getElementsByClassName('tsuzuri-en')) as any[]
+    en0.getClientRects = () => [box(0, 20, 300, 40)]
+    en1.getClientRects = () => [] // hidden
+    const range = { commonAncestorContainer: p, intersectsNode: () => true } as any
+    const ja = box(0, 0, 100, 16)
+    const inEn = box(0, 22, 280, 38)
+    expect(rectsOutsideEnglish(range, [ja, inEn, en0.getClientRects()[0]])).toEqual([ja])
+  })
+  it('returns the rects as is for a range within one text node', () => {
+    const rects = [box(0, 0, 10, 10)]
+    const range = { commonAncestorContainer: textStarting(parse(JA_EN), '今日は') } as any
+    expect(rectsOutsideEnglish(range, rects)).toBe(rects)
   })
 })
