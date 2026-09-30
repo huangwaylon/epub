@@ -852,7 +852,7 @@ export class Paginator extends HTMLElement {
         state.vx = dx / dt
         state.vy = dy / dt
         this.#touchScrolled = true
-        // TSUZURI PATCH (2): our swipe detector (src/services/reader.ts) turns pages.
+        // TSUZURI PATCH (2): our swipe detector (src/services/reader/gestures.ts) turns pages.
         // Keep preventDefault() above (blocks native scroll / edge back-swipe); dropped
         // upstream's `this.scrollBy(dx, dy)`.
     }
