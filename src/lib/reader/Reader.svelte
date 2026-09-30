@@ -4,7 +4,6 @@
   import { cubicOut } from 'svelte/easing'
   import { openShelf } from '../../stores/nav.svelte'
   import { settings, appearance, updateSettings } from '../../stores/settings.svelte'
-  import { dict } from '../../stores/dict.svelte'
   import { library } from '../../stores/library.svelte'
   import { showToast } from '../../stores/toast.svelte'
   import { DUR, dur } from '../util/motion.svelte'
@@ -19,17 +18,12 @@
     type TocItem,
   } from '../../services/reader'
   import { cfiWithinPage } from '../../services/cfi'
-  import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
-  import {
-    englishAncestor,
-    selectionIsEnglish,
-    selectionText,
-    textFrom,
-    unitEnglish,
-    type TextPoint,
-  } from '../../services/translation'
-  import { lookupAt, warmupLookup, disposeLookup, pingLookup, type LookupResult } from '../../services/jp/lookupClient'
-  import { isDictReady, downloadAndWarmDictionary } from '../../services/jp/dictdb'
+  import { buildChapterIndex, chapterAt, chapterOrder, type ChapterStart } from '../../services/chapters'
+  import { extractTextAt } from '../../services/jp/extract'
+  import { englishAncestor, selectionIsEnglish, selectionText, unitEnglish } from '../../services/translation'
+  import { lookupAt, warmupLookup, disposeLookup, pingLookup } from '../../services/jp/lookupClient'
+  import { isDictReady } from '../../services/jp/dictdb'
+  import { createDefineCard } from './defineCard.svelte'
   import {
     annotations,
     loadAnnotations,
@@ -37,14 +31,12 @@
     saveAnnotation,
     removeAnnotation,
     isHighlighted,
-    highlightAt,
     addHighlightRecord,
     removeHighlightRecord,
     newId,
   } from '../../stores/annotations.svelte'
   import { debounce } from '../util/debounce'
   import { inChromeToggleBand } from '../util/chromeBand'
-  import type { AnchorRect } from '../util/anchoredPosition'
   import { viewportSize } from '../../services/viewport'
   import type { BookMeta, Annotation, ResolvedTheme } from '../../services/types'
   import Icon from '../components/Icon.svelte'
@@ -112,38 +104,8 @@
     !!currentCFI && annotations.items.some((a) => a.kind === 'bookmark' && cfiWithinPage(a.cfi, currentCFI)),
   )
 
-  let dictState = $state<{
-    open: boolean
-    /** The tapped glyph, then the matched word (top-window coords). */
-    anchor: AnchorRect | null
-    vertical: boolean
-    loading: boolean
-    needsDownload: boolean
-    result: LookupResult | null
-    /** Kept so a post-download retry can re-run the lookup. */
-    text: string
-    tapOffset: number
-    /** Per-lookup key; a stale lookup never lands in a newer card. */
-    lastKey: string
-    /** The word's CFI once resolved, else ''. */
-    cfi: string
-    highlighted: boolean
-    /** The matched surface word (for re-adding the highlight). */
-    word: string
-    /** The card's English action for the tapped unit ('' = none: no English, or show-all on). */
-    english: '' | 'show' | 'hide'
-  }>({
-    open: false, anchor: null, vertical: false, loading: false, needsDownload: false, result: null,
-    text: '', tapOffset: 0, lastKey: '', cfi: '', highlighted: false, word: '', english: '',
-  })
-
-  // Live DOM for the in-flight define (plain refs, not $state).
-  let defineDoc: Document | null = null
-  let definePositions: CharPosition[] = []
-  /** The tapped unit's `.tsuzuri-en`, backing `dictState.english`. */
-  let defineEnglish: Element | null = null
-  /** The tapped glyph (or a highlight's first character): a reveal keeps it on the page. */
-  let defineGlyph: TextPoint | null = null
+  /** The dictionary card (state machine in defineCard.svelte.ts). */
+  const card = createDefineCard({ controller: () => controller, addHighlight, removeHighlight, englishFor })
 
   // Persist progress only after the user moved: startup relocations can report a bogus
   // fraction, and `relocate` carries no reason to tell them apart.
@@ -177,13 +139,8 @@
   /** The single close path for the card and the selection toolbar. Also releases the
    *  define DOM refs so a navigated-away section can be collected. */
   function closeOverlays() {
-    dictState.open = false
-    dictState.anchor = null
+    card.close()
     clearSel()
-    defineDoc = null
-    definePositions = []
-    defineEnglish = null
-    defineGlyph = null
   }
 
   // ── English ───────────────────────────────────────────────────────────────
@@ -198,8 +155,7 @@
   }
   /** Card action: reveal / hide the tapped unit's English, then close the card. */
   function toggleUnitEnglish() {
-    const en = defineEnglish
-    if (en && controller) controller.setRevealed(en, !controller.isRevealed(en), defineGlyph)
+    card.toggleUnitEnglish()
     closeOverlays()
   }
   /** A blank tap on an individually revealed unit's English hides it. */
@@ -229,7 +185,7 @@
     const done = removeAnnotation(a.id) // in-memory list updates synchronously
     if (a.kind === 'highlight' && !isHighlighted(a.cfi)) {
       void controller?.removeHighlight(a.cfi).catch(() => {})
-      if (dictState.cfi === a.cfi) dictState.highlighted = false
+      card.highlightChanged(a.cfi, false)
     }
     done.catch((err) => console.warn('Could not delete annotation', err))
     showToast({
@@ -242,7 +198,7 @@
     const repaint = a.kind === 'highlight' && !isHighlighted(a.cfi)
     saveAnnotation(a).catch((err) => console.warn('Could not restore annotation', err))
     if (repaint) void controller?.addHighlight(a.cfi).catch(() => {})
-    if (a.kind === 'highlight' && dictState.cfi === a.cfi) dictState.highlighted = true
+    if (a.kind === 'highlight') card.highlightChanged(a.cfi, true)
   }
 
   // ── Selection → highlight / copy ──────────────────────────────────────────
@@ -273,55 +229,9 @@
     }
   }
 
-  /** A rect inside a content document → top-window coordinates. */
-  function rectInTop(doc: Document, r: DOMRect | DOMRectReadOnly): AnchorRect {
-    const fr = (doc.defaultView?.frameElement as HTMLElement | null)?.getBoundingClientRect()
-    const ox = fr?.left ?? 0
-    const oy = fr?.top ?? 0
-    return { left: ox + r.left, top: oy + r.top, right: ox + r.right, bottom: oy + r.bottom }
-  }
-
   // ── Tapping an existing highlight → reopen its definition (with a remove option) ──
   function onShowAnnotation(value: string, range: Range) {
-    // This click rides the same gesture as our tap. If the tap defined a word, keep its
-    // lookup but adopt this highlight, so Remove clears what was tapped (e.g. an enclosing
-    // phrase highlight) rather than a nested word.
-    if (Date.now() - tapDismissedAt < 500) return
-    if (Date.now() - tapDefinedAt < 500) {
-      if (dictState.open && dictState.lastKey === tapDefinedKey && !dictState.cfi) {
-        dictState.cfi = value
-        dictState.word = highlightAt(value)?.text || dictState.word
-        dictState.highlighted = true
-      }
-      return
-    }
-    // Prefer the stored word: a range over ruby stringifies with furigana (決けっ心).
-    const word = highlightAt(value)?.text || range.toString()
-    const doc = range.startContainer.ownerDocument
-    let anchor: AnchorRect | null = null
-    try {
-      if (doc) anchor = rectInTop(doc, range.getBoundingClientRect())
-    } catch {
-      /* detached range */
-    }
-    clearSel()
-    openDefine({
-      text: word,
-      tapOffset: 0,
-      anchor: anchor ?? { left: 0, top: 0, right: 0, bottom: 0 },
-      existingCfi: value,
-      word,
-      english: englishFor(range.startContainer),
-      glyph: textFrom(range.startContainer, range.startOffset),
-    })
-  }
-
-  /** Popup footer toggle; keeps the card open. */
-  function toggleWordHighlight() {
-    if (!controller || !dictState.cfi) return
-    if (dictState.highlighted) removeHighlight(dictState.cfi)
-    else addHighlight(dictState.cfi, dictState.word)
-    dictState.highlighted = !dictState.highlighted
+    if (card.showAnnotation(value, range)) clearSel()
   }
 
   // ── Bookmarks ─────────────────────────────────────────────────────────────
@@ -363,24 +273,16 @@
     jumpTo(href)
   }
 
-  // Our tap and foliate's highlight `click` (show-annotation) share a gesture. The tap runs
-  // immediately — never delay it — and the click stands down behind these stamps.
-  let tapDefinedAt = 0
-  let tapDefinedKey = ''
-  let tapDismissedAt = 0
-
   /** Tap routing: open card → dismiss; glyph → define (even in the edge band, which
    *  overlaps each column's end glyphs); a revealed unit's English → hide it; blank edge
    *  band → toggle chrome; else hide it. */
   function onTap(info: TapInfo) {
-    if (dictState.open) {
-      tapDismissedAt = Date.now()
+    if (card.state.open) {
+      card.noteDismissTap()
       closeOverlays()
       return
     }
-    if (tryDefine(info)) {
-      tapDefinedAt = Date.now()
-      tapDefinedKey = dictState.lastKey
+    if (card.tryDefine(info)) {
       chromeVisible = false
       return
     }
@@ -426,7 +328,7 @@
         toggleEnglish()
         break
       case 'Escape':
-        if (dictState.open || sel.open) {
+        if (card.state.open || sel.open) {
           e.preventDefault()
           controller.clearSelection()
           closeOverlays()
@@ -444,149 +346,6 @@
     chromeVisible = false
   }
 
-  /** The tapped character's box (top-window), else the tap point. */
-  function glyphAnchor(doc: Document, positions: CharPosition[], i: number, px: number, py: number): AnchorRect {
-    const c = positions[i]
-    if (c) {
-      try {
-        const r = doc.createRange()
-        r.setStart(c.node, c.offset)
-        r.setEnd(c.node, Math.min(c.offset + 1, c.node.length))
-        const b = r.getBoundingClientRect()
-        if (b.width || b.height) return rectInTop(doc, b)
-      } catch {
-        /* fall through */
-      }
-    }
-    return { left: px, top: py, right: px, bottom: py }
-  }
-
-  /** Whether the tap hit Japanese text (and a lookup started). */
-  function tryDefine(info: TapInfo): boolean {
-    if (!info.doc) return false
-    const ex = extractTextAt(info.doc, info.ix, info.iy)
-    if (!ex) return false
-    openDefine({
-      text: ex.text,
-      tapOffset: ex.tapOffset,
-      anchor: glyphAnchor(info.doc, ex.positions, ex.tapOffset, info.px, info.py),
-      doc: info.doc,
-      positions: ex.positions,
-      english: englishFor(ex.positions[ex.tapOffset]?.node),
-      glyph: ex.positions[ex.tapOffset],
-    })
-    return true
-  }
-
-  /**
-   * Open the card for a word. A fresh tap (`doc` + `positions`) highlights the match once
-   * the lookup resolves; `existingCfi` reopens a highlight. An already-open card keeps its
-   * previous result (dimmed) until the new one lands.
-   */
-  function openDefine(o: {
-    text: string
-    tapOffset: number
-    anchor: AnchorRect
-    doc?: Document | null
-    positions?: CharPosition[]
-    existingCfi?: string
-    word?: string
-    /** The unit's English, for the card's Show / Hide English action. */
-    english?: Element | null
-    glyph?: TextPoint | null
-  }) {
-    const key = `${o.existingCfi ?? ''}:${o.tapOffset}:${o.text}`
-    const retarget = dictState.open
-    defineDoc = o.doc ?? null
-    definePositions = o.positions ?? []
-    defineEnglish = o.english ?? null
-    defineGlyph = o.glyph ?? null
-    dictState.english = defineEnglish ? (controller?.isRevealed(defineEnglish) ? 'hide' : 'show') : ''
-    dictState.open = true
-    dictState.anchor = o.anchor
-    dictState.vertical = controller?.vertical ?? false
-    dictState.loading = true
-    dictState.needsDownload = false
-    if (!retarget) dictState.result = null
-    dictState.text = o.text
-    dictState.tapOffset = o.tapOffset
-    dictState.lastKey = key
-    dictState.cfi = o.existingCfi ?? ''
-    dictState.word = o.word ?? ''
-    dictState.highlighted = !!o.existingCfi
-    void runLookup(o.text, o.tapOffset, key)
-  }
-
-  async function runLookup(text: string, tapOffset: number, key: string) {
-    const stale = () => !dictState.open || dictState.lastKey !== key
-    try {
-      if (!(await isDictReady())) {
-        if (stale()) return
-        dictState.loading = false
-        dictState.result = null
-        dictState.needsDownload = true
-        return
-      }
-      const res = await lookupAt(text, tapOffset)
-      if (stale()) return
-      dictState.loading = false
-      dictState.result = res
-      if (res && res.entries.length && !dictState.cfi && defineDoc && definePositions.length) highlightMatch(res, key)
-    } catch (err) {
-      // e.g. IndexedDB refused to open: never leave the card spinning.
-      console.warn('Lookup failed', err)
-      if (stale()) return
-      dictState.loading = false
-      dictState.result = null
-    }
-  }
-
-  /** Highlight the matched word and re-anchor the card to it. Synchronous, so a newer tap
-   *  can't have its card state overwritten by this word's CFI. */
-  function highlightMatch(res: LookupResult, key: string) {
-    if (!controller || !defineDoc) return
-    const start = res.matchStart
-    const end = res.matchStart + res.matchLength
-    const range = rangeForSpan(defineDoc, definePositions, start, end)
-    if (!range) return
-    const cfi = controller.cfiForSelection(defineDoc, range)
-    if (!cfi || !dictState.open || dictState.lastKey !== key) return
-    // Not range.toString(): a range over ruby splices in the furigana (決けっ心).
-    const word = definePositions
-      .slice(start, end)
-      .map((c) => c.node.data.charAt(c.offset))
-      .join('')
-    try {
-      dictState.anchor = rectInTop(defineDoc, range.getBoundingClientRect())
-    } catch {
-      /* keep the glyph anchor */
-    }
-    // With "Highlight looked-up words" off the CFI still backs the footer toggle.
-    const mark = settings.highlightLookups || isHighlighted(cfi)
-    if (mark) addHighlight(cfi, word)
-    dictState.cfi = cfi
-    dictState.word = word
-    dictState.highlighted = mark
-  }
-
-  // The card doesn't wait for the IPADIC warm: the effect below re-runs the pending lookup
-  // as soon as JMdict is queryable.
-  async function downloadDict() {
-    try {
-      await downloadAndWarmDictionary('en')
-    } catch {
-      /* error surfaced via the dict store */
-    }
-  }
-  $effect(() => {
-    if (dictState.open && dictState.needsDownload && dict.state === 'ok')
-      untrack(() => {
-        dictState.needsDownload = false
-        dictState.loading = true
-        void runLookup(dictState.text, dictState.tapOffset, dictState.lastKey)
-      })
-  })
-
   // Recolour when an 'auto' theme follows the OS; `appliedTheme` stops an explicit pick
   // (already applied via onSettingChange) from applying twice.
   let appliedTheme: ResolvedTheme | null = null
@@ -599,53 +358,10 @@
   })
 
   /** Scrubber preview: each TOC entry's section start as a book fraction, built once per open. */
-  let chapterStarts: { start: number; label: string }[] = []
-  function buildChapterIndex() {
-    chapterStarts = []
-    const view = controller?.view
-    const fr = view?.getSectionFractions() ?? []
-    const resolveHref: ((h: string) => { index: number } | null) | undefined = view?.book?.resolveHref?.bind(view.book)
-    if (!fr.length || !resolveHref) return
-    const out: { start: number; label: string }[] = []
-    const walk = (items: TocItem[]) => {
-      for (const it of items) {
-        const label = it.label?.trim()
-        if (it.href && label) {
-          try {
-            const r = resolveHref(it.href)
-            if (r && r.index >= 0 && fr[r.index] !== undefined) out.push({ start: fr[r.index], label })
-          } catch {
-            /* unresolvable href — skip */
-          }
-        }
-        if (it.subitems?.length) walk(it.subitems)
-      }
-    }
-    walk(toc)
-    // Entries sharing a section start: keep the first (stable sort).
-    out.sort((a, b) => a.start - b.start)
-    chapterStarts = out.filter((c, i) => i === 0 || c.start > out[i - 1].start)
-  }
-  function chapterAt(f: number): string {
-    let label = ''
-    for (const c of chapterStarts) {
-      if (c.start <= f + 1e-6) label = c.label
-      else break
-    }
-    return label
-  }
+  let chapterStarts: ChapterStart[] = []
+  const labelAt = (f: number) => chapterAt(chapterStarts, f)
   /** TOC labels in reading order (the annotations panel groups by these). */
-  const chapterOrder = $derived.by(() => {
-    const out: string[] = []
-    const walk = (items: TocItem[]) => {
-      for (const it of items) {
-        if (it.label?.trim()) out.push(it.label.trim())
-        if (it.subitems?.length) walk(it.subitems)
-      }
-    }
-    walk(toc)
-    return out
-  })
+  const tocLabels = $derived(chapterOrder(toc))
 
   function seek(frac: number) {
     if (!controller) return
@@ -718,7 +434,7 @@
         return controller
       },
       get dictState() {
-        return dictState
+        return card.state
       },
       extractTextAt,
       lookupAt,
@@ -769,7 +485,8 @@
       status = 'ready'
       toc = controller.view.book?.toc ?? []
       rtlBook = controller.bookDir === 'rtl'
-      buildChapterIndex()
+      const view = controller.view
+      chapterStarts = buildChapterIndex(toc, view.getSectionFractions() ?? [], view.book?.resolveHref?.bind(view.book))
       installDevHook()
       document.addEventListener('visibilitychange', onVisibility)
       window.addEventListener('pagehide', onPageHide)
@@ -791,9 +508,7 @@
     controller = null
     disposeLookup()
     clearAnnotations()
-    defineDoc = null
-    definePositions = []
-    defineGlyph = null
+    card.close()
     clearSel()
     lastDoc = null
     if (import.meta.env.DEV) delete (window as any).__tsuzuri
@@ -867,7 +582,7 @@
         <Icon name="list" />
       </button>
       <div class="progress">
-        <ProgressScrubber {fraction} {sectionLabel} labelAt={chapterAt} onseek={seek} />
+        <ProgressScrubber {fraction} {sectionLabel} {labelAt} onseek={seek} />
       </div>
       <button
         class="icon-btn"
@@ -898,21 +613,21 @@
 </Sheet>
 
 <Sheet bind:open={annotationsOpen} title="Highlights & Bookmarks">
-  <AnnotationsPanel {chapterOrder} onnavigate={navAnnotation} onremove={onRemoveAnnotation} />
+  <AnnotationsPanel chapterOrder={tocLabels} onnavigate={navAnnotation} onremove={onRemoveAnnotation} />
 </Sheet>
 
 <DictionaryPopup
-  open={dictState.open}
-  anchor={dictState.anchor}
-  vertical={dictState.vertical}
-  loading={dictState.loading}
-  needsDownload={dictState.needsDownload}
-  result={dictState.result}
-  highlighted={dictState.highlighted}
-  english={dictState.english}
+  open={card.state.open}
+  anchor={card.state.anchor}
+  vertical={card.state.vertical}
+  loading={card.state.loading}
+  needsDownload={card.state.needsDownload}
+  result={card.state.result}
+  highlighted={card.state.highlighted}
+  english={card.state.english}
   onclose={closeOverlays}
-  ondownload={downloadDict}
-  ontogglehighlight={toggleWordHighlight}
+  ondownload={card.downloadDict}
+  ontogglehighlight={card.toggleWordHighlight}
   ontoggleenglish={toggleUnitEnglish}
 />
 
