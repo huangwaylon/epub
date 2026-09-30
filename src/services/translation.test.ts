@@ -177,7 +177,7 @@ describe('CFIs ignore .tsuzuri-en (TSUZURI PATCH 5)', () => {
       `<p><span class="tsuzuri-ja">今日は雨だ。</span>${EN(0, 'Rain today.')}<span class="tsuzuri-ja">明日も晴れ。</span></p>`
     const d = withRanges(parse(body))
     const r = () => fakeRange(textStarting(d, '明日'), 2)
-    const unfiltered = CFI.fromRange(r(), null)
+    const unfiltered = CFI.fromRange(r(), () => 1 as const) // accept everything
     expect(CFI.fromRange(r())).toBe(unfiltered)
     const back = CFI.toRange(d, CFI.parse(unfiltered))
     expect(back.startContainer).toBe(textStarting(d, '明日'))
