@@ -88,7 +88,7 @@ src/
   services/       framework-agnostic logic
     storage/      OPFS blobs + IndexedDB (idb)
     jp/           dictionary db, lookup, deinflect (vendored GPL), ruby-aware extract
-    reader.ts     foliate-view controller (pagination, taps, selection, highlights)
+    reader/       foliate-view controller + gestures, page turns, highlights, English
     library.ts    import / list / delete
     catalog.ts    bundled-book catalog + download
     translation.ts  English-unit helpers (reveal, clamp, copy)

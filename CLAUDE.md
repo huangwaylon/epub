@@ -52,14 +52,16 @@ framework-agnostic) → vendored engines (src/vendor/foliate-js)
 - **Lazy loading:** the Shelf never loads foliate (`library.ts` imports `view.js` on
   demand). The Reader chunk loads via retryable `loadReader()` (warmed after mount and on
   cover press) and prefetches foliate's zip/epub/paginator chunks at mount.
-- **Reader core:** one `ReaderController` (`src/services/reader.ts`) owns `<foliate-view>`;
-  `src/lib/reader/Reader.svelte` wires it to the UI. Full map: [architecture.md](docs/architecture.md).
+- **Reader core:** one `ReaderController` (`src/services/reader/controller.ts`) owns
+  `<foliate-view>`, with single-purpose helpers beside it (`gestures`, `turns`, `highlights`,
+  `english`, `styles`, `timers`); `src/lib/reader/Reader.svelte` wires it to the UI and
+  `defineCard.svelte.ts` runs the dictionary card. Full map: [architecture.md](docs/architecture.md).
 
 ## Where things are
 | Area | Code | Doc |
 |---|---|---|
 | System map, data flows, stores | `src/stores`, `src/main.ts`, `src/App.svelte` | [architecture.md](docs/architecture.md) |
-| Reader / foliate / pagination / taps / highlights | `src/services/reader.ts`, `src/lib/reader/*`, `src/vendor/foliate-js` | [reader-engine.md](docs/reader-engine.md) |
+| Reader / foliate / pagination / taps / highlights | `src/services/reader/*`, `src/lib/reader/*`, `src/vendor/foliate-js` | [reader-engine.md](docs/reader-engine.md) |
 | Dictionary, deinflection, lookup, word extraction | `src/services/jp/*` | [japanese.md](docs/japanese.md) |
 | Storage, data model, PWA, iOS viewport | `src/services/storage/*`, `src/services/viewport.ts`, `vite.config.ts`, `index.html` | [storage-pwa-ios.md](docs/storage-pwa-ios.md) |
 | Bundled books (catalog, download, Included books UI) | `src/services/catalog.ts`, `src/stores/catalog.svelte.ts`, `public/books/`, `scripts/books/*` | [storage-pwa-ios.md §4a](docs/storage-pwa-ios.md), [translation.md](docs/translation.md) |
@@ -126,18 +128,20 @@ npm run build    # production build → dist/ (base /epub/)
   swipe drives turns); (3) `#turnPage` resolves immediately, holding its lock 100 ms on a
   timer only after a section crossing; (4) `View#render` skips a document-less iframe;
   (5) `epubcfi.js` `fromRange`/`toRange` reject `.tsuzuri-en`, so CFIs match the
-  untranslated book.
+  untranslated book (a start inside English moves forward, an end back; old-format
+  `.tsuzuri-ja` documents stay unfiltered).
   `animated` stays **off**; we animate turns ourselves. Content is in a **closed-shadow
   iframe** — reach it only via foliate's `load` event `doc` (or DEV `window.__tsuzuri`).
 - **Vertical layout:** `applyLayout` derives vertical caps from the live viewport and is
   idempotent; `#expectVertical()` pre-sets writing mode before `view.init`. Books that
   mark 縦書き only via calibre's `class="vrtl"` get `html{writing-mode:vertical-rl}`
   prepended (`#applyIntendedWritingMode`) — only that explicit marker counts.
-- **English:** `hasEnglish` from the package's `tsuzuri:translation` meta at open (fallback: a
-  loaded section's `tsuzuri-translated` meta; no spine scan). Per-unit reveals live in
-  `ReaderController.#revealed` (session only). Any show/hide re-anchors the page on one
-  sampled character (`#keepPage`; a reveal on the tapped glyph) — foliate's own anchor can
-  be stale. Extraction and CFIs ignore English; selection highlights clamp out of it.
+- **English:** `hasEnglish` from the package's `tsuzuri:translation` meta at open (fallback:
+  a loaded section's `tsuzuri-translated` meta; no spine scan). Per-unit reveals live in
+  `EnglishState` (`services/reader/english.ts`, session only). Any show/hide re-anchors the
+  page on one sampled character (`keepPage`; a card's Show / Hide on the tapped glyph) —
+  foliate's own anchor can be stale. Extraction and CFIs ignore English; selection
+  highlights clamp out of it, and drawn highlights skip visible English.
   Contract: [translation.md](docs/translation.md), depth: reader-engine.md §4a.
 - **iOS viewport:** a cold Home Screen launch reports a layout viewport short by the
   status-bar inset (852 → 793 on iPhone) until a rotation, and WebKit paints nothing below
@@ -145,11 +149,12 @@ npm run build    # production build → dist/ (base /epub/)
   screen width as `--doc-height` (html/body/#app) and `--app-height` (fixed `.reader` + loading screens);
   both depend only on screen size + window width, so they can't feed back into layout.
   Relies on `black-translucent` + `viewport-fit=cover` in `index.html`.
-- **Highlight volume is a perf constraint:** `#drawSections` paints 24 per task in
-  `nearestFirst` order (`src/services/cfi.ts`), seeded before `open()`, generation-guarded.
+- **Highlight volume is a perf constraint:** `HighlightPainter.drawSections` paints 24 per
+  task in `nearestFirst` order (`src/services/cfi.ts`), seeded before `open()`, generation-guarded.
   The `annotations` store is an immutable `$state.raw` array with lookup maps; all
   create/remove goes through `addHighlight`/`removeHighlight` in `Reader.svelte` (paint
-  first, persist in background, dedupe on CFI). Per-document listeners use `#docACs`.
+  first, persist in background, dedupe on CFI). Per-document listeners use `DocumentInput`'s
+  per-document AbortControllers; every timeout lives in the controller's one `Timers` set.
 - **iOS storage/import:** EPUB import is `<input type="file">` only; OPFS with IndexedDB
   fallback; installed PWAs are exempt from 7-day eviction. Bundled books
   (`public/books/catalog.json`) are downloaded only when the user asks: fetch → SHA-256 must

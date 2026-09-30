@@ -112,7 +112,7 @@ settings, callbacks)`, seeds highlights with `setHighlights(...)` **before**
 `controller.open(file, progress?.cfi)`, then builds the TOC and chapter index. See
 [reader-engine.md §3](./reader-engine.md).
 
-**Tap / swipe.** `ReaderController#trackGestures` turns a horizontal swipe into a page
+**Tap / swipe.** `trackGestures` (`services/reader/gestures.ts`) turns a horizontal swipe into a page
 turn and a clean tap into `onTap`. With a card open, any tap only dismisses it. Otherwise
 a tap on a Japanese glyph defines it (even in the nav-bar band) → `extractTextAt` (main
 thread) → `lookupClient.lookupAt` (worker) → `DictionaryPopup` + yellow highlight. A tap
@@ -153,7 +153,7 @@ book.
 | `app.css` | Design tokens and the light/sepia/dark palettes ([ui-and-design.md](./ui-and-design.md)). |
 | `stores/*.svelte.ts` | §4. |
 | `lib/library/` | `Shelf`, `BookCover`, `ShelfSettings`. |
-| `lib/reader/` | `Reader` (screen wiring), `DictionaryPopup`, `SelectionToolbar`, `AnnotationsPanel`, `TocSheet`, `ReaderSettings`, `ProgressScrubber`. |
+| `lib/reader/` | `Reader` (screen wiring), `defineCard.svelte.ts` (dictionary-card state machine), `DictionaryPopup`, `SelectionToolbar`, `AnnotationsPanel`, `TocSheet`, `ReaderSettings`, `ProgressScrubber`. |
 | `lib/components/` | `Sheet`, `Segmented`, `Icon`, `Toast`, `ToastHost`, `LoadingScreen`. |
 | `lib/actions/`, `lib/util/` | `longpress`; `debounce`, `anchoredPosition`, `chromeBand`, `motion`. |
 
@@ -163,7 +163,9 @@ book.
 | `types.ts` | Persisted model: `BookMeta`, `ReadingProgress`, `Annotation`, `ReaderSettings`, `DEFAULT_SETTINGS`, `HIGHLIGHT_HEX`. |
 | `library.ts` | `importEpub(file, { expectedId?, meta? })`, `ChecksumError`, `listBooks`, `touchBook`, `removeBook`, `flattenLangMap`, `sha256Hex`; re-exports `getBookFile`. |
 | `catalog.ts` | Bundled books: `CatalogEntry`, `fetchCatalog`, `downloadEntry`, `readWithProgress`, `deriveStatus`, `downloadErrorMessage`, `bookUrl`. |
-| `reader.ts` | `ReaderController`: owns `<foliate-view>`; layout, appearance, gestures, page-turn slide, selection, highlights ([reader-engine.md](./reader-engine.md)). |
+| `reader/` | `ReaderController` (`controller.ts`, owns `<foliate-view>`: open, layout, appearance, wiring) with `gestures.ts`, `turns.ts`, `highlights.ts`, `english.ts`, `styles.ts`, `timers.ts`, `types.ts`; `index.ts` is the public API ([reader-engine.md](./reader-engine.md)). |
+| `chapters.ts` | TOC helpers: `buildChapterIndex`, `chapterAt` (scrubber preview), `chapterOrder` (panel grouping). |
+| `translation.ts` | English-unit DOM helpers: `unitEnglish`, `clampOutOfEnglish`, `selectionText`, `textFrom`, `packageHasEnglish`, `rectsOutsideEnglish` ([reader-engine.md §4a](./reader-engine.md)). |
 | `cfi.ts` | CFI parsing / ordering for the highlight sweep. |
 | `viewport.ts` | `initViewport`, `viewportSize` ([storage-pwa-ios.md §6](./storage-pwa-ios.md#6-ios-viewport--srcservicesviewportts)). |
 | `storage/db.ts`, `storage/blobs.ts`, `storage/persist.ts` | IndexedDB, EPUB bytes, Storage API ([storage-pwa-ios.md](./storage-pwa-ios.md)). |
@@ -174,4 +176,4 @@ book.
 `paginator.js`, `epub.js`, `epubcfi.js`, `overlayer.js`, `vendor/zip.js`, plus unused
 format modules (mobi, fb2, comic-book, tts, search, …), which are excluded from the
 precache. The local patches (PDF removed from `view.js`; three `TSUZURI PATCH` edits in
-`paginator.js`) are listed in [reader-engine.md §1](./reader-engine.md).
+`paginator.js`; the English CFI filter in `epubcfi.js`) are listed in [reader-engine.md §1](./reader-engine.md).

@@ -45,7 +45,7 @@ Base tokens on `:root`:
 
 | Group | Tokens |
 | --- | --- |
-| Fonts | `--font-ui` (system sans), `--font-serif` (Hiragino Mincho → Noto Serif JP → Yu Mincho → Georgia), `--font-jp-sans` (read by `reader.ts` for ゴシック), `--font-mono`. No web fonts. |
+| Fonts | `--font-ui` (system sans), `--font-serif` (Hiragino Mincho → Noto Serif JP → Yu Mincho → Georgia), `--font-jp-sans` (read by `services/reader/styles.ts` for ゴシック), `--font-mono`. No web fonts. |
 | Type | `--fs-caption` 12 · `--fs-footnote` 13 · `--fs-body` 15 · `--fs-callout` 17 · `--fs-title` 20 · `--fs-headword` 24 · `--fs-display` clamp(30–36px). Nothing below 12px. |
 | Spacing | `--sp-1`…`--sp-8` = 4…32px (4pt steps), `--sp-10` = 40px |
 | Radii | `--r-xs` 6 · `--r-sm` 10 · `--r-md` 14 · `--r-lg` 20 · `--r-xl` 28 · `--r-full` 999 |
@@ -69,7 +69,7 @@ near-black: white on its accent is 2.7:1), `--control-track`, `--control-active`
 `prefers-color-scheme` (live), sets `<html data-theme>`, publishes `appearance.resolved`, and
 writes `--paper` into `<meta name="theme-color">`. An inline script in `index.html` sets
 `data-theme` from the `tsuzuri:settings` localStorage mirror before first paint. The reader
-re-injects the same vars into the book iframe (`appearanceCSS()` in `services/reader.ts`).
+re-injects the same vars into the book iframe (`appearanceCSS()` in `services/reader/styles.ts`).
 
 ## 3. Base styles & primitives (`src/app.css`)
 
@@ -134,7 +134,7 @@ One breakpoint, `@media (min-width: 768px)`, CSS only (`sheetMotion` checks the 
 
 The reader bars must sit inside the chrome-toggle band so a blank tap there toggles them. Safe
 areas: every full-bleed surface pads with `--safe-*`. Reading-area margins are computed in
-`services/reader.ts`, not in component CSS.
+`services/reader/styles.ts`, not in component CSS.
 
 ## 6. Extending
 

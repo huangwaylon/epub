@@ -117,7 +117,7 @@ window.__tsuzuri = { doc, controller, dictState, extractTextAt, lookupAt }
 ```
 
 `doc` is the most recently loaded content document, `controller` the `ReaderController`,
-`dictState` the popup state, `extractTextAt(doc, x, y)` the DOM extractor and `lookupAt(text, tapOffset)`
+`dictState` the dictionary card's state (`card.state`), `extractTextAt(doc, x, y)` the DOM extractor and `lookupAt(text, tapOffset)`
 the worker lookup. It is removed on reader destroy and tree-shaken from production.
 
 Tap-accuracy sweeps: drive an isolated Chrome (`puppeteer-core`, own `--user-data-dir`), poll
@@ -139,7 +139,7 @@ English translation flow (show-all, card reveal, tap-to-hide, both writing modes
    `onchange('appearance' | 'layout' | 'writingmode' | 'english')`; the reader maps these to
    `applyAppearance`, `applyLayout`, a writing-mode re-open, and (English) closing the
    card before `applyAppearance`.
-3. Read it in `services/reader.ts` (`appearanceCSS` or `applyLayout`). Persistence is automatic.
+3. Read it in `services/reader/` (`appearanceCSS` in `styles.ts`, or `applyLayout` in `controller.ts`). Persistence is automatic.
 
 ## 7. On-device (iPhone / iPad)
 
