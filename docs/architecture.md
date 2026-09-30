@@ -72,7 +72,7 @@ the exported functions, so persistence and side effects happen together.
 
 | Store | Holds | Key functions | Persisted in |
 |---|---|---|---|
-| `settings` | `settings: ReaderSettings`; `appearance.resolved` (theme with `'auto'` resolved, live) | `initSettings`, `updateSettings` | IDB `settings['reader']` (source of truth) + localStorage mirror `tsuzuri:settings` |
+| `settings` | `settings: ReaderSettings` (incl. `showEnglish`; a stored `showTranslations` is read as `showEnglish`); `appearance.resolved` (theme with `'auto'` resolved, live) | `initSettings`, `updateSettings` | IDB `settings['reader']` (source of truth) + localStorage mirror `tsuzuri:settings` |
 | `library` | `books`, `progress` (by id), `loading`, `importing`, `importError` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` | IDB `books` / `progress`; bytes in OPFS |
 | `catalog` | bundled `entries`, `loaded`, `error`, `jobs` (by id: downloading + progress, or error); status is derived by `entryStatus(entry)` (in the library ⇒ downloaded) | `loadCatalog`, `downloadBook`, `downloadAll`, `availableEntries`, `entryStatus` | memory (downloads land in `library`) |
 | `annotations` | `annotations.items`: an immutable `$state.raw` array for the open book, with non-reactive lookup maps | `loadAnnotations`, `clearAnnotations`, `isHighlighted`, `highlightAt`, `addHighlightRecord`, `removeHighlightRecord`, `saveAnnotation`, `removeAnnotation`, `newId` | IDB `annotations` (`byBook`) |

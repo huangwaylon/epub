@@ -127,12 +127,18 @@ host-margin gestures go on the `<foliate-view>` element. Compare `ex.text[ex.tap
 the glyph under the point; a probe on furigana is expected to resolve the ruby base, and `null`
 means a dead tap.
 
+Scripted checks: `scripts/e2e/lib.mjs` (puppeteer-core + system Chrome; `serve('dev')`,
+`launch(device, url)`). `node scripts/e2e/english.mjs [ipad|iphone|desktop]` checks the
+English translation flow (show-all, card reveal, tap-to-hide, both writing modes) and writes
+`/tmp/en-<device>-<mode>-<step>.png`.
+
 ## 6. Adding a reader setting
 
 1. Add the field and default to `ReaderSettings` / `DEFAULT_SETTINGS` in `src/services/types.ts`.
 2. Add a control in `src/lib/reader/ReaderSettings.svelte` that calls `updateSettings({...})`, then
-   `onchange('appearance' | 'layout' | 'writingmode')`; the reader maps these to
-   `applyAppearance`, `applyLayout` and a writing-mode re-open.
+   `onchange('appearance' | 'layout' | 'writingmode' | 'english')`; the reader maps these to
+   `applyAppearance`, `applyLayout`, a writing-mode re-open, and (English) closing the
+   card before `applyAppearance`.
 3. Read it in `services/reader.ts` (`appearanceCSS` or `applyLayout`). Persistence is automatic.
 
 ## 7. On-device (iPhone / iPad)

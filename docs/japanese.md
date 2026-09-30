@@ -84,10 +84,11 @@ small: blank-tap fall-through depends on some taps missing every glyph.
   CJK is out of scope.
 - The run collects up to `MAX_BEFORE = 12` word-chars before and `MAX_AFTER = 16` from the
   tap, over a text-only TreeWalker that rejects `<rt>`/`<rp>` (`textWalker`). It is capped
-  while scanning.
+  while scanning. It also rejects text inside inserted English (`.tsuzuri-en`,
+  [translation.md](translation.md)); a tap seeded in English returns `null`.
 - It stops at any non-word character and at line breaks (`breakBetween`): the nodes' nearest
   block ancestors differ, or a block element, `<br>` or `<img>` (inline gaiji) sits between
-  them. Blocks are matched by tag name (`BLOCK_TAGS`), not computed `display`.
+  them, or a `.tsuzuri-en` element does. Blocks are matched by tag name (`BLOCK_TAGS`), not computed `display`.
 - Tag names are compared with `toUpperCase()` because EPUB XHTML tag names are lowercase.
 - `positions[i]` is the DOM location of `text[i]`. The reader builds the highlight range
   with `rangeForSpan` and spells the saved word from `positions`. **Never `range.toString()`

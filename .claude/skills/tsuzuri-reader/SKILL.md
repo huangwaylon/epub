@@ -24,7 +24,7 @@ area you're changing. This is the procedure.
   stylesheet** (`appearanceCSS` via `renderer.setStyles`, doc §4).
 
 ## Rules
-- **Vendor code** (`src/vendor/foliate-js/**`) is third-party. Four `TSUZURI PATCH`es exist
+- **Vendor code** (`src/vendor/foliate-js/**`) is third-party. Five `TSUZURI PATCH`es exist
   (doc §1); a new one must be minimal, marked, and added to that table. Never set
   `animated` or restore foliate's touch turn — swipes and the horizontal push are ours.
 - **Taps are the hot path.** Never add latency or a guard that can swallow a tap. Keep the
@@ -40,6 +40,9 @@ area you're changing. This is the procedure.
 - **Layout** must stay idempotent (`#lastLayout`), write `max-inline-size` last, and use
   `viewportSize()` (doc §5a). A writing-mode change goes through `reopenForWritingMode`.
 - Content-document listeners use that document's `#docACs` signal; host ones use `#ac`.
+- **English** (`.tsuzuri-en`, [translation.md](../../../docs/translation.md)) is invisible to
+  CFIs (patch 5) and to extraction; show / hide goes through `applyAppearance` /
+  `setRevealed`, which re-anchor the page (doc §4a).
 - Services stay framework-free; no Svelte imports in `reader.ts` or `cfi.ts`.
 
 ## Common tasks

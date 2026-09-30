@@ -20,6 +20,11 @@ https://huangwaylon.github.io/epub/ ([docs/deployment.md](docs/deployment.md)).
 - **Blank tap** in the top/bottom edge band toggles the bars; elsewhere it hides visible
   bars; a blank-centre tap with nothing open does nothing. A tap never turns the page.
 - Tapping a highlight reopens its definition (without furigana) with **Remove highlight**.
+- **English** (bundled books, `.tsuzuri-en` after each unit): **Show / Hide all** from the
+  top-bar button, `e`, or Display → Translation (persisted `showEnglish`). With it off, a
+  word's card offers **Show English** for that unit (inline, closes the card); tapping that
+  revealed English hides it; toggling show-all clears reveals. English never looks up; in
+  show-all a tap on it is a blank tap.
 - Bottom progress bar is **drag-to-scrub** (previews the target chapter).
 - Highlights are always yellow. **Highlights & Bookmarks** panel groups by chapter;
   deleting a book/highlight/bookmark is undoable from a toast. On iPad, **Display**
@@ -119,13 +124,20 @@ npm run build    # production build → dist/ (base /epub/)
 - **Vendored foliate-js:** edit only as a documented `TSUZURI PATCH`. Current patches:
   (1) `view.js` PDF branch removed (unmarked); (2) `paginator.js` own touch page-turn disabled (our
   swipe drives turns); (3) `#turnPage` resolves immediately, holding its lock 100 ms on a
-  timer only after a section crossing; (4) `View#render` skips a document-less iframe.
+  timer only after a section crossing; (4) `View#render` skips a document-less iframe;
+  (5) `epubcfi.js` `fromRange`/`toRange` reject `.tsuzuri-en`, so CFIs match the
+  untranslated book.
   `animated` stays **off**; we animate turns ourselves. Content is in a **closed-shadow
   iframe** — reach it only via foliate's `load` event `doc` (or DEV `window.__tsuzuri`).
 - **Vertical layout:** `applyLayout` derives vertical caps from the live viewport and is
   idempotent; `#expectVertical()` pre-sets writing mode before `view.init`. Books that
   mark 縦書き only via calibre's `class="vrtl"` get `html{writing-mode:vertical-rl}`
   prepended (`#applyIntendedWritingMode`) — only that explicit marker counts.
+- **English:** `hasEnglish` from a loaded section's meta or a post-paint spine probe;
+  per-unit reveals live in `ReaderController.#revealed` (session only). Any show/hide
+  re-anchors the page on one sampled character (`#keepPage`) — foliate's own anchor can be
+  stale. Extraction and CFIs ignore English; selection highlights clamp out of it.
+  Contract: [translation.md](docs/translation.md), depth: reader-engine.md §4a.
 - **iOS viewport:** a cold Home Screen launch reports a layout viewport short by the
   status-bar inset (852 → 793 on iPhone) until a rotation, and WebKit paints nothing below
   the document box. `viewport.ts` publishes the **screen** height when standalone at full

@@ -10,6 +10,7 @@ symbol, not line number.
 | `src/services/reader.ts` | `ReaderController` — the app-facing wrapper around `<foliate-view>` |
 | `src/lib/reader/Reader.svelte` | The reader screen; wires the controller to the UI |
 | `src/services/cfi.ts` | Pure CFI helpers: `nearestFirst` (§9), `cfiWithinPage` (§11) |
+| `src/services/translation.ts` | English (`.tsuzuri-en`) DOM helpers: `unitEnglish`, `englishAncestor`, `clampOutOfEnglish`, `selectionText` (§4a) |
 | `src/stores/annotations.svelte.ts` | Highlight/bookmark records (§9) |
 | `src/lib/util/chromeBand.ts` | `inChromeToggleBand(py, vh)` — the edge-band test (§8) |
 | `src/lib/util/anchoredPosition.ts` | `placeAnchored` / `placeNearWord` — popup + toolbar placement (§11) |
@@ -35,6 +36,7 @@ pinned copy is vendored. **Treat it as third-party**: app behaviour belongs in
 | 2 | `paginator.js` `#onTouchMove` / `#onTouchEnd` | foliate's own touch turn disabled: `preventDefault()` kept (blocks native scroll and Safari's edge back-swipe), `scrollBy` and the velocity `snap()` dropped. Our swipe detector (§7) is the only turn input. `checkPointerSelection` (auto-turn while drag-selecting) is untouched. |
 | 3 | `paginator.js` `#turnPage` | Upstream awaited `wait(100)` when `shouldGo \|\| !animated`; we never set `animated`, so every turn paid 100 ms. Now it resolves immediately; after a section crossing it releases `#locked` from a 100 ms timer. Our next turn can't arrive sooner (a full slide is `TURN_OUT_MS + TURN_IN_MS`), but a TOC/scrubber `goTo` within 100 ms of a crossing is ignored, as upstream. |
 | 4 | `paginator.js` `View#render` | Returns early while the iframe has no `documentElement`/`body` (a resize during a section swap or teardown threw `el is null`). |
+| 5 | `epubcfi.js` `fromRange` / `toRange` | Default filter `tsuzuriFilter` rejects `.tsuzuri-en` (NodeFilter REJECT), so CFIs for progress, highlights and bookmarks equal the untranslated book's and survive translation edits. A range boundary inside a rejected element first moves to the element's position (end of the text before it, else start of the text after, else the parent). These are the only content-document CFI calls `view.js`/`epub.js` make. Tested in `translation.test.ts`. |
 
 ---
 
@@ -123,6 +125,36 @@ One `getComputedStyle(document.documentElement)` read supplies `--ink`, `--paper
   zoom would kill every tap and swipe. Pinch-zoom stays.
 - Text blocks get `line-height`, justify, hyphens; `rt` is unselectable; `::selection` uses
   `--accent-soft`. `setStyles` swaps the `<style>` text, so it reflows in place.
+- English (`.tsuzuri-en`) is `display: none` unless `showEnglish` is on or the element has
+  `tsuzuri-shown` (§4a); shown, it is one block style for both: logical properties only
+  (`margin-block`, `padding-inline-start`, `border-inline-start` in 40 % `--accent`), so in
+  縦書き it runs sideways with the accent above; 0.85em, `--ink-soft`, a Latin stack
+  (`ui-serif`/Iowan/Georgia, or `--font-ui` for ゴシック), `text-indent: 0`,
+  `text-align: start`, `hyphens: manual`.
+
+### 4a. English translations
+
+Bundled books carry English after each unit ([translation.md](translation.md)).
+
+- **Detection** (`hasEnglish`, `onEnglish` fired once): a loaded section with
+  `meta[name="tsuzuri-translated"]`, or `#probeEnglish` — after `init` (first paint), one
+  spine section per task, `book.loadText(id)` searched for the meta; stops at the first hit.
+- **Show all** is `settings.showEnglish` (CSS only). `applyAppearance` notices a change
+  (`#showEnglish`), clears individual reveals and re-anchors (below).
+- **Single reveal:** `setRevealed(en, on)` toggles `tsuzuri-shown` and records `data-tz`
+  in `#revealed` (spine index → set, this session only); `load` re-applies it.
+  `isRevealed(en)` reads the class.
+- **Re-anchor (`#keepPage`).** foliate re-scrolls to its own anchor on the reflow, but that
+  anchor is refreshed only by page turns and may start in now-hidden English. So a single
+  reveal / hide anchors on the unit's last Japanese character (nothing before its English
+  moves); a show-all change on the character at the view centre sampled before the change
+  (moved to the Japanese before it if that English is now hidden) — `renderer.scrollToAnchor`.
+- **Unit lookup** (`unitEnglish(node)`): climb to the leaf block's child holding the node,
+  scan next siblings until a `.tsuzuri-en` (the unit's English) or `<br>` (none). A node
+  inside English returns that English.
+- **Extraction** never reads English ([japanese.md](japanese.md) §3). **CFIs** ignore it
+  (patch 5); `cfiForSelection` also clamps ends inside English to the Japanese
+  (`clampOutOfEnglish`; `null` if nothing remains), so a highlight never spans into English.
 
 ---
 
@@ -286,9 +318,14 @@ A content tap's `px/py` are offset by `frameElement.getBoundingClientRect()`.
    [japanese.md](japanese.md) §3). On a hit: `openDefine`, stamp `tapDefinedAt` /
    `tapDefinedKey`, hide the chrome. This wins **inside the edge band**, which overlaps
    the first/last glyphs of every column (at 1194×834: a 100px band vs a 63px margin).
-3. **Blank tap in the edge band → toggle chrome** — `inChromeToggleBand(py,
+   With show-all off and the unit translated, the card offers **Show / Hide English**
+   (`dictState.english`, `defineEnglish`); pressing it `setRevealed`s and closes the card.
+3. **Revealed English → hide it** (`tryHideEnglish`): show-all off and
+   `elementFromPoint` is inside a `tsuzuri-shown` English → `setRevealed(en, false)`, hide
+   the chrome. In show-all English is a blank tap (falls through).
+4. **Blank tap in the edge band → toggle chrome** — `inChromeToggleBand(py,
    viewportSize().h)`, band = `clamp(80, 0.12·vh, 160)`. The only way a tap shows the bars.
-4. **Blank tap elsewhere → hide the chrome** if visible; otherwise nothing.
+5. **Blank tap elsewhere → hide the chrome** if visible; otherwise nothing.
 
 Visible bars cover the bands, so a tap on a bar's empty area hides them
 (`dismissChromeFromBar`, ignoring buttons). While hidden, `.page-pct` shows the reading %.
@@ -305,7 +342,8 @@ gesture as our tap, which runs first and is never delayed. `onShowAnnotation`:
   `range.toString()`; anchor = the range's rect; `existingCfi` set.
 
 **Keyboard** (`onKey`, window + forwarded from content docs): ←/→ `goLeft`/`goRight`,
-Space/Shift-Space `goForward`/`goBackward`, Escape closes the card/toolbar, else the
+Space/Shift-Space `goForward`/`goBackward`, `e` toggles show-all English (when the book
+has English), Escape closes the card/toolbar, else the
 chrome. Ignored before ready, with a modifier, while a sheet is open, in a field or
 `[role="slider"]`, and Space on a focused button.
 
@@ -360,7 +398,8 @@ A **250 ms-debounced** `selectionchange` per content document (`#selTimers`, one
 reports a non-empty `Range` as `onSelection({doc, range, text, rect})` (top-window rect),
 else `onSelectionCleared`. The `SelectionToolbar` (`placeAnchored`) offers **Highlight**
 (`cfiForSelection` → `addHighlight` → `clearSelection`) and **Copy**; `clearSel` drops the
-held `doc`/`range`. The paginator's drag-select auto-turn is independent.
+held `doc`/`range`. `selectionText` drops English (and, when it had to, furigana) from the
+copied / recorded text; a selection wholly inside English copies it and hides Highlight. The paginator's drag-select auto-turn is independent.
 
 ---
 
@@ -396,6 +435,10 @@ X and Escape go through `closeOverlays()`, which also releases `defineDoc` /
 horizontal text above/below the word; 縦書き beside the column (left, else right, else
 above/below). `placeAnchored` centres, prefers above, flips below, clamps inside the
 `--safe-*` insets (cached; re-read on resize/orientation change).
+
+**English controls.** Shown when `hasEnglish`: a top-bar toggle (`languages` icon,
+`aria-pressed`), `e`, and the Display **Translation** switch; all go through
+`onSettingChange('english')` (close overlays, `applyAppearance`).
 
 **Settings & theme.** `onSettingChange(kind)`: `'appearance'` → `applyAppearance`;
 `'layout'` → `applyLayout`; `'writingmode'` → `closeOverlays()` + `reopenForWritingMode`.

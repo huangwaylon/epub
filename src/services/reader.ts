@@ -112,6 +112,9 @@ const BOUNCE_MS = 110
 /** Highlights drawn per task in a section sweep. */
 const HIGHLIGHT_DRAW_CHUNK = 24
 
+/** One character in a content document. */
+type CharAt = { node: Text; offset: number }
+
 function reducedMotion(): boolean {
   return globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 }
@@ -225,8 +228,6 @@ export class ReaderController {
   /** Individually revealed units (`data-tz`) per spine index, for this session; re-applied
    *  on section load, cleared when show-all changes. */
   #revealed = new Map<number, Set<string>>()
-  /** The visible range from the last relocate (foliate's page anchor). */
-  #lastRange: Range | undefined
 
   constructor(container: HTMLElement, settings: ReaderSettings, callbacks: ReaderCallbacks) {
     this.#settings = settings
@@ -317,7 +318,6 @@ export class ReaderController {
     this.view.addEventListener('relocate', (e: any) => {
       const d = e.detail
       this.lastCFI = d.cfi
-      this.#lastRange = d.range
       this.#cb.onRelocate?.({
         cfi: d.cfi,
         fraction: d.fraction ?? 0,
@@ -420,9 +420,10 @@ export class ReaderController {
     this.#settings = s
     const englishChanged = s.showEnglish !== this.#showEnglish
     this.#showEnglish = s.showEnglish
+    const keep = englishChanged ? this.#pageCentre() : null
     if (englishChanged) this.#clearReveals()
     this.view.renderer?.setStyles?.(appearanceCSS(s))
-    if (englishChanged) this.#keepPage()
+    this.#keepPage(keep)
   }
 
   /** The unit whose English is `en` is individually revealed. */
@@ -440,8 +441,9 @@ export class ReaderController {
       if (!set) this.#revealed.set(index, (set = new Set()))
       set.add(tz)
     } else set?.delete(tz)
+    const t = textBeside(en, 'prev')
     en.classList.toggle(EN_SHOWN_CLASS, on)
-    if (!on) this.#keepPage()
+    if (t?.data.length) this.#keepPage({ node: t, offset: t.data.length - 1 })
   }
 
   #applyReveals(doc: Document, index: number): void {
@@ -456,25 +458,57 @@ export class ReaderController {
   }
 
   /**
-   * After English is hidden: foliate re-scrolls to its page anchor (the visible range) on
-   * the reflow, but a range starting in now-hidden English has no rects and would be
-   * skipped, so re-anchor at the last Japanese character before it.
+   * Keep the page across an English show / hide. foliate re-scrolls to its own anchor on
+   * the reflow, but that anchor (the visible range, refreshed only by page turns) can be
+   * stale, start in now-hidden English, or have its first rect on the previous page. So
+   * anchor on one character sampled before the change: the unit's last Japanese character
+   * for a single reveal / hide (nothing before its English moves), else the character at
+   * the page centre — moved to the Japanese before it if it is English now hidden.
    */
-  #keepPage(): void {
-    const range = this.#lastRange
-    const en = englishAncestor(range?.startContainer)
-    if (!range || !en) return
+  #keepPage(at: CharAt | null): void {
+    if (!at) return
     try {
-      if (en.ownerDocument.defaultView?.getComputedStyle(en).display !== 'none') return
-      const t = textBeside(en, 'prev')
-      if (!t?.data.length) return
-      const r = en.ownerDocument.createRange()
-      r.setStart(t, t.data.length - 1)
-      r.setEnd(t, t.data.length)
+      let { node, offset } = at
+      const en = englishAncestor(node)
+      if (en && en.ownerDocument.defaultView?.getComputedStyle(en).display === 'none') {
+        const t = textBeside(en, 'prev')
+        if (!t?.data.length) return
+        node = t
+        offset = t.data.length - 1
+      }
+      const r = node.ownerDocument.createRange()
+      r.setStart(node, offset)
+      r.setEnd(node, offset + 1)
       this.view.renderer?.scrollToAnchor?.(r)
     } catch {
       /* detached */
     }
+  }
+
+  /** The character under the centre of the view, if it is text. */
+  #pageCentre(): CharAt | null {
+    const doc: Document | undefined = this.view.renderer?.getContents?.()[0]?.doc
+    const fr = (doc?.defaultView?.frameElement as HTMLElement | null | undefined)?.getBoundingClientRect()
+    if (!doc || !fr) return null
+    const host = this.view.getBoundingClientRect()
+    const x = host.left + host.width / 2 - fr.left
+    const y = host.top + host.height / 2 - fr.top
+    const any = doc as any
+    let node: Node | null = null
+    let offset = 0
+    try {
+      const r: Range | null = any.caretRangeFromPoint?.(x, y) ?? null
+      if (r) ({ startContainer: node, startOffset: offset } = r)
+      else {
+        const p = any.caretPositionFromPoint?.(x, y)
+        node = p?.offsetNode ?? null
+        offset = p?.offset ?? 0
+      }
+    } catch {
+      return null
+    }
+    if (node?.nodeType !== 3 || !(node as Text).data.length) return null
+    return { node: node as Text, offset: Math.min(offset, (node as Text).data.length - 1) }
   }
 
   /**
