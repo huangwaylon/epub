@@ -220,6 +220,10 @@ describe('selectionText', () => {
     expect(selectionText(over(body(d)))).toBe('　一行目。\n二行目。')
   })
 
+  it('joins a hard-wrapped source line inside Japanese without a space', () => {
+    expect(selectionText(over(body(parse('<p>日本\n語の文。 A B</p>'))))).toBe('日本語の文。 A B')
+  })
+
   it('keeps blank lines made of consecutive <br>s', () => {
     expect(selectionText(over(body(parse('<p>場面一。<br/><br/>場面二。</p>'))))).toBe('場面一。\n\n場面二。')
   })

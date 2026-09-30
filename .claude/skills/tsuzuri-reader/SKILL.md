@@ -51,7 +51,8 @@ area you're changing. This is the procedure.
   CFIs (patch 5) and to extraction; show / hide goes through `applyAppearance` /
   `setRevealed(en, on, at?)`, which re-anchor the page (doc §4a). Detection is the package
   meta at open (no spine scan).
-- Services stay framework-free; no Svelte imports under `src/services/`.
+- Services stay framework-free: no Svelte imports under `src/services/reader/` (the one
+  existing exception elsewhere is `jp/dictdb.ts` → `stores/dict.svelte`).
 
 ## Common tasks
 | Task | Where |

@@ -150,8 +150,8 @@ const LINE_BLOCKS = new Set([
 /**
  * The text to copy / record for a selection: furigana (`rt`/`rp`) and English — shown or
  * hidden — dropped, a line break at each `<br>` and block boundary, ASCII whitespace
- * collapsed (U+3000 indents kept). A selection wholly inside one translation copies that
- * English.
+ * collapsed (dropped between CJK characters; U+3000 indents kept). A selection wholly
+ * inside one translation copies that English.
  */
 export function selectionText(range: Range): string {
   const keepEnglish = !!englishAncestor(range.commonAncestorContainer)
@@ -191,8 +191,13 @@ export function selectionText(range: Range): string {
     }
   }
   walk(range.cloneContents())
-  return out.join('').replace(/^\n+|\n+$/g, '')
+  // Japanese has no word spaces: a hard-wrapped source newline between two CJK characters
+  // collapses to nothing, not ' '.
+  return out.join('').replace(CJK_GAP, '').replace(/^\n+|\n+$/g, '')
 }
+
+const CJK = '[\\p{sc=Han}\\p{sc=Hiragana}\\p{sc=Katakana}\\u3000-\\u303f\\uff00-\\uffef]'
+const CJK_GAP = new RegExp(`(?<=${CJK}) (?=${CJK})`, 'gu')
 
 /** The selection lies wholly inside one translation (nothing to highlight). */
 export function selectionIsEnglish(range: Range): boolean {
