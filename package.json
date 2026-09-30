@@ -21,6 +21,7 @@
     "@xmldom/xmldom": "^0.9.12",
     "fake-indexeddb": "^6.2.5",
     "fflate": "^0.8.3",
+    "puppeteer-core": "^25.12.0",
     "sharp": "^0.35.2",
     "svelte": "^5.55.5",
     "svelte-check": "^4.4.8",
