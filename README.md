@@ -27,6 +27,11 @@ reflow. The app is fully client-side — no backend.
   ruby/furigana is skipped from the lookup.
 - 🖍 **Highlights & bookmarks** — CFI-anchored so they survive reflow; a notes panel
   lists them. Highlights are a single yellow (tap-to-define auto-highlights the word).
+- 🇬🇧 **English alongside the Japanese** — bundled books carry a paragraph-aligned English
+  translation: show all of it, hide all of it, or reveal one paragraph at a time from the
+  definition card (tap revealed English to hide it again).
+- 📚 **Included books** — six Japanese novels ship with the app as optional downloads
+  (see [docs/translation.md](docs/translation.md)).
 - 🎨 Light / Sepia / Dark themes, adjustable font, size, spacing, margins.
 - 📲 Installable PWA with an offline app shell; books in OPFS, data in IndexedDB.
 
@@ -43,7 +48,7 @@ client-side — no backend.
 npm install
 npm run dev        # http://localhost:5173  (also exposed on the LAN for device testing)
 npm run check      # svelte-check + tsc
-npm test           # vitest (deinflection unit tests)
+npm test           # vitest unit tests
 npm run build      # production build -> dist/
 ```
 The dev server is served from `/`; the production build uses the `/epub/` base
@@ -53,6 +58,12 @@ The dev server is served from `/`; the production build uses the `/epub/` base
 `node scripts/make-test-epub.mjs` regenerates `test-books/tsuki-to-neko.epub`, a
 small vertical-writing Japanese EPUB (ruby + conjugated verbs) for exercising the
 reader and dictionary. `node scripts/gen-icons.mjs` regenerates the PWA icons.
+
+### Bundled books
+Sources are `books/<slug>/source.epub` (original Japanese) + `books/<slug>/en/*.json`
+(English per paragraph). `npm run books:build` writes `public/books/` (committed).
+Scripted browser checks: `node scripts/e2e/shelf.mjs`, `node scripts/e2e/english.mjs`
+(system Chrome via puppeteer-core).
 
 ## Testing on an iPhone/iPad
 1. `npm run dev` and note the LAN URL (e.g. `http://192.168.x.x:5173`). iOS Safari
@@ -69,6 +80,9 @@ Full CI / base-path details in [docs/deployment.md](docs/deployment.md).
 
 ## Project layout
 ```
+books/            bundled books: original EPUB, English units, glossary per book
+scripts/          books/ (build pipeline), e2e/ (browser checks), generators
+public/books/     built bundled books + catalog.json (downloaded on request)
 src/
   lib/            Svelte UI (reader/, library/, components/)
   services/       framework-agnostic logic
@@ -76,6 +90,8 @@ src/
     jp/           dictionary db, lookup, deinflect (vendored GPL), ruby-aware extract
     reader.ts     foliate-view controller (pagination, taps, selection, highlights)
     library.ts    import / list / delete
+    catalog.ts    bundled-book catalog + download
+    translation.ts  English-unit helpers (reveal, clamp, copy)
   stores/         Svelte 5 rune stores (settings, library, annotations, dict, nav)
   vendor/foliate-js   pinned MIT rendering engine
 ```
