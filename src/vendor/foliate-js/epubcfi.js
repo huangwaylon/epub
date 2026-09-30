@@ -289,14 +289,27 @@ const nodeToParts = (node, offset, filter) => {
 // docs/translation.md) is invisible to CFIs, so positions equal the untranslated book's and
 // survive translation edits. It is the default filter of `fromRange`/`toRange` (the only
 // content-document entry points view.js/epub.js use). A boundary inside a rejected element
-// moves to that element's position: the end of the text before it, else the start of the
-// text after it, else the parent.
+// moves out of it by direction: a range start (or a collapsed point) to the first text after
+// the element, an end to the last text before it; each falls back to the other side, then
+// to the element's position in its parent. Documents from older builds, which wrapped the
+// Japanese in `.tsuzuri-ja` and saved CFIs counting the English, are left unfiltered.
 const TSUZURI_EN = /(^|\s)tsuzuri-en(\s|$)/
 export const tsuzuriFilter = node =>
     isElementNode(node) && TSUZURI_EN.test(node.getAttribute?.('class') ?? '')
         ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+const legacyDocs = new WeakMap()
+const filterFor = (doc, filter) => {
+    if (filter !== tsuzuriFilter || !doc) return filter
+    let legacy = legacyDocs.get(doc)
+    if (legacy === undefined) {
+        legacy = !!doc.getElementsByClassName?.('tsuzuri-ja')?.length
+        legacyDocs.set(doc, legacy)
+    }
+    return legacy ? null : filter
+}
+// the first / last non-blank text under `node`, outside rejected elements
 const edgeText = (node, filter, last) => {
-    if (isTextNode(node)) return node
+    if (isTextNode(node)) return /\S/.test(node.nodeValue) ? node : null
     if (!isElementNode(node) || filter(node) === NodeFilter.FILTER_REJECT) return null
     for (let c = last ? node.lastChild : node.firstChild; c;
         c = last ? c.previousSibling : c.nextSibling) {
@@ -305,27 +318,42 @@ const edgeText = (node, filter, last) => {
     }
     return null
 }
-const outOfRejected = (node, offset, filter) => {
+// the nearest such text before / after `el` in document order, within `<body>`
+const textBeside = (el, filter, after) => {
+    const root = el.ownerDocument?.documentElement
+    for (let n = el; n?.parentNode && n.parentNode !== root; n = n.parentNode)
+        for (let s = after ? n.nextSibling : n.previousSibling; s;
+            s = after ? s.nextSibling : s.previousSibling) {
+            const t = edgeText(s, filter, !after)
+            if (t) return t
+        }
+    return null
+}
+const rejectedAncestor = (node, filter) => {
     let rejected = null
     const root = node.ownerDocument?.documentElement
     for (let n = node; n && n !== root; n = n.parentNode)
         if (isElementNode(n) && filter(n) === NodeFilter.FILTER_REJECT) rejected = n
-    if (!rejected) return [node, offset]
-    for (let s = rejected.previousSibling; s; s = s.previousSibling) {
-        const t = edgeText(s, filter, true)
-        if (t) return [t, t.nodeValue.length]
-    }
-    for (let s = rejected.nextSibling; s; s = s.nextSibling) {
-        const t = edgeText(s, filter, false)
-        if (t) return [t, 0]
+    return rejected
+}
+const outOfRejected = (rejected, filter, forward) => {
+    for (const after of [forward, !forward]) {
+        const t = textBeside(rejected, filter, after)
+        if (t) return after ? [t, 0] : [t, t.nodeValue.length]
     }
     const parent = rejected.parentNode
     return [parent, Array.prototype.indexOf.call(parent.childNodes, rejected)]
 }
 
 export const fromRange = (range, filter = tsuzuriFilter) => {
-    const [startContainer, startOffset] = outOfRejected(range.startContainer, range.startOffset, filter)
-    const [endContainer, endOffset] = outOfRejected(range.endContainer, range.endOffset, filter)
+    filter = filterFor(range.startContainer.ownerDocument, filter)
+    let { startContainer, startOffset, endContainer, endOffset } = range
+    const rs = filter ? rejectedAncestor(startContainer, filter) : null
+    const re = filter ? rejectedAncestor(endContainer, filter) : null
+    if (rs) [startContainer, startOffset] = outOfRejected(rs, filter, true)
+    if (re) [endContainer, endOffset] = re === rs
+        // wholly inside one element: one point, not an inverted range
+        ? [startContainer, startOffset] : outOfRejected(re, filter, false)
     const start = nodeToParts(startContainer, startOffset, filter)
     if (range.collapsed) return toString([start])
     const end = nodeToParts(endContainer, endOffset, filter)
@@ -333,6 +361,7 @@ export const fromRange = (range, filter = tsuzuriFilter) => {
 }
 
 export const toRange = (doc, parts, filter = tsuzuriFilter) => { // TSUZURI PATCH (5)
+    filter = filterFor(doc, filter)
     const startParts = collapse(parts)
     const endParts = collapse(parts, true)
 

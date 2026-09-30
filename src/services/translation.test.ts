@@ -140,10 +140,48 @@ describe('CFIs ignore .tsuzuri-en (TSUZURI PATCH 5)', () => {
     expect(r.endOffset).toBe(4)
   })
 
-  it('a boundary inside English maps to the end of the text before it', () => {
+  it('a start (or point) inside English moves forward to the text after it', () => {
     const inEn = CFI.fromRange(fakeRange(textStarting(translated, 'Rain'), 3))
-    const atEnd = CFI.fromRange(fakeRange(textStarting(plain, 'だ。'), 2))
-    expect(inEn).toBe(atEnd)
+    expect(inEn).toBe(CFI.fromRange(fakeRange(textStarting(plain, '明日'), 0)))
+    const range = CFI.fromRange(fakeRange(textStarting(translated, 'Rain'), 3, textStarting(translated, '三つ目'), 2))
+    expect(range).toBe(CFI.fromRange(fakeRange(textStarting(plain, '明日'), 0, textStarting(plain, '三つ目'), 2)))
+  })
+
+  it('a start in English ending its block moves into the next block', () => {
+    const inEn = CFI.fromRange(fakeRange(textStarting(translated, 'Sunny'), 0))
+    expect(inEn).toBe(CFI.fromRange(fakeRange(textStarting(plain, '三つ目'), 0)))
+  })
+
+  it('an end inside English moves back to the end of the text before it', () => {
+    const range = CFI.fromRange(fakeRange(textStarting(translated, '今日は'), 1, textStarting(translated, 'Rain'), 3))
+    expect(range).toBe(CFI.fromRange(fakeRange(textStarting(plain, '今日は'), 1, textStarting(plain, 'だ。'), 2)))
+  })
+
+  it('a start with no text after it falls back to the text before', () => {
+    const d = withRanges(parse(`<p>最後。${EN(0, 'The end.')}</p>`))
+    const p = withRanges(parse('<p>最後。</p>'))
+    expect(CFI.fromRange(fakeRange(textStarting(d, 'The'), 2))).toBe(CFI.fromRange(fakeRange(textStarting(p, '最後'), 3)))
+  })
+
+  it('a range wholly inside one English is one point, not an inverted range', () => {
+    const en = textStarting(translated, 'Rain')
+    const cfi = CFI.fromRange(fakeRange(en, 0, en, 4))
+    const at = CFI.fromRange(fakeRange(textStarting(plain, '明日'), 0))
+    const p = CFI.parse(cfi)
+    expect(CFI.compare(CFI.collapse(p), at)).toBe(0)
+    expect(CFI.compare(CFI.collapse(p, true), at)).toBe(0)
+  })
+
+  it('leaves documents from older builds (.tsuzuri-ja) unfiltered', () => {
+    const body =
+      `<p><span class="tsuzuri-ja">今日は雨だ。</span>${EN(0, 'Rain today.')}<span class="tsuzuri-ja">明日も晴れ。</span></p>`
+    const d = withRanges(parse(body))
+    const r = () => fakeRange(textStarting(d, '明日'), 2)
+    const unfiltered = CFI.fromRange(r(), null)
+    expect(CFI.fromRange(r())).toBe(unfiltered)
+    const back = CFI.toRange(d, CFI.parse(unfiltered))
+    expect(back.startContainer).toBe(textStarting(d, '明日'))
+    expect(back.startOffset).toBe(2)
   })
 
   it('without the filter the English would shift the CFI (the patch matters)', () => {
