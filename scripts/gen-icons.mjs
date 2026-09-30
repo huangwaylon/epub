@@ -1,4 +1,4 @@
-// Rasterizes the app icons from inline SVG into public/icons/, and the iPad launch
+// Rasterizes the app icons from inline SVG into public/icons/, and the iPad + iPhone launch
 // (splash) screens into public/splash/ — rewriting their <link> tags in index.html
 // between the `splash:start` / `splash:end` markers.
 // Run with: node scripts/gen-icons.mjs
@@ -53,40 +53,55 @@ for (const { svg, size, name } of jobs) {
   console.log('wrote', name)
 }
 
-// ── iPad launch screens ────────────────────────────────────────────────────
+// ── Launch screens (iPad + iPhone) ─────────────────────────────────────────
 // iOS uses a startup image only on an exact media-query match (device size, DPR,
 // orientation), so each size needs one per orientation and colour scheme. Colours mirror app.css.
 const PAPER = { light: '#f6f3ec', dark: '#16140f' }
-const IPADS = [
-  // [CSS portrait width, height] — all 2× DPR
-  [744, 1133], // iPad mini (6th gen+)
-  [768, 1024], // iPad 9.7" / mini 5
-  [810, 1080], // iPad 10.2"
-  [820, 1180], // iPad 10th gen / Air 11" (M2)
-  [834, 1112], // iPad Air 10.5"
-  [834, 1194], // iPad Pro 11"
-  [834, 1210], // iPad Pro 11" (M4)
-  [1024, 1366], // iPad Pro 12.9" / Air 13"
-  [1032, 1376], // iPad Pro 13" (M4)
+const DEVICES = [
+  // [prefix, CSS portrait width, height, DPR]
+  ['ipad', 744, 1133, 2], // iPad mini (6th gen+)
+  ['ipad', 768, 1024, 2], // iPad 9.7" / mini 5
+  ['ipad', 810, 1080, 2], // iPad 10.2"
+  ['ipad', 820, 1180, 2], // iPad 10th gen / Air 11" (M2)
+  ['ipad', 834, 1112, 2], // iPad Air 10.5"
+  ['ipad', 834, 1194, 2], // iPad Pro 11"
+  ['ipad', 834, 1210, 2], // iPad Pro 11" (M4)
+  ['ipad', 1024, 1366, 2], // iPad Pro 12.9" / Air 13"
+  ['ipad', 1032, 1376, 2], // iPad Pro 13" (M4)
+  // iPhones that run iOS 26 (11 and later, SE 2nd gen and later)
+  ['iphone', 440, 956, 3], // 16 Pro Max, 17 Pro Max
+  ['iphone', 430, 932, 3], // 14 Pro Max, 15 Plus / Pro Max, 16 Plus
+  ['iphone', 428, 926, 3], // 12 / 13 Pro Max, 14 Plus
+  ['iphone', 420, 912, 3], // Air
+  ['iphone', 414, 896, 2], // 11, XR
+  ['iphone', 414, 896, 3], // 11 Pro Max
+  ['iphone', 402, 874, 3], // 16 Pro, 17, 17 Pro
+  ['iphone', 393, 852, 3], // 14 Pro, 15, 15 Pro, 16
+  ['iphone', 390, 844, 3], // 12, 13, 14, 16e
+  ['iphone', 375, 812, 3], // 11 Pro, 12 / 13 mini
+  ['iphone', 375, 667, 2], // SE (2nd / 3rd gen)
 ]
 const MARK_CSS_PX = 128
 const splashDir = join(root, 'public', 'splash')
 mkdirSync(splashDir, { recursive: true })
-const mark = await sharp(Buffer.from(rounded)).resize(MARK_CSS_PX * 2, MARK_CSS_PX * 2).png().toBuffer()
+const marks = {}
+for (const [, , , dpr] of DEVICES) {
+  marks[dpr] ??= await sharp(Buffer.from(rounded)).resize(MARK_CSS_PX * dpr, MARK_CSS_PX * dpr).png().toBuffer()
+}
 
 const links = []
-for (const [cw, ch] of IPADS) {
+for (const [prefix, cw, ch, dpr] of DEVICES) {
   for (const orientation of ['portrait', 'landscape']) {
-    const [w, h] = orientation === 'portrait' ? [cw * 2, ch * 2] : [ch * 2, cw * 2]
+    const [w, h] = orientation === 'portrait' ? [cw * dpr, ch * dpr] : [ch * dpr, cw * dpr]
     for (const scheme of ['light', 'dark']) {
-      const name = `ipad-${w}x${h}-${scheme}.png`
+      const name = `${prefix}-${w}x${h}-${scheme}.png`
       await sharp({ create: { width: w, height: h, channels: 3, background: PAPER[scheme] } })
-        .composite([{ input: mark, gravity: 'center' }])
+        .composite([{ input: marks[dpr], gravity: 'center' }])
         .png({ compressionLevel: 9, palette: true })
         .toFile(join(splashDir, name))
       const media =
         `screen and (device-width: ${cw}px) and (device-height: ${ch}px) and ` +
-        `(-webkit-device-pixel-ratio: 2) and (orientation: ${orientation}) and (prefers-color-scheme: ${scheme})`
+        `(-webkit-device-pixel-ratio: ${dpr}) and (orientation: ${orientation}) and (prefers-color-scheme: ${scheme})`
       links.push(`    <link rel="apple-touch-startup-image" media="${media}" href="/splash/${name}" />`)
     }
   }
