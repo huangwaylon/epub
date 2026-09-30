@@ -2,26 +2,26 @@
  {
   "id": 0,
   "ja": "〈ご注意〉",
-  "en": ""
+  "en": "[Notice]"
  },
  {
   "id": 1,
   "ja": "本作品の全部または一部を、著作権者ならびに株式会社文藝春秋に無断で、複製（コピー）、転載、改ざん、公衆送信（ホームページなどに掲載することを含む）することを禁じます。万一このような行為をすると、著作権法違反で処罰されます。",
-  "en": ""
+  "en": "Copying (duplicating), reprinting, altering or publicly transmitting (including posting on websites) all or any part of this work without permission from the copyright holder and Bungeishunju Ltd. is prohibited. Anyone who does so will be punished for violating copyright law."
  },
  {
   "id": 2,
   "ja": "〈お断り〉",
-  "en": ""
+  "en": "[Disclaimer]"
  },
  {
   "id": 3,
   "ja": "本作品を電子書籍化するにあたり、一部の漢字が簡略体で表示される場合があります。また、ご覧になる機種により、表示の差が認められる場合があります。",
-  "en": ""
+  "en": "In converting this work to an e-book, some kanji may be displayed in simplified forms. Display may also differ depending on the device used."
  },
  {
   "id": 4,
   "ja": "冒頭に戻る。",
-  "en": ""
+  "en": "Return to the beginning."
  }
 ]
