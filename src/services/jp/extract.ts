@@ -240,8 +240,18 @@ function resolveGlyph(doc: Document, x: number, y: number): GlyphHit | null {
   const pos = caretPosition(doc, x, y)
   if (!pos) return null
   if (pos.node.nodeType !== Node.TEXT_NODE) return null
-  const seed = pos.node as Text
-  if (englishAncestor(seed)) return null // English never looks up
+  let seed = pos.node as Text
+  let offset = pos.offset
+  if (englishAncestor(seed)) {
+    // A boundary snapped into English beside the tapped glyph (English itself never looks
+    // up): re-seed at the end of the Japanese before it — the candidates below then cover
+    // its last glyph and the first glyph after the English — and let geometry decide.
+    const prev = siblingText(doc, seed, 'prev')
+    const next = prev ? null : siblingText(doc, seed, 'next')
+    if (!prev && !next) return null
+    seed = (prev ?? next)!
+    offset = prev ? prev.data.length : 0
+  }
 
   if (isInRuby(seed)) return rubyBaseHit(doc, seed, x, y)
 
@@ -251,13 +261,13 @@ function resolveGlyph(doc: Document, x: number, y: number): GlyphHit | null {
     if (node && offset >= 0 && offset < node.data.length) candidates.push({ node, offset })
   }
   // The seed and its predecessor (the mid-glyph correction; also covers end-of-node).
-  push(seed, pos.offset)
-  push(seed, pos.offset - 1)
-  if (pos.offset <= 0) {
+  push(seed, offset)
+  push(seed, offset - 1)
+  if (offset <= 0) {
     const prev = siblingText(doc, seed, 'prev')
     if (prev) push(prev, prev.data.length - 1)
   }
-  if (pos.offset >= seed.data.length) {
+  if (offset >= seed.data.length) {
     const next = siblingText(doc, seed, 'next')
     if (next) push(next, 0)
   }

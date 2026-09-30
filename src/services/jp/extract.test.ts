@@ -341,11 +341,27 @@ describe('extractTextAt', () => {
     const p = el('P')
     const a = textNode('猫が', p, 0)
     const en: any = { nodeType: 1, tagName: 'span', parentElement: p, getAttribute: () => 'tsuzuri-en' }
-    const b: any = textNode('好き', en, 32)
+    const b: any = textNode('好き', en, 64)
     b.parentNode = en
-    const doc = makeDoc([a, en, b], (x) => (x >= 32 ? { node: b, offset: 0 } : { node: a, offset: 1 }))
+    const doc = makeDoc([a, en, b], (x) => (x >= 64 ? { node: b, offset: 0 } : { node: a, offset: 1 }))
     expect(extractTextAt(doc, ...center(a, 1))!.text).toBe('猫が')
     expect(extractTextAt(doc, ...center(b, 0))).toBeNull()
+  })
+
+  it('re-seeds from the Japanese when the caret snapped into English beside the tapped glyph', () => {
+    // 猫が<en>Cat</en>犬: a tap on the far half of が can report the caret at the English's
+    // start; geometry still picks が. The glyph after the English is a candidate too.
+    const p = el('P')
+    const a = textNode('猫が', p, 0)
+    const en: any = { nodeType: 1, tagName: 'span', parentElement: p, getAttribute: () => 'tsuzuri-en' }
+    const b: any = textNode('Cat', en, 32)
+    b.parentNode = en
+    const c = textNode('犬', p, 100)
+    const doc = makeDoc([a, en, b, c], () => ({ node: b, offset: 0 }))
+    const hit = extractTextAt(doc, 30, 8)!
+    expect(hit.text[hit.tapOffset]).toBe('が')
+    expect(extractTextAt(doc, 102, 8)!.text).toBe('犬')
+    expect(extractTextAt(doc, 70, 8)).toBeNull() // on the English itself
   })
 
   it('still joins inline elements (ruby, span) within one paragraph', () => {

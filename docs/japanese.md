@@ -85,7 +85,9 @@ small: blank-tap fall-through depends on some taps missing every glyph.
 - The run collects up to `MAX_BEFORE = 12` word-chars before and `MAX_AFTER = 16` from the
   tap, over a text-only TreeWalker that rejects `<rt>`/`<rp>` (`textWalker`). It is capped
   while scanning. It also rejects text inside inserted English (`.tsuzuri-en`,
-  [translation.md](translation.md)); a tap seeded in English returns `null`.
+  [translation.md](translation.md)). A caret seeded in English is re-seeded at the end of the
+  Japanese before it (so its last glyph and the first glyph after the English are the
+  candidates); a tap on the English itself hits no glyph and returns `null`.
 - It stops at any non-word character and at line breaks (`breakBetween`): the nodes' nearest
   block ancestors differ, or a block element, `<br>` or `<img>` (inline gaiji) sits between
   them, or a `.tsuzuri-en` element does. Blocks are matched by tag name (`BLOCK_TAGS`), not computed `display`.
