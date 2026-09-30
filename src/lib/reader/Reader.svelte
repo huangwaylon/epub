@@ -237,7 +237,7 @@
 
   // ── Selection → highlight / copy ──────────────────────────────────────────
   function onSelection(info: SelectionInfo) {
-    const text = selectionText(info.range, info.text)
+    const text = selectionText(info.range)
     sel = { open: true, rect: info.rect, text, english: selectionIsEnglish(info.range), doc: info.doc, range: info.range }
   }
   /** The CFI clamps ends inside English (cfiForSelection), so it never spans into one. */

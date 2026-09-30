@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { DOMParser } from '@xmldom/xmldom'
 // @ts-ignore — vendored JS module, no type declarations
 import * as CFI from '../vendor/foliate-js/epubcfi.js'
-import { unitEnglish, englishAncestor, clampOutOfEnglish } from './translation'
+import { unitEnglish, englishAncestor, clampOutOfEnglish, selectionText } from './translation'
 
 // xmldom supplies the tree (childNodes, siblings, attributes); the node env lacks the
 // NodeFilter constants epubcfi.js reads, and xmldom has no Range, so both are faked.
@@ -189,5 +189,35 @@ describe('CFIs ignore .tsuzuri-en (TSUZURI PATCH 5)', () => {
     const a = CFI.fromRange(fakeRange(textStarting(plain, '明日'), 2), none)
     const b = CFI.fromRange(fakeRange(textStarting(translated, '明日'), 2), none)
     expect(b).not.toBe(a)
+  })
+})
+
+describe('selectionText', () => {
+  /** A selection whose contents are all of `root`'s children. */
+  const over = (root: Node, common: Node = root) =>
+    ({ commonAncestorContainer: common, cloneContents: () => root.cloneNode(true) }) as any
+  const body = (d: Document) => d.getElementsByTagName('body')[0]
+  const PLAIN_TEXT = '今日は雨だ。\n明日も晴れ。\n三つ目の段落。'
+
+  it('drops furigana and keeps line and block breaks', () => {
+    expect(selectionText(over(body(parse(JA))))).toBe(PLAIN_TEXT)
+  })
+
+  it('gives the same text with English inserted (shown or hidden)', () => {
+    expect(selectionText(over(body(parse(JA_EN))))).toBe(PLAIN_TEXT)
+  })
+
+  it('collapses source whitespace between blocks but keeps U+3000 indents', () => {
+    const d = parse('<p>　一行目。</p>\n  <p>\n二行目。</p>')
+    expect(selectionText(over(body(d)))).toBe('　一行目。\n二行目。')
+  })
+
+  it('keeps blank lines made of consecutive <br>s', () => {
+    expect(selectionText(over(body(parse('<p>場面一。<br/><br/>場面二。</p>'))))).toBe('場面一。\n\n場面二。')
+  })
+
+  it('copies English when the selection lies inside one translation', () => {
+    const en = textStarting(parse(JA_EN), 'Rain')
+    expect(selectionText(over(en.parentNode!, en))).toBe('Rain today.')
   })
 })

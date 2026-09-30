@@ -100,24 +100,56 @@ export function clampOutOfEnglish(range: Range): Range | null {
   return range.collapsed ? null : range
 }
 
-/** `range` touches a translation. */
-function touchesEnglish(range: Range): boolean {
-  const root = range.commonAncestorContainer as Element
-  for (const el of Array.from(root.querySelectorAll?.(`.${EN_CLASS}`) ?? [])) if (range.intersectsNode(el)) return true
-  return false
-}
+/** Elements that end a line when copied (unit blocks plus the containers around them). */
+const LINE_BLOCKS = new Set([
+  ...UNIT_BLOCKS, 'ul', 'ol', 'dl', 'table', 'tr', 'figure', 'pre', 'hr', 'aside', 'nav', 'main', 'body',
+])
 
 /**
- * The text to copy / record for a selection: English excluded (and, when English had to be
- * removed, furigana too — the fragment's `textContent` would splice it in). A selection
- * wholly inside one translation copies that English.
+ * The text to copy / record for a selection: furigana (`rt`/`rp`) and English — shown or
+ * hidden — dropped, a line break at each `<br>` and block boundary, ASCII whitespace
+ * collapsed (U+3000 indents kept). A selection wholly inside one translation copies that
+ * English.
  */
-export function selectionText(range: Range, fallback: string): string {
-  if (englishAncestor(range.commonAncestorContainer)) return fallback
-  if (!touchesEnglish(range)) return fallback
-  const frag = range.cloneContents()
-  for (const el of Array.from(frag.querySelectorAll(`.${EN_CLASS}, rt, rp`))) el.remove()
-  return (frag.textContent ?? '').trim()
+export function selectionText(range: Range): string {
+  const keepEnglish = !!englishAncestor(range.commonAncestorContainer)
+  const out: string[] = []
+  let lineStart = true // nothing yet, or a line break last
+  let space = false // a collapsed space is pending
+  const lineBreak = (always: boolean) => {
+    space = false
+    if (always || !lineStart) out.push('\n')
+    lineStart = true
+  }
+  const walk = (root: Node) => {
+    for (let c = root.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3 || c.nodeType === 4) {
+        const t = (c as Text).data.replace(/[ \t\n\r\f]+/g, ' ')
+        const core = t.replace(/^ | $/g, '')
+        if (!core) {
+          space ||= t === ' '
+          continue
+        }
+        if ((space || t.startsWith(' ')) && !lineStart) out.push(' ')
+        out.push(core)
+        lineStart = false
+        space = t.endsWith(' ')
+      } else if (c.nodeType === 1) {
+        const name = tag(c)
+        if (name === 'rt' || name === 'rp' || (!keepEnglish && isEnglish(c))) continue
+        if (name === 'br') {
+          lineBreak(true)
+          continue
+        }
+        const block = LINE_BLOCKS.has(name)
+        if (block) lineBreak(false)
+        walk(c)
+        if (block) lineBreak(false)
+      }
+    }
+  }
+  walk(range.cloneContents())
+  return out.join('').replace(/^\n+|\n+$/g, '')
 }
 
 /** The selection lies wholly inside one translation (nothing to highlight). */

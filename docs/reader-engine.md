@@ -398,8 +398,10 @@ A **250 ms-debounced** `selectionchange` per content document (`#selTimers`, one
 reports a non-empty `Range` as `onSelection({doc, range, text, rect})` (top-window rect),
 else `onSelectionCleared`. The `SelectionToolbar` (`placeAnchored`) offers **Highlight**
 (`cfiForSelection` → `addHighlight` → `clearSelection`) and **Copy**; `clearSel` drops the
-held `doc`/`range`. `selectionText` drops English (and, when it had to, furigana) from the
-copied / recorded text; a selection wholly inside English copies it and hides Highlight. The paginator's drag-select auto-turn is independent.
+held `doc`/`range`. `selectionText` serializes the copied / recorded text the same way
+whatever the selection touches: furigana and English (shown or hidden) dropped, a line break
+at each `<br>` and block boundary, ASCII whitespace collapsed. A selection wholly inside
+English copies it and hides Highlight. The paginator's drag-select auto-turn is independent.
 
 ---
 
