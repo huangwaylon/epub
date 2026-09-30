@@ -3,7 +3,7 @@
   import { fly, fade } from 'svelte/transition'
   import { cubicOut } from 'svelte/easing'
   import { openShelf } from '../../stores/nav.svelte'
-  import { settings, appearance } from '../../stores/settings.svelte'
+  import { settings, appearance, updateSettings } from '../../stores/settings.svelte'
   import { dict } from '../../stores/dict.svelte'
   import { library } from '../../stores/library.svelte'
   import { showToast } from '../../stores/toast.svelte'
@@ -20,6 +20,7 @@
   } from '../../services/reader'
   import { cfiWithinPage } from '../../services/cfi'
   import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
+  import { englishAncestor, selectionIsEnglish, selectionText, unitEnglish } from '../../services/translation'
   import { lookupAt, warmupLookup, disposeLookup, pingLookup, type LookupResult } from '../../services/jp/lookupClient'
   import { isDictReady, downloadAndWarmDictionary } from '../../services/jp/dictdb'
   import {
@@ -66,7 +67,8 @@
   let sectionLabel = $state('')
   let currentTocId = $state<number | undefined>(undefined)
   let toc = $state<TocItem[]>([])
-  let hasTranslations = $state(false)
+  /** The open book carries English (`ReaderController.hasEnglish`, reported once). */
+  let hasEnglish = $state(false)
 
   let tocOpen = $state(false)
   let settingsOpen = $state(false)
@@ -80,11 +82,18 @@
   let rtlBook = $state(false)
 
   // Selection toolbar state; `doc`/`range` are live DOM refs, released by clearSel.
-  let sel = $state<{ open: boolean; rect: SelectionInfo['rect']; text: string; doc: Document | null; range: Range | null }>(
-    { open: false, rect: { left: 0, top: 0, width: 0, height: 0 }, text: '', doc: null, range: null },
-  )
+  // `text` excludes English; an English-only selection can be copied but not highlighted.
+  let sel = $state<{
+    open: boolean
+    rect: SelectionInfo['rect']
+    text: string
+    english: boolean
+    doc: Document | null
+    range: Range | null
+  }>({ open: false, rect: { left: 0, top: 0, width: 0, height: 0 }, text: '', english: false, doc: null, range: null })
   function clearSel() {
     sel.open = false
+    sel.english = false
     sel.text = ''
     sel.doc = null
     sel.range = null
@@ -114,14 +123,18 @@
     highlighted: boolean
     /** The matched surface word (for re-adding the highlight). */
     word: string
+    /** The card's English action for the tapped unit ('' = none: no English, or show-all on). */
+    english: '' | 'show' | 'hide'
   }>({
     open: false, anchor: null, vertical: false, loading: false, needsDownload: false, result: null,
-    text: '', tapOffset: 0, lastKey: '', cfi: '', highlighted: false, word: '',
+    text: '', tapOffset: 0, lastKey: '', cfi: '', highlighted: false, word: '', english: '',
   })
 
   // Live DOM for the in-flight define (plain refs, not $state).
   let defineDoc: Document | null = null
   let definePositions: CharPosition[] = []
+  /** The tapped unit's `.tsuzuri-en`, backing `dictState.english`. */
+  let defineEnglish: Element | null = null
 
   // Persist progress only after the user moved: startup relocations can report a bogus
   // fraction, and `relocate` carries no reason to tell them apart.
@@ -160,6 +173,32 @@
     clearSel()
     defineDoc = null
     definePositions = []
+    defineEnglish = null
+  }
+
+  // ── English ───────────────────────────────────────────────────────────────
+  /** Show-all / hide-all (top-bar button, `e`, the Display switch). Clears single reveals. */
+  function toggleEnglish() {
+    updateSettings({ showEnglish: !settings.showEnglish })
+    onSettingChange('english')
+  }
+  /** The unit's English for a card action — only while show-all is off. */
+  function englishFor(node: Node | null | undefined): Element | null {
+    return hasEnglish && !settings.showEnglish ? unitEnglish(node) : null
+  }
+  /** Card action: reveal / hide the tapped unit's English, then close the card. */
+  function toggleUnitEnglish() {
+    const en = defineEnglish
+    if (en && controller) controller.setRevealed(en, !controller.isRevealed(en))
+    closeOverlays()
+  }
+  /** A blank tap on an individually revealed unit's English hides it. */
+  function tryHideEnglish(info: TapInfo): boolean {
+    if (!info.doc || !controller || !hasEnglish || settings.showEnglish) return false
+    const en = englishAncestor(info.doc.elementFromPoint(info.ix, info.iy))
+    if (!en || !controller.isRevealed(en)) return false
+    controller.setRevealed(en, false)
+    return true
   }
 
   // ── Highlights: the one create/remove pair ────────────────────────────────
@@ -198,10 +237,12 @@
 
   // ── Selection → highlight / copy ──────────────────────────────────────────
   function onSelection(info: SelectionInfo) {
-    sel = { open: true, rect: info.rect, text: info.text, doc: info.doc, range: info.range }
+    const text = selectionText(info.range, info.text)
+    sel = { open: true, rect: info.rect, text, english: selectionIsEnglish(info.range), doc: info.doc, range: info.range }
   }
+  /** The CFI clamps ends inside English (cfiForSelection), so it never spans into one. */
   function createHighlight() {
-    if (!controller || !sel.doc || !sel.range) return
+    if (!controller || !sel.doc || !sel.range || sel.english) return
     const cfi = controller.cfiForSelection(sel.doc, sel.range)
     if (cfi) addHighlight(cfi, sel.text)
     controller.clearSelection()
@@ -254,7 +295,14 @@
       /* detached range */
     }
     clearSel()
-    openDefine({ text: word, tapOffset: 0, anchor: anchor ?? { left: 0, top: 0, right: 0, bottom: 0 }, existingCfi: value, word })
+    openDefine({
+      text: word,
+      tapOffset: 0,
+      anchor: anchor ?? { left: 0, top: 0, right: 0, bottom: 0 },
+      existingCfi: value,
+      word,
+      english: englishFor(range.startContainer),
+    })
   }
 
   /** Popup footer toggle; keeps the card open. */
@@ -311,7 +359,8 @@
   let tapDismissedAt = 0
 
   /** Tap routing: open card → dismiss; glyph → define (even in the edge band, which
-   *  overlaps each column's end glyphs); blank edge band → toggle chrome; else hide it. */
+   *  overlaps each column's end glyphs); a revealed unit's English → hide it; blank edge
+   *  band → toggle chrome; else hide it. */
   function onTap(info: TapInfo) {
     if (dictState.open) {
       tapDismissedAt = Date.now()
@@ -324,6 +373,10 @@
       chromeVisible = false
       return
     }
+    if (tryHideEnglish(info)) {
+      chromeVisible = false
+      return
+    }
     if (inChromeToggleBand(info.py, viewportSize().h)) {
       chromeVisible = !chromeVisible
       return
@@ -331,8 +384,9 @@
     if (chromeVisible) chromeVisible = false
   }
 
-  /** ←/→ turn that way, Space/Shift-Space go forward/back in reading order, Escape closes
-   *  the card, else the chrome. Also receives keys forwarded from content documents. */
+  /** ←/→ turn that way, Space/Shift-Space go forward/back in reading order, `e` shows /
+   *  hides English, Escape closes the card, else the chrome. Also receives keys forwarded
+   *  from content documents. */
   function onKey(e: KeyboardEvent) {
     if (status !== 'ready' || !controller || e.defaultPrevented) return
     if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -353,6 +407,12 @@
         if (t?.closest?.('button')) return // Space activates a focused button
         e.preventDefault()
         void (e.shiftKey ? controller.goBackward() : controller.goForward())
+        break
+      case 'e':
+      case 'E':
+        if (!hasEnglish) return
+        e.preventDefault()
+        toggleEnglish()
         break
       case 'Escape':
         if (dictState.open || sel.open) {
@@ -401,6 +461,7 @@
       anchor: glyphAnchor(info.doc, ex.positions, ex.tapOffset, info.px, info.py),
       doc: info.doc,
       positions: ex.positions,
+      english: englishFor(ex.positions[ex.tapOffset]?.node),
     })
     return true
   }
@@ -418,11 +479,15 @@
     positions?: CharPosition[]
     existingCfi?: string
     word?: string
+    /** The unit's English, for the card's Show / Hide English action. */
+    english?: Element | null
   }) {
     const key = `${o.existingCfi ?? ''}:${o.tapOffset}:${o.text}`
     const retarget = dictState.open
     defineDoc = o.doc ?? null
     definePositions = o.positions ?? []
+    defineEnglish = o.english ?? null
+    dictState.english = defineEnglish ? (controller?.isRevealed(defineEnglish) ? 'hide' : 'show') : ''
     dictState.open = true
     dictState.anchor = o.anchor
     dictState.vertical = controller?.vertical ?? false
@@ -575,9 +640,12 @@
     void controller.goToFraction(frac).catch((err) => console.warn('Could not seek', err))
   }
 
-  function onSettingChange(kind: 'appearance' | 'layout' | 'writingmode') {
+  function onSettingChange(kind: 'appearance' | 'layout' | 'writingmode' | 'english') {
     if (!controller) return
-    if (kind === 'appearance') applyAppearance()
+    if (kind === 'english') {
+      closeOverlays() // a card's Show / Hide English no longer applies
+      applyAppearance()
+    } else if (kind === 'appearance') applyAppearance()
     else if (kind === 'layout') controller.applyLayout(settings)
     else if (kind === 'writingmode' && bookFile) {
       closeOverlays() // the re-open replaces every content document
@@ -622,7 +690,6 @@
   let lastDoc: Document | null = null
   function onLoad(doc: Document) {
     if (import.meta.env.DEV) lastDoc = doc
-    if (controller) hasTranslations = controller.hasTranslations
   }
 
   /** DEV-only hook: the content document is in a closed shadow DOM, so the tap-accuracy
@@ -678,6 +745,7 @@
         onSelectionCleared: clearSel,
         onShowAnnotation,
         onKey,
+        onEnglish: () => (hasEnglish = true),
       })
       // Before open: each section then draws its own highlights as it loads.
       controller.setHighlights(annotations.items.filter((a) => a.kind === 'highlight').map((a) => a.cfi))
@@ -740,6 +808,7 @@
     <!-- The capsules stay inside the chrome-toggle band (inChromeToggleBand). -->
     <header
       class="bar top glass"
+      class:three={hasEnglish}
       role="presentation"
       onclick={dismissChromeFromBar}
       in:fly={{ y: -16, duration: dur(DUR.base), easing: cubicOut }}
@@ -752,6 +821,17 @@
       </div>
       <div class="title" lang="ja">{meta?.title ?? ''}</div>
       <div class="group end">
+        {#if hasEnglish}
+          <button
+            class="icon-btn"
+            class:on={settings.showEnglish}
+            onclick={toggleEnglish}
+            aria-label={settings.showEnglish ? 'Hide English' : 'Show English'}
+            aria-pressed={settings.showEnglish}
+          >
+            <Icon name="languages" />
+          </button>
+        {/if}
         <button class="icon-btn" onclick={() => (annotationsOpen = true)} aria-label="Highlights & Bookmarks">
           <Icon name="highlighter" />
         </button>
@@ -799,7 +879,7 @@
 
 <!-- Undimmed, so text changes are judged against the page. -->
 <Sheet bind:open={settingsOpen} title="Display" variant="popover" anchor={displayBtn}>
-  <ReaderSettings {hasTranslations} onchange={onSettingChange} />
+  <ReaderSettings {hasEnglish} onchange={onSettingChange} />
 </Sheet>
 
 <Sheet bind:open={annotationsOpen} title="Highlights & Bookmarks">
@@ -814,14 +894,17 @@
   needsDownload={dictState.needsDownload}
   result={dictState.result}
   highlighted={dictState.highlighted}
+  english={dictState.english}
   onclose={closeOverlays}
   ondownload={downloadDict}
   ontogglehighlight={toggleWordHighlight}
+  ontoggleenglish={toggleUnitEnglish}
 />
 
 <SelectionToolbar
   open={sel.open}
   rect={sel.rect}
+  canHighlight={!sel.english}
   onHighlight={createHighlight}
   onCopy={copySelection}
 />
@@ -864,6 +947,10 @@
     /* Symmetric side tracks keep the title optically centred however long it is. */
     grid-template-columns: minmax(92px, 1fr) minmax(0, auto) minmax(92px, 1fr);
     align-items: center;
+  }
+  /* Three trailing buttons (English toggle): widen both side tracks to keep the title centred. */
+  .bar.top.three {
+    grid-template-columns: minmax(136px, 1fr) minmax(0, auto) minmax(136px, 1fr);
   }
   .group {
     display: flex;
@@ -942,6 +1029,9 @@
     .bar.top {
       top: calc(var(--safe-top) + var(--sp-3));
       grid-template-columns: minmax(100px, 1fr) minmax(0, auto) minmax(100px, 1fr);
+    }
+    .bar.top.three {
+      grid-template-columns: minmax(148px, 1fr) minmax(0, auto) minmax(148px, 1fr);
     }
     .bar.bottom {
       bottom: calc(var(--safe-bottom) + var(--sp-3));

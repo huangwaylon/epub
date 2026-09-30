@@ -1,8 +1,11 @@
 /**
  * The text to look up at a tap point: the glyph under the point (resolved geometrically —
  * the caret APIs are only a seed) and the contiguous Japanese run around it, furigana
- * excluded.
+ * excluded. Inserted English (`.tsuzuri-en`, docs/translation.md) is never read and bounds
+ * the run.
  */
+
+import { englishAncestor, isEnglish } from '../translation'
 
 export interface Extracted {
   /** Japanese run around the tap (rt/rp excluded; bounded by non-word chars, block / <br>
@@ -59,7 +62,7 @@ function breakBetween(doc: Document, a: Text, b: Text): boolean {
     return false
   }
   for (let n = w.nextNode(); n && n !== b; n = w.nextNode()) {
-    if (n.nodeType === Node.ELEMENT_NODE && isBlock(n as Element)) return true
+    if (n.nodeType === Node.ELEMENT_NODE && (isBlock(n as Element) || isEnglish(n))) return true
   }
   return false
 }
@@ -187,10 +190,10 @@ function leadingRun(cells: CharPosition[], max: number): CharPosition[] {
   return cells.slice(0, i)
 }
 
-/** A TreeWalker over text nodes under `root`, skipping furigana. */
+/** A TreeWalker over text nodes under `root`, skipping furigana and English. */
 function textWalker(doc: Document, root: Node = doc.body): TreeWalker {
   return doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (n) => (isInRuby(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    acceptNode: (n) => (isInRuby(n) || englishAncestor(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   })
 }
 
@@ -238,6 +241,7 @@ function resolveGlyph(doc: Document, x: number, y: number): GlyphHit | null {
   if (!pos) return null
   if (pos.node.nodeType !== Node.TEXT_NODE) return null
   const seed = pos.node as Text
+  if (englishAncestor(seed)) return null // English never looks up
 
   if (isInRuby(seed)) return rubyBaseHit(doc, seed, x, y)
 

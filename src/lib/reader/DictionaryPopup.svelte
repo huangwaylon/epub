@@ -13,9 +13,11 @@
     needsDownload = false,
     result = null,
     highlighted = false,
+    english = '',
     onclose,
     ondownload,
     ontogglehighlight,
+    ontoggleenglish,
   }: {
     open?: boolean
     /** The tapped glyph / matched word, in top-window coords. The card never covers it. */
@@ -29,10 +31,13 @@
     result?: LookupResult | null
     /** Whether the looked-up word is currently highlighted (drives the footer toggle). */
     highlighted?: boolean
+    /** The tapped unit's English action ('' = none): reveals / hides it inline. */
+    english?: '' | 'show' | 'hide'
     /** Close request (X). The reader owns closing — it also releases the define context. */
     onclose?: () => void
     ondownload?: () => void
     ontogglehighlight?: () => void
+    ontoggleenglish?: () => void
   } = $props()
 
   let card = $state<HTMLDivElement>()
@@ -83,6 +88,7 @@
     void needsDownload
     void result
     void showActions
+    void english
     void phase
     pos = placeNearWord(a, card.offsetWidth, card.offsetHeight, v, { gap: 16 })
   })
@@ -175,12 +181,20 @@
     {#if loading && result && slow}
       <div class="spin-over" aria-hidden="true"><div class="spinner" style="--spinner-size:20px"></div></div>
     {/if}
-    {#if showActions}
+    {#if showActions || english}
       <div class="actions">
-        <button class="hl-toggle" class:on={highlighted} onclick={ontogglehighlight}>
-          <span class="hl-swatch" class:filled={highlighted}></span>
-          {highlighted ? 'Remove highlight' : 'Highlight'}
-        </button>
+        {#if showActions}
+          <button class="hl-toggle" class:on={highlighted} onclick={ontogglehighlight}>
+            <span class="hl-swatch" class:filled={highlighted}></span>
+            {highlighted ? 'Remove highlight' : 'Highlight'}
+          </button>
+        {/if}
+        {#if english}
+          <button class="hl-toggle en-toggle" class:on={english === 'hide'} onclick={ontoggleenglish}>
+            <Icon name="languages" size="sm" />
+            {english === 'hide' ? 'Hide English' : 'Show English'}
+          </button>
+        {/if}
       </div>
     {/if}
   </div>
@@ -354,8 +368,22 @@
   /* Sticky footer action: toggle the word's yellow vocab highlight. */
   .actions {
     flex: none;
+    display: flex;
+    gap: var(--sp-1);
     padding: var(--sp-1) var(--sp-2);
     border-top: 1px solid var(--line);
+  }
+  .actions > * {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  /* Show / Hide English (the tapped unit), beside the highlight toggle. */
+  .en-toggle {
+    gap: var(--sp-2);
+    white-space: nowrap;
+  }
+  .en-toggle.on {
+    color: var(--ink-soft);
   }
   .hl-toggle {
     display: flex;

@@ -60,8 +60,9 @@ export interface ReaderSettings {
   writingMode: WritingModePref
   /** Tap-to-define also highlights the looked-up word (a vocab record). */
   highlightLookups: boolean
-  /** Show English translations in dual-language EPUBs. */
-  showTranslations: boolean
+  /** Show every unit's English in translated books (`.tsuzuri-en`); off, single units
+   *  can still be revealed from the dictionary card. Was `showTranslations`. */
+  showEnglish: boolean
 }
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
@@ -72,5 +73,5 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   fontFamily: 'serif',
   writingMode: 'auto',
   highlightLookups: true,
-  showTranslations: true,
+  showEnglish: true,
 }

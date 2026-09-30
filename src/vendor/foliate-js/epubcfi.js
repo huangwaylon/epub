@@ -285,15 +285,54 @@ const nodeToParts = (node, offset, filter) => {
         .filter(x => x.index !== -1)
 }
 
-export const fromRange = (range, filter) => {
-    const { startContainer, startOffset, endContainer, endOffset } = range
+// TSUZURI PATCH (5): the English inserted into bundled books (`.tsuzuri-en`, see
+// docs/translation.md) is invisible to CFIs, so positions equal the untranslated book's and
+// survive translation edits. It is the default filter of `fromRange`/`toRange` (the only
+// content-document entry points view.js/epub.js use). A boundary inside a rejected element
+// moves to that element's position: the end of the text before it, else the start of the
+// text after it, else the parent.
+const TSUZURI_EN = /(^|\s)tsuzuri-en(\s|$)/
+export const tsuzuriFilter = node =>
+    isElementNode(node) && TSUZURI_EN.test(node.getAttribute?.('class') ?? '')
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+const edgeText = (node, filter, last) => {
+    if (isTextNode(node)) return node
+    if (!isElementNode(node) || filter(node) === NodeFilter.FILTER_REJECT) return null
+    for (let c = last ? node.lastChild : node.firstChild; c;
+        c = last ? c.previousSibling : c.nextSibling) {
+        const t = edgeText(c, filter, last)
+        if (t) return t
+    }
+    return null
+}
+const outOfRejected = (node, offset, filter) => {
+    let rejected = null
+    const root = node.ownerDocument?.documentElement
+    for (let n = node; n && n !== root; n = n.parentNode)
+        if (isElementNode(n) && filter(n) === NodeFilter.FILTER_REJECT) rejected = n
+    if (!rejected) return [node, offset]
+    for (let s = rejected.previousSibling; s; s = s.previousSibling) {
+        const t = edgeText(s, filter, true)
+        if (t) return [t, t.nodeValue.length]
+    }
+    for (let s = rejected.nextSibling; s; s = s.nextSibling) {
+        const t = edgeText(s, filter, false)
+        if (t) return [t, 0]
+    }
+    const parent = rejected.parentNode
+    return [parent, Array.prototype.indexOf.call(parent.childNodes, rejected)]
+}
+
+export const fromRange = (range, filter = tsuzuriFilter) => {
+    const [startContainer, startOffset] = outOfRejected(range.startContainer, range.startOffset, filter)
+    const [endContainer, endOffset] = outOfRejected(range.endContainer, range.endOffset, filter)
     const start = nodeToParts(startContainer, startOffset, filter)
     if (range.collapsed) return toString([start])
     const end = nodeToParts(endContainer, endOffset, filter)
     return buildRange([start], [end])
 }
 
-export const toRange = (doc, parts, filter) => {
+export const toRange = (doc, parts, filter = tsuzuriFilter) => { // TSUZURI PATCH (5)
     const startParts = collapse(parts)
     const endParts = collapse(parts, true)
 

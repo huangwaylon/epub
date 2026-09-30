@@ -21,9 +21,13 @@ let hydrated = false
 /** Keys the user changed before IDB hydration finished — those win over the stored copy. */
 const touchedEarly = new Set<keyof ReaderSettings>()
 
+/** Renamed keys: old → new (the old value is kept unless the new key is already set). */
+const RENAMED: Record<string, keyof ReaderSettings> = { showTranslations: 'showEnglish' }
+
 /** Keep only keys `DEFAULT_SETTINGS` knows, so retired keys aren't re-persisted forever. */
 function known(saved: object): Partial<ReaderSettings> {
-  const src = saved as Record<string, unknown>
+  const src: Record<string, unknown> = { ...saved }
+  for (const [from, to] of Object.entries(RENAMED)) if (from in src && !(to in src)) src[to] = src[from]
   const out: Record<string, unknown> = {}
   for (const k of Object.keys(DEFAULT_SETTINGS)) if (k in src) out[k] = src[k]
   return out as Partial<ReaderSettings>

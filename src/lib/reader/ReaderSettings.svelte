@@ -5,11 +5,12 @@
   import type { ThemeName, WritingModePref } from '../../services/types'
 
   let {
-    hasTranslations = false,
+    hasEnglish = false,
     onchange,
   }: {
-    hasTranslations?: boolean
-    onchange: (kind: 'appearance' | 'layout' | 'writingmode') => void
+    /** The open book carries English: show the Translation section. */
+    hasEnglish?: boolean
+    onchange: (kind: 'appearance' | 'layout' | 'writingmode' | 'english') => void
   } = $props()
 
   const themeOpts: { value: ThemeName; label: string }[] = [
@@ -121,26 +122,31 @@
         <span class="knob"></span>
       </button>
     </div>
-    {#if hasTranslations}
+    <p class="settings-hint">Tap any word to look it up. When on, each word you look up is marked yellow and saved to Highlights &amp; Bookmarks.</p>
+  </section>
+
+  {#if hasEnglish}
+    <section class="settings-section">
+      <h3 class="settings-h">Translation</h3>
       <div class="settings-row">
-        <span id="show-translations">Show translations</span>
+        <span id="show-english">Show English</span>
         <button
           class="switch"
-          class:on={settings.showTranslations}
+          class:on={settings.showEnglish}
           role="switch"
-          aria-checked={settings.showTranslations}
-          aria-labelledby="show-translations"
+          aria-checked={settings.showEnglish}
+          aria-labelledby="show-english"
           onclick={() => {
-            updateSettings({ showTranslations: !settings.showTranslations })
-            onchange('appearance')
+            updateSettings({ showEnglish: !settings.showEnglish })
+            onchange('english')
           }}
         >
           <span class="knob"></span>
         </button>
       </div>
-    {/if}
-    <p class="settings-hint">Tap any word to look it up. When on, each word you look up is marked yellow and saved to Highlights &amp; Bookmarks.</p>
-  </section>
+      <p class="settings-hint">English follows each passage. When off, a word’s card can show the English for just that passage; tap it to hide it again.</p>
+    </section>
+  {/if}
 </div>
 
 <style>

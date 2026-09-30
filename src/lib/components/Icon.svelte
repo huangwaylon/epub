@@ -16,6 +16,7 @@
     copy: 'M9 9h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1ZM5 15a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1',
     download: 'M12 4v11M7 10l5 5 5-5M5 20h14',
     aa: 'M3 18 7 7l4 11M4.2 14.5h5.6M14 18l3-8 3 8M14.8 15.4h4.4',
+    languages: 'M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6',
   }
   const SIZES = { sm: 18, md: 22, lg: 48 } as const
 </script>

@@ -5,6 +5,7 @@ import { Overlayer } from '../vendor/foliate-js/overlayer.js'
 import { HIGHLIGHT_HEX, type ReaderSettings } from './types'
 import { viewportSize } from './viewport'
 import { nearestFirst } from './cfi'
+import { EN_CLASS, EN_META_SELECTOR, EN_SHOWN_CLASS, clampOutOfEnglish, englishAncestor, textBeside } from './translation'
 
 /**
  * Prefetch the chunks `view.open()` imports one inside another (zip → epub → paginator),
@@ -89,6 +90,8 @@ export interface ReaderCallbacks {
   onShowAnnotation?: (value: string, range: Range) => void
   /** A keydown inside a content document (iframe key events never reach the window). */
   onKey?: (e: KeyboardEvent) => void
+  /** The book carries English (`.tsuzuri-en`); fired once per book. */
+  onEnglish?: () => void
 }
 
 const TAP_MOVE_TOLERANCE = 16
@@ -130,24 +133,30 @@ function appearanceCSS(s: ReaderSettings): string {
   if (s.writingMode === 'vertical') wm = 'writing-mode: vertical-rl !important;'
   else if (s.writingMode === 'horizontal') wm = 'writing-mode: horizontal-tb !important;'
 
-  const translation = s.showTranslations
-    ? `.tsuzuri-en {
-        display: block;
-        font-size: 0.88em;
-        color: ${tok('--ink-soft')};
-        margin-top: 0.4em;
-        margin-bottom: 0.8em;
-        padding-left: 0.5em;
-        border-left: 2px solid ${tok('--accent-soft')};
-        text-indent: 0;
-        line-height: 1.5;
-        font-style: italic;
-      }
-      .tsuzuri-ja {
-        display: block;
-        margin-bottom: 0.2em;
-      }`
-    : '.tsuzuri-en { display: none !important; } .tsuzuri-ja { display: contents; }'
+  // English (docs/translation.md): hidden unless show-all is on or its unit is revealed.
+  // Logical properties only, so it reads right in 横書き and 縦書き (sideways Latin).
+  const latin = s.fontFamily === 'sans' ? tok('--font-ui') : `ui-serif, 'Iowan Old Style', 'Palatino', Georgia, serif`
+  const shown = s.showEnglish ? `.${EN_CLASS}` : `.${EN_CLASS}.${EN_SHOWN_CLASS}`
+  const english = `
+    .${EN_CLASS} { display: none; }
+    ${shown} {
+      display: block;
+      margin-block: 0.3em 0.75em;
+      padding-inline-start: 0.7em;
+      border-inline-start: 2px solid color-mix(in srgb, ${accent} 40%, transparent);
+      font-family: ${latin};
+      font-size: 0.85em;
+      font-style: normal;
+      font-weight: normal;
+      line-height: 1.5;
+      letter-spacing: normal;
+      color: ${tok('--ink-soft')};
+      text-indent: 0;
+      text-align: start;
+      text-orientation: mixed;
+      -webkit-hyphens: manual;
+      hyphens: manual;
+    }`
 
   return `
     @namespace epub "http://www.idpf.org/2007/ops";
@@ -167,7 +176,7 @@ function appearanceCSS(s: ReaderSettings): string {
       /* No double-tap zoom (iOS ignores user-scalable): taps and swipes bail while zoomed. */
       touch-action: manipulation;
     }
-    ${translation}
+    ${english}
     p, li, blockquote, dd {
       line-height: ${s.lineHeight};
       text-align: justify;
@@ -209,11 +218,19 @@ export class ReaderController {
   #pendingDir: 'left' | 'right' | null = null
   /** Re-checked after every await. */
   #destroyed = false
-  /** The current book has English translations (detected from meta tag). */
-  hasTranslations = false
+  /** The book carries English: a loaded section's meta, or the post-open spine probe. */
+  #hasEnglish = false
+  /** `settings.showEnglish` as last applied (the settings object is mutated in place). */
+  #showEnglish: boolean
+  /** Individually revealed units (`data-tz`) per spine index, for this session; re-applied
+   *  on section load, cleared when show-all changes. */
+  #revealed = new Map<number, Set<string>>()
+  /** The visible range from the last relocate (foliate's page anchor). */
+  #lastRange: Range | undefined
 
   constructor(container: HTMLElement, settings: ReaderSettings, callbacks: ReaderCallbacks) {
     this.#settings = settings
+    this.#showEnglish = settings.showEnglish
     this.#cb = callbacks
     this.view = document.createElement('foliate-view') as FoliateView
     this.view.style.cssText = 'display:block;width:100%;height:100%'
@@ -223,6 +240,10 @@ export class ReaderController {
   /** The book lays out vertically (縦書き). */
   get vertical(): boolean {
     return this.#vertical
+  }
+
+  get hasEnglish(): boolean {
+    return this.#hasEnglish
   }
 
   async open(file: File, lastCFI?: string): Promise<void> {
@@ -243,7 +264,38 @@ export class ReaderController {
     await this.view.init({ lastLocation: lastCFI || undefined, showTextStart: true })
     if (this.#destroyed) return
     this.#nudgeLayout()
+    this.#probeEnglish()
   }
+
+  #markEnglish(): void {
+    if (this.#hasEnglish) return
+    this.#hasEnglish = true
+    this.#cb.onEnglish?.()
+  }
+
+  /**
+   * After first paint, scan the spine's raw XHTML for the translation meta so `hasEnglish`
+   * is known even when the book opens at an untranslated section (e.g. the cover). One
+   * section per task; stops at the first hit.
+   */
+  #probeEnglish(): void {
+    const book = this.view.book
+    const sections: { id?: string }[] = book?.sections ?? []
+    const loadText: ((id: string) => Promise<string | null>) | undefined = book?.loadText?.bind(book)
+    if (!loadText) return
+    const step = async (i: number) => {
+      if (this.#destroyed || this.#hasEnglish || i >= sections.length || this.view.book !== book) return
+      const id = sections[i]?.id
+      try {
+        if (id && (await loadText(id))?.includes('tsuzuri-translated')) return this.#markEnglish()
+      } catch {
+        return // the book was closed under us
+      }
+      this.#probeTimer = window.setTimeout(() => void step(i + 1), 0)
+    }
+    this.#probeTimer = window.setTimeout(() => void step(0), 0)
+  }
+  #probeTimer: number | undefined
 
   /**
    * Guess the writing mode before the first section loads, so the pre-init `applyLayout`
@@ -265,6 +317,7 @@ export class ReaderController {
     this.view.addEventListener('relocate', (e: any) => {
       const d = e.detail
       this.lastCFI = d.cfi
+      this.#lastRange = d.range
       this.#cb.onRelocate?.({
         cfi: d.cfi,
         fraction: d.fraction ?? 0,
@@ -275,8 +328,9 @@ export class ReaderController {
     this.view.addEventListener('load', (e: any) => {
       const { doc, index } = e.detail
       this.#docIndex.set(doc, index)
-      if (doc.querySelector('meta[name="tsuzuri-translated"]')) {
-        this.hasTranslations = true
+      if (doc.querySelector(EN_META_SELECTOR)) {
+        this.#markEnglish()
+        this.#applyReveals(doc, index)
       }
       // Must run before the writing mode is read (and before foliate's getDirection).
       this.#applyIntendedWritingMode(doc)
@@ -360,10 +414,67 @@ export class ReaderController {
   }
   #nudgeTimer: number | undefined
 
-  /** Re-applies the injected stylesheet (theme, fonts, spacing). Safe to call live. */
+  /** Re-applies the injected stylesheet (theme, fonts, spacing, English). Safe to call
+   *  live; a show-all change clears individual reveals. */
   applyAppearance(s: ReaderSettings): void {
     this.#settings = s
+    const englishChanged = s.showEnglish !== this.#showEnglish
+    this.#showEnglish = s.showEnglish
+    if (englishChanged) this.#clearReveals()
     this.view.renderer?.setStyles?.(appearanceCSS(s))
+    if (englishChanged) this.#keepPage()
+  }
+
+  /** The unit whose English is `en` is individually revealed. */
+  isRevealed(en: Element): boolean {
+    return en.classList.contains(EN_SHOWN_CLASS)
+  }
+
+  /** Reveal / hide one unit's English (while show-all is off); kept for the session. */
+  setRevealed(en: Element, on: boolean): void {
+    const index = this.#docIndex.get(en.ownerDocument)
+    const tz = en.getAttribute('data-tz')
+    if (index === undefined || tz === null) return
+    let set = this.#revealed.get(index)
+    if (on) {
+      if (!set) this.#revealed.set(index, (set = new Set()))
+      set.add(tz)
+    } else set?.delete(tz)
+    en.classList.toggle(EN_SHOWN_CLASS, on)
+    if (!on) this.#keepPage()
+  }
+
+  #applyReveals(doc: Document, index: number): void {
+    for (const tz of this.#revealed.get(index) ?? [])
+      doc.querySelector(`.${EN_CLASS}[data-tz="${tz}"]`)?.classList.add(EN_SHOWN_CLASS)
+  }
+
+  #clearReveals(): void {
+    this.#revealed.clear()
+    for (const { doc } of this.view.renderer?.getContents?.() ?? [])
+      for (const el of Array.from((doc as Document).querySelectorAll(`.${EN_SHOWN_CLASS}`))) el.classList.remove(EN_SHOWN_CLASS)
+  }
+
+  /**
+   * After English is hidden: foliate re-scrolls to its page anchor (the visible range) on
+   * the reflow, but a range starting in now-hidden English has no rects and would be
+   * skipped, so re-anchor at the last Japanese character before it.
+   */
+  #keepPage(): void {
+    const range = this.#lastRange
+    const en = englishAncestor(range?.startContainer)
+    if (!range || !en) return
+    try {
+      if (en.ownerDocument.defaultView?.getComputedStyle(en).display !== 'none') return
+      const t = textBeside(en, 'prev')
+      if (!t?.data.length) return
+      const r = en.ownerDocument.createRange()
+      r.setStart(t, t.data.length - 1)
+      r.setEnd(t, t.data.length)
+      this.view.renderer?.scrollToAnchor?.(r)
+    } catch {
+      /* detached */
+    }
   }
 
   /**
@@ -444,6 +555,7 @@ export class ReaderController {
   async #reopen(file: File): Promise<void> {
     const at = this.lastCFI
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
+    if (this.#probeTimer) clearTimeout(this.#probeTimer)
     if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
     this.#redrawTimer = undefined
     this.#redrawGen++
@@ -460,6 +572,7 @@ export class ReaderController {
     await this.view.init({ lastLocation: at || undefined, showTextStart: true })
     if (this.#destroyed) return
     this.#nudgeLayout()
+    this.#probeEnglish()
   }
 
   /** `close()` doesn't destroy the Book, whose Loader holds a blob URL per resource. */
@@ -606,12 +719,14 @@ export class ReaderController {
     return this.view.goToFraction(Math.max(0, Math.min(1, frac)))
   }
 
-  /** CFI for a range in a loaded content document. */
+  /** CFI for a range in a loaded content document. Ends inside English are clamped to the
+   *  Japanese (`null` if nothing remains): a highlight never spans into a translation. */
   cfiForSelection(doc: Document, range: Range): string | null {
     const index = this.#docIndex.get(doc)
     if (index === undefined) return null
     try {
-      return this.view.getCFI(index, range)
+      const r = clampOutOfEnglish(range.cloneRange())
+      return r ? this.view.getCFI(index, r) : null
     } catch {
       return null
     }
@@ -707,6 +822,7 @@ export class ReaderController {
     if (this.#nudgeTimer) clearTimeout(this.#nudgeTimer)
     if (this.#slideTimer) clearTimeout(this.#slideTimer)
     if (this.#redrawTimer) clearTimeout(this.#redrawTimer)
+    if (this.#probeTimer) clearTimeout(this.#probeTimer)
     this.#redrawGen++
     this.#pendingDir = null
     this.#abortDocListeners()

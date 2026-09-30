@@ -335,6 +335,19 @@ describe('extractTextAt', () => {
     expect(extractTextAt(doc, ...center(a, 1))!.text).toBe('猫が')
   })
 
+  it('never reads into inserted English (.tsuzuri-en) and never looks it up', () => {
+    // 猫が<span class="tsuzuri-en">好き</span>: word chars inside the English (a stand-in
+    // for any text there) must neither join the run nor resolve a tap.
+    const p = el('P')
+    const a = textNode('猫が', p, 0)
+    const en: any = { nodeType: 1, tagName: 'span', parentElement: p, getAttribute: () => 'tsuzuri-en' }
+    const b: any = textNode('好き', en, 32)
+    b.parentNode = en
+    const doc = makeDoc([a, en, b], (x) => (x >= 32 ? { node: b, offset: 0 } : { node: a, offset: 1 }))
+    expect(extractTextAt(doc, ...center(a, 1))!.text).toBe('猫が')
+    expect(extractTextAt(doc, ...center(b, 0))).toBeNull()
+  })
+
   it('still joins inline elements (ruby, span) within one paragraph', () => {
     const p = el('P')
     const span = el('SPAN', p)

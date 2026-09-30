@@ -6,11 +6,14 @@
   let {
     open = false,
     rect = { left: 0, top: 0, width: 0, height: 0 },
+    canHighlight = true,
     onHighlight,
     onCopy,
   }: {
     open?: boolean
     rect?: { left: number; top: number; width: number; height: number }
+    /** False for a selection wholly inside English (nothing to anchor a highlight to). */
+    canHighlight?: boolean
     onHighlight?: () => void
     onCopy?: () => void
   } = $props()
@@ -31,11 +34,13 @@
 
 {#if open}
   <div bind:this={bar} class="toolbar glass" style="left:{pos?.left ?? 0}px; top:{pos?.top ?? 0}px;{pos ? '' : ' visibility:hidden'}" role="toolbar">
-    <button class="act" onclick={onHighlight}>
-      <span class="swatch" style="--c:{HIGHLIGHT_HEX}"></span>
-      Highlight
-    </button>
-    <span class="sep"></span>
+    {#if canHighlight}
+      <button class="act" onclick={onHighlight}>
+        <span class="swatch" style="--c:{HIGHLIGHT_HEX}"></span>
+        Highlight
+      </button>
+      <span class="sep"></span>
+    {/if}
     <button class="icon-btn" aria-label="Copy" onclick={onCopy}><Icon name="copy" size="sm" /></button>
   </div>
 {/if}
