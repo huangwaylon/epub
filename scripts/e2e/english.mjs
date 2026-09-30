@@ -3,8 +3,8 @@
 //
 //   node scripts/e2e/english.mjs [ipad|iphone|desktop …]   (default: all three)
 //
-// Starts `vite` (dev, for `window.__tsuzuri`), lets the shelf auto-import the bundled books,
-// opens コンビニ人間 (konbini-ningen, ~98% translated) and drives it with synthetic pointer
+// Starts `vite` (dev, for `window.__tsuzuri`), downloads the book from the shelf's Included
+// books, opens コンビニ人間 (konbini-ningen, ~98% translated) and drives it with synthetic pointer
 // events on the content document. Prints one line per check; exits 1 if any failed.
 import { launch, serve } from './lib.mjs'
 
@@ -116,9 +116,12 @@ async function run(device, url) {
   const { browser, page } = await launch(device, url)
   const shot = (name) => page.screenshot({ path: `/tmp/en-${device}-${name}.png` })
   try {
-    // First run: the shelf imports the bundled books.
-    await page.waitForFunction((t) => [...document.querySelectorAll('button.card .title')].some((e) => e.textContent === t), { timeout: 120_000 }, TITLE)
-    await page.evaluate((t) => [...document.querySelectorAll('button.card')].find((b) => b.querySelector('.title')?.textContent === t).click(), TITLE)
+    // Fresh profile: download the book from the shelf's Included books, then open it.
+    const lib = (t) => [...document.querySelectorAll('button.card:not(.bundled-card)')].find((b) => b.querySelector('.title')?.textContent === t)
+    await page.waitForFunction((t) => document.querySelector(`button.bundled-card[aria-label^="Download ${t},"]`), { timeout: 60_000 }, TITLE)
+    await page.evaluate((t) => document.querySelector(`button.bundled-card[aria-label^="Download ${t},"]`).click(), TITLE)
+    await page.waitForFunction(`(${lib})(${JSON.stringify(TITLE)})`, { timeout: 120_000 })
+    await page.evaluate(`(${lib})(${JSON.stringify(TITLE)}).click()`)
     await page.waitForFunction(() => window.__tsuzuri?.doc && window.__tsuzuri.controller, { timeout: 60_000 })
     await page.evaluate(HELPERS)
     await sleep(1500)
