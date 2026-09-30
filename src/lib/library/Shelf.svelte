@@ -214,7 +214,9 @@
               class:busy={st.kind === 'downloading'}
               aria-label={st.kind === 'downloading'
                 ? `Downloading ${entry.title}, ${pct}%`
-                : `${st.kind === 'error' ? 'Retry download of' : 'Download'} ${entry.title}, ${fmtSize(entry.size)}`}
+                : st.kind === 'error'
+                  ? `${st.message} Retry download of ${entry.title}, ${fmtSize(entry.size)}`
+                  : `${st.kind === 'update' ? 'Update' : 'Download'} ${entry.title}, ${fmtSize(entry.size)}`}
               aria-busy={st.kind === 'downloading'}
               onclick={() => {
                 if (st.kind !== 'downloading') void downloadBook(entry.id)
@@ -239,10 +241,11 @@
                   <span class="spinner small"></span><span class="num">{pct}%</span>
                 {:else}
                   <Icon name="download" size="sm" />
-                  <span>{st.kind === 'error' ? 'Retry' : fmtSize(entry.size)}</span>
+                  <span>{st.kind === 'error' ? 'Retry' : st.kind === 'update' ? 'Update' : fmtSize(entry.size)}</span>
                 {/if}
               </span>
-              {#if st.kind === 'error'}<span class="err-msg" role="alert">{st.message}</span>{/if}
+              <!-- Announced via the toast and the button's label; a button's children are presentational. -->
+              {#if st.kind === 'error'}<span class="err-msg" aria-hidden="true">{st.message}</span>{/if}
             </button>
           {/each}
         </div>

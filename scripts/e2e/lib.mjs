@@ -25,16 +25,26 @@ const SAFARI_UA = {
   ipad: 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
 }
 
-/** Start `vite` (dev, base /) or `vite preview` (dist, base /epub/) and wait for its URL. */
-export function serve(mode = 'dev', port = mode === 'dev' ? 5199 : 5299) {
-  const args = mode === 'dev' ? ['vite', '--port', String(port), '--strictPort'] : ['vite', 'preview', '--port', String(port), '--strictPort']
-  const proc = spawn('npx', args, { stdio: ['ignore', 'pipe', 'inherit'] })
+/** Start `vite` (dev, base /) or `vite preview` (dist, base /epub/) and wait for its URL.
+ *  Spawns the vite binary itself (not npx), so `close()` stops the server that listens. */
+export function serve(mode = 'dev', port = mode === 'dev' ? 5199 : 5299, { timeoutMs = 30000 } = {}) {
+  const args = [...(mode === 'dev' ? [] : ['preview']), '--port', String(port), '--strictPort']
+  const proc = spawn('node_modules/.bin/vite', args, { stdio: ['ignore', 'pipe', 'inherit'] })
   const url = `http://localhost:${port}${mode === 'dev' ? '/' : '/epub/'}`
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      proc.kill()
+      reject(new Error(`vite did not start within ${timeoutMs} ms`))
+    }, timeoutMs)
     proc.stdout.on('data', (d) => {
-      if (/Local:/.test(String(d))) resolve({ url, close: () => proc.kill() })
+      if (!/Local:/.test(String(d))) return
+      clearTimeout(timer)
+      resolve({ url, close: () => proc.kill() })
     })
-    proc.on('exit', (code) => reject(new Error(`vite exited ${code}`)))
+    proc.on('exit', (code) => {
+      clearTimeout(timer)
+      reject(new Error(`vite exited ${code}`))
+    })
   })
 }
 

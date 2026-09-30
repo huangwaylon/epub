@@ -118,6 +118,24 @@ export async function deleteBookCascade(id: string): Promise<void> {
   await tx.done
 }
 
+/** Re-home progress and annotations (a bundled book rebuilt under a new id). CFIs carry
+ *  over: the rebuild keeps the Japanese DOM and CFIs skip the English (TSUZURI PATCH 5). */
+export async function moveBookData(fromId: string, toId: string): Promise<void> {
+  const database = await db()
+  const tx = database.transaction(['progress', 'annotations'], 'readwrite')
+  const progress = tx.objectStore('progress')
+  const old = await progress.get(fromId)
+  if (old && !(await progress.get(toId))) await progress.put({ ...old, bookId: toId })
+  await progress.delete(fromId)
+  const annStore = tx.objectStore('annotations')
+  let cursor = await annStore.index('byBook').openCursor(fromId)
+  while (cursor) {
+    await cursor.update({ ...cursor.value, bookId: toId })
+    cursor = await cursor.continue()
+  }
+  await tx.done
+}
+
 /* ── Settings ──────────────────────────────────────────────────────────── */
 
 export async function loadSettings(): Promise<ReaderSettings | undefined> {

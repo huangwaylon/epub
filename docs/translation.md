@@ -15,7 +15,7 @@ public/books/                   build output (committed): <slug>.epub, <slug>.we
 
 ```sh
 npm run books:extract -- <slug>   # (re)write en/*.json units from source.epub, keeping existing English
-npm run books:build               # all books → public/books/ (deterministic; ids are SHA-256)
+npm run books:build               # all books → public/books/ (deterministic for a given sharp version; ids are SHA-256)
 npm run books:build -- <slug>     # one book
 ```
 

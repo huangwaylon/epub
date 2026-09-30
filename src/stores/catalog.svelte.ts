@@ -1,4 +1,5 @@
 import {
+  bookSlug,
   deriveStatus,
   downloadEntry,
   downloadErrorMessage,
@@ -7,6 +8,7 @@ import {
   type EntryStatus,
   type Job,
 } from '../services/catalog'
+import { supersedeBook } from '../services/library'
 import { requestPersistence } from '../services/storage/persist'
 import { library, refreshLibrary } from './library.svelte'
 import { showToast } from './toast.svelte'
@@ -50,8 +52,25 @@ function libraryIds(): Set<string> {
   return new Set(library.books.map((b) => b.id))
 }
 
+/** Library books that came from the catalog, by slug. */
+function librarySlugs(): Map<string, string> {
+  const slugs = new Set(catalog.entries.map((e) => e.slug))
+  const out = new Map<string, string>()
+  for (const b of library.books) {
+    const slug = bookSlug(b, slugs)
+    if (slug) out.set(slug, b.id)
+  }
+  return out
+}
+
+/** Library id of an older build of `entry`, if the user has one. */
+function outdatedCopy(entry: CatalogEntry): string | undefined {
+  const id = librarySlugs().get(entry.slug)
+  return id && id !== entry.id ? id : undefined
+}
+
 export function entryStatus(entry: CatalogEntry): EntryStatus {
-  return deriveStatus(entry, libraryIds(), catalog.jobs[entry.id])
+  return deriveStatus(entry, libraryIds(), catalog.jobs[entry.id], !!outdatedCopy(entry))
 }
 
 /** Entries not yet in the library (in catalog order). */
@@ -62,33 +81,57 @@ export function availableEntries(): CatalogEntry[] {
 
 let persistRequested = false
 
-/** Returns true when the book is (now) in the library. `quiet` suppresses the toasts (batch). */
-export async function downloadBook(
+const inflight = new Map<string, Promise<boolean>>()
+
+/** Returns true when the book is (now) in the library. `quiet` suppresses the toasts (batch).
+ *  A second call for a book already downloading joins that download. */
+export function downloadBook(
   id: string,
-  { quiet = false, fetchImpl }: { quiet?: boolean; fetchImpl?: typeof fetch } = {},
+  opts: { quiet?: boolean; fetchImpl?: typeof fetch } = {},
 ): Promise<boolean> {
   const entry = catalog.entries.find((e) => e.id === id)
-  if (!entry) return false
-  const status = entryStatus(entry)
-  if (status.kind === 'downloaded') return true
-  if (status.kind === 'downloading') return false
+  if (!entry) return Promise.resolve(false)
+  if (libraryIds().has(id)) return Promise.resolve(true)
+  let job = inflight.get(id)
+  if (!job) {
+    job = runDownload(entry, opts).finally(() => inflight.delete(id))
+    inflight.set(id, job)
+  }
+  return job
+}
+
+async function runDownload(
+  entry: CatalogEntry,
+  { quiet = false, fetchImpl }: { quiet?: boolean; fetchImpl?: typeof fetch },
+): Promise<boolean> {
   if (!persistRequested) {
     persistRequested = true
     void requestPersistence()
   }
+  const id = entry.id
   catalog.jobs[id] = { kind: 'downloading', progress: 0 }
+  const onProgress = (p: number) => {
+    const job = catalog.jobs[id]
+    // Whole percents only: one reactive write per percent, not per chunk.
+    if (job?.kind === 'downloading' && Math.floor(p * 100) !== Math.floor(job.progress * 100)) job.progress = p
+  }
   try {
-    await downloadEntry(entry, {
-      fetchImpl,
-      onProgress: (p) => {
-        const job = catalog.jobs[id]
-        // Whole percents only: one reactive write per percent, not per chunk.
-        if (job?.kind === 'downloading' && Math.floor(p * 100) !== Math.floor(job.progress * 100)) job.progress = p
-      },
-    })
+    let book
+    try {
+      book = await downloadEntry(entry, { fetchImpl, onProgress })
+    } catch (err) {
+      // This app build's catalog predates the deployed EPUB: retry once against the live one.
+      if ((err as Error)?.name !== 'ChecksumError') throw err
+      const live = (await fetchCatalog(fetchImpl, { fresh: true }).catch(() => [])).find((e) => e.slug === entry.slug)
+      if (!live || live.id === entry.id) throw err
+      book = await downloadEntry(live, { fetchImpl, onProgress })
+      catalog.entries = catalog.entries.map((e) => (e.slug === live.slug ? live : e))
+    }
+    const older = outdatedCopy({ ...entry, id: book.id })
+    if (older) await supersedeBook(older, book.id)
     await refreshLibrary()
     delete catalog.jobs[id]
-    if (!quiet) showToast({ message: `Downloaded ${entry.title}` })
+    if (!quiet) showToast({ message: `${older ? 'Updated' : 'Downloaded'} ${entry.title}` })
     return true
   } catch (err) {
     console.error('Download failed for', entry.file, err)
@@ -119,7 +162,8 @@ export async function downloadAll(opts: { fetchImpl?: typeof fetch } = {}): Prom
   if (failed === 0) {
     if (ok) showToast({ message: ok === 1 ? 'Downloaded 1 book' : `Downloaded ${ok} books` })
   } else {
-    showToast({ message: ok ? `Downloaded ${ok} of ${todo.length}. ${lastError}` : (lastError ?? 'Downloads failed.') })
+    const why = lastError ?? 'Some downloads failed.'
+    showToast({ message: ok ? `Downloaded ${ok} of ${todo.length}. ${why}` : why })
   }
   return { ok, failed }
 }
@@ -132,4 +176,5 @@ export function resetCatalog(): void {
   catalog.jobs = {}
   loading = null
   persistRequested = false
+  inflight.clear()
 }

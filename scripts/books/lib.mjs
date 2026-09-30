@@ -58,7 +58,8 @@ export function readPackage(files) {
   }
   const spine = Array.from(opf.getElementsByTagName('itemref'))
     .map((r) => items.get(r.getAttribute('idref')))
-    .filter((it) => it && /html/.test(it.type))
+    // The nav document's content model (nav > ol > li > a) has no room for inserted English.
+    .filter((it) => it && /html/.test(it.type) && !it.props.split(/\s+/).includes('nav'))
     .map((it) => it.path)
 
   const text = (tag) => opf.getElementsByTagName(tag)[0]?.textContent.trim() ?? ''

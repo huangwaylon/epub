@@ -1,6 +1,6 @@
 import type { BookMeta } from './types'
 import { putBook, getBookFile, deleteBook, hasBook } from './storage/blobs'
-import { deleteBookCascade, getAllBooks, getBookMeta, putBookMeta } from './storage/db'
+import { deleteBookCascade, getAllBooks, getBookMeta, moveBookData, putBookMeta } from './storage/db'
 
 /** EPUB title/author are a string or a `{lang: value}` map; prefer Japanese. */
 export function flattenLangMap(x: unknown): string {
@@ -79,7 +79,7 @@ async function parseMeta(file: File) {
 }
 
 /** Display metadata known ahead of time (the bundled-book catalog), used instead of parsing. */
-export type KnownMeta = Pick<BookMeta, 'title' | 'author' | 'language' | 'dir' | 'cover'>
+export type KnownMeta = Pick<BookMeta, 'title' | 'author' | 'language' | 'dir' | 'cover' | 'slug'>
 
 /** The bytes' SHA-256 isn't the id the caller expected (a corrupt or stale download). */
 export class ChecksumError extends Error {
@@ -143,6 +143,12 @@ export async function touchBook(id: string): Promise<void> {
     meta.lastOpenedAt = Date.now()
     await putBookMeta(meta)
   }
+}
+
+/** Replace an older copy of a book: its progress and annotations move to `newId`. */
+export async function supersedeBook(oldId: string, newId: string): Promise<void> {
+  await moveBookData(oldId, newId)
+  await removeBook(oldId)
 }
 
 export async function removeBook(id: string): Promise<void> {

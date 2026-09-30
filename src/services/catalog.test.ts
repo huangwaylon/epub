@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 const { makeBook } = vi.hoisted(() => ({ makeBook: vi.fn() }))
 vi.mock('../vendor/foliate-js/view.js', () => ({ makeBook }))
 
-import { deriveStatus, readWithProgress, downloadErrorMessage, type CatalogEntry } from './catalog'
+import { deriveStatus, readWithProgress, downloadErrorMessage, NetworkError, type CatalogEntry } from './catalog'
 
 const bytes = new Uint8Array(Array.from({ length: 5000 }, (_, i) => i % 251))
 const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex')
@@ -92,7 +92,9 @@ describe('readWithProgress', () => {
 
 describe('downloadErrorMessage', () => {
   it('maps offline, checksum and quota failures', () => {
-    expect(downloadErrorMessage(new TypeError('Failed to fetch'), true)).toMatch(/offline/)
+    expect(downloadErrorMessage(new NetworkError(new TypeError('Failed to fetch')), true)).toMatch(/offline/)
+    // A TypeError from a bug (e.g. crypto.subtle missing over LAN http) is not "offline".
+    expect(downloadErrorMessage(new TypeError('x is undefined'), true)).toMatch(/Couldn’t download/)
     expect(downloadErrorMessage(new Error('x'), false)).toMatch(/offline/)
     expect(downloadErrorMessage(Object.assign(new Error('x'), { name: 'ChecksumError' }), true)).toMatch(/corrupted/)
     expect(downloadErrorMessage(new DOMException('q', 'QuotaExceededError'), true)).toMatch(/storage/)

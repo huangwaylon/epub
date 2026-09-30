@@ -18,8 +18,9 @@ import {
 const OUT = 'public/books'
 /** JPEGs above this are re-encoded (publisher art is often 300 dpi, near-lossless). */
 const JPEG_MAX_BYTES = 400_000
-/** Fixed zip timestamps so an unchanged book keeps its SHA-256 (= its library id). */
-const MTIME = new Date('2026-01-01T00:00:00Z')
+/** Fixed zip timestamps so an unchanged book keeps its SHA-256 (= its library id). Local
+ *  time on purpose: zip stores local fields, so a UTC instant would vary by timezone. */
+const MTIME = new Date(2026, 0, 1)
 
 const order = JSON.parse(readFileSync('books/catalog.json', 'utf8'))
 const only = process.argv.slice(2)
@@ -41,6 +42,9 @@ async function buildBook(slug) {
     const ch = { path, doc, units: spine.has(path) ? findUnits(doc) : [] }
     const enPath = join(dir, 'en', `${chapterName(path)}.json`)
     const en = existsSync(enPath) ? JSON.parse(readFileSync(enPath, 'utf8')) : []
+    if (en.length && en.length !== ch.units.length) {
+      throw new Error(`${enPath}: ${en.length} units, source has ${ch.units.length} — re-run extract.mjs ${slug}`)
+    }
     let inserted = 0
     ch.units.forEach((u, id) => {
       units++

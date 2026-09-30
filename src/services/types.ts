@@ -18,6 +18,8 @@ export interface BookMeta {
   /** Page-progression direction declared by the EPUB ('rtl' for most vertical JP novels). */
   dir: 'ltr' | 'rtl'
   cover?: Blob
+  /** Bundled books only: the catalog slug, stable across rebuilds (the id is not). */
+  slug?: string
   fileName: string
   fileSize: number
   addedAt: number

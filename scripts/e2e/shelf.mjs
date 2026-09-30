@@ -12,6 +12,7 @@ const mode = process.argv[2] === 'dev' ? 'dev' : 'preview'
 // A port of its own: other checkouts' harness runs use the defaults.
 const port = Number(process.env.PORT ?? (mode === 'dev' ? 5317 : 5318))
 let server = await serve(mode, port)
+let browser, page
 const url = server.url
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const results = { mode, devices: {}, flow: {} }
@@ -81,7 +82,7 @@ try {
   }
 
   // 2. The download flow on iPad.
-  const { browser, page } = await launch('ipad')
+  ;({ browser, page } = await launch('ipad'))
   const cdp = await page.createCDPSession()
   await page.goto(url, { waitUntil: 'networkidle0' })
   await page.waitForSelector('.bundled-card')
@@ -183,9 +184,25 @@ try {
     const e = await navigator.storage.estimate()
     return { usageMB: +(e.usage / 1e6).toFixed(2), persisted: await navigator.storage.persisted() }
   })
-  await browser.close()
 } finally {
+  await browser?.close()
   server.close()
 }
 
 console.log(JSON.stringify(results, null, 2))
+
+// Pass/fail: the flow's invariants, not the timings.
+const f = results.flow
+const checks = {
+  'nothing imported on first visit': f.libraryOnFirstVisit === 0,
+  'one download lands in the library': f.afterOne?.library === 1,
+  'reader shows text': f.readerTextChars > 0,
+  'deleted book returns to available': f.deletedReturnsToAvailable === true,
+  'no auto-import after reload': f.afterReload?.library === 0,
+  'covers offline': f.offline?.covers === f.bundledOnFirstVisit,
+  'offline error shown': /offline/i.test(f.offline?.error ?? ''),
+  'download all': f.downloadAllCount === f.bundledOnFirstVisit,
+}
+const failed = Object.entries(checks).filter(([, ok]) => !ok)
+for (const [name, ok] of Object.entries(checks)) console.log(`${ok ? 'PASS' : 'FAIL'} ${name}`)
+process.exit(failed.length ? 1 : 0)
