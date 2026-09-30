@@ -1,7 +1,9 @@
 import { defineConfig } from 'vitest/config'
+import { svelte } from '@sveltejs/vite-plugin-svelte'
 
-// Plugin-free so tests don't load the PWA/Svelte build plugins.
+// Only the Svelte compiler (runes in `*.svelte.ts` stores); no PWA/build plugins.
 export default defineConfig({
+  plugins: [svelte()],
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],

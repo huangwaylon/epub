@@ -14,8 +14,13 @@
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
   import BookCover from './BookCover.svelte'
+  import { catalog, loadCatalog, entryStatus, availableEntries, downloadBook, downloadAll } from '../../stores/catalog.svelte'
+  import { bookUrl, type CatalogEntry } from '../../services/catalog'
 
-  import { importBundledBooks } from '../../services/bundledBooks'
+  /** Whole KB below 1 MB: catalog sizes don't need a decimal. */
+  function fmtSize(n: number): string {
+    return n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
+  }
 
   let fileInput: HTMLInputElement
   let menuFor = $state<BookMeta | null>(null)
@@ -32,17 +37,35 @@
   })
 
   onMount(() => {
-    refreshLibrary().then(async () => {
-      if (library.books.length === 0) {
-        library.importing += 1
-        await importBundledBooks()
-        library.importing -= 1
-        await refreshLibrary()
-      }
-    })
+    void refreshLibrary()
+    void loadCatalog()
   })
 
   const books = $derived(library.books.filter((b) => !removing.has(b.id)))
+  // A book in its Undo window still counts as present, so it can't be re-downloaded mid-delete.
+  const available = $derived(library.loading ? [] : availableEntries())
+  const availableBytes = $derived(available.reduce((n, e) => n + e.size, 0))
+  let downloadingAll = $state(false)
+  const anyDownloading = $derived(available.some((e) => entryStatus(e).kind === 'downloading'))
+
+  async function getAll() {
+    downloadingAll = true
+    try {
+      await downloadAll()
+    } finally {
+      downloadingAll = false
+    }
+  }
+
+  /** "EN" alone when (nearly) fully translated, else with the share of text covered. */
+  function enLabel(e: CatalogEntry): { text: string; title: string } | null {
+    const c = e.translation?.coverage
+    if (c == null) return null
+    const pct = Math.round(c * 100)
+    return c >= 0.995
+      ? { text: 'EN', title: 'Includes an English translation' }
+      : { text: `EN ${pct}%`, title: `English translation for ${pct}% of the text` }
+  }
 
   function pick(e: Event) {
     const input = e.target as HTMLInputElement
@@ -102,58 +125,134 @@
 
   {#if library.loading}
     <div class="state"><div class="spinner delayed"></div></div>
-  {:else if books.length === 0 && library.importing === 0}
-    <div class="state empty">
-      <div class="empty-art"><Icon name="book" size="lg" stroke={1.4} /></div>
-      <h2>Your shelf is empty</h2>
-      <p>Add an EPUB from Files, iCloud Drive, or anywhere on your device.</p>
-      <button class="btn btn-primary cta" onclick={() => fileInput.click()}>
-        <Icon name="plus" size="sm" /> Add a book
-      </button>
-      <p class="hint">
-        Tip: tap any Japanese word while reading to look it up. Get the offline dictionary in
-        <button class="link" onclick={() => (settingsOpen = true)}>Settings</button>.
-      </p>
-    </div>
   {:else}
-    <div class="grid" aria-busy={library.importing > 0}>
-      {#each { length: library.importing } as _, i (i)}
-        <div class="card skeleton-card" aria-hidden="true">
-          <div class="skeleton cover-skel"></div>
-          <div class="meta">
-            <div class="skeleton line"></div>
-            <div class="skeleton line short"></div>
-          </div>
+    {#if books.length === 0 && library.importing === 0}
+      {#if available.length > 0}
+        <!-- Compact, so the included books sit above the fold even on a landscape phone. -->
+        <div class="intro">
+          <h2>Your shelf is empty</h2>
+          <p>
+            Download one of the included books, or tap + to add an EPUB of your own. While reading, tap
+            any Japanese word to look it up (get the offline dictionary in
+            <button class="link" onclick={() => (settingsOpen = true)}>Settings</button>).
+          </p>
         </div>
-      {/each}
-      {#each books as book (book.id)}
-        {@const p = percent(book.id)}
-        <button
-          class="card"
-          onclick={() => open(book)}
-          onpointerdown={warmReader}
-          use:longpress={{ onlongpress: () => (menuFor = book) }}
-          oncontextmenu={(e) => {
-            e.preventDefault()
-            menuFor = book
-          }}
-        >
-          <div class="cover-wrap">
-            <BookCover {book} />
-          </div>
-          <div class="progress" aria-hidden="true">
-            {#if p !== null && p > 0}<div class="progress-fill" style="width:{p}%"></div>{/if}
-          </div>
-          <div class="meta">
-            <div class="title" lang="ja">{book.title}</div>
-            <div class="sub-line">
-              {#if book.author}<span class="author" lang="ja">{book.author}</span>{/if}
-              <span class="pct" class:new={p === null}>{p === null ? 'New' : p >= 100 ? 'Finished' : `${p}%`}</span>
+      {:else}
+        <div class="state empty">
+          <div class="empty-art"><Icon name="book" size="lg" stroke={1.4} /></div>
+          <h2>Your shelf is empty</h2>
+          <p>Add an EPUB from Files, iCloud Drive, or anywhere on your device.</p>
+          <button class="btn btn-primary cta" onclick={() => fileInput.click()}>
+            <Icon name="plus" size="sm" /> Add a book
+          </button>
+          <p class="hint">
+            Tip: tap any Japanese word while reading to look it up. Get the offline dictionary in
+            <button class="link" onclick={() => (settingsOpen = true)}>Settings</button>.
+          </p>
+        </div>
+      {/if}
+    {:else}
+      <div class="grid" aria-busy={library.importing > 0}>
+        {#each { length: library.importing } as _, i (i)}
+          <div class="card skeleton-card" aria-hidden="true">
+            <div class="skeleton cover-skel"></div>
+            <div class="meta">
+              <div class="skeleton line"></div>
+              <div class="skeleton line short"></div>
             </div>
           </div>
-        </button>
-      {/each}
-    </div>
+        {/each}
+        {#each books as book (book.id)}
+          {@const p = percent(book.id)}
+          <button
+            class="card"
+            onclick={() => open(book)}
+            onpointerdown={warmReader}
+            use:longpress={{ onlongpress: () => (menuFor = book) }}
+            oncontextmenu={(e) => {
+              e.preventDefault()
+              menuFor = book
+            }}
+          >
+            <div class="cover-wrap">
+              <BookCover {book} />
+            </div>
+            <div class="progress" aria-hidden="true">
+              {#if p !== null && p > 0}<div class="progress-fill" style="width:{p}%"></div>{/if}
+            </div>
+            <div class="meta">
+              <div class="title" lang="ja">{book.title}</div>
+              <div class="sub-line">
+                {#if book.author}<span class="author" lang="ja">{book.author}</span>{/if}
+                <span class="pct" class:new={p === null}>{p === null ? 'New' : p >= 100 ? 'Finished' : `${p}%`}</span>
+              </div>
+            </div>
+          </button>
+        {/each}
+      </div>
+    {/if}
+
+    {#if available.length > 0}
+      <section class="bundled" class:first={books.length === 0 && library.importing === 0} aria-labelledby="bundled-h">
+        <div class="section-head">
+          <h2 id="bundled-h">Included books</h2>
+          {#if available.length > 1}
+            <button class="btn btn-tinted get-all" onclick={getAll} disabled={downloadingAll || anyDownloading}>
+              <Icon name="download" size="sm" />
+              {downloadingAll ? 'Downloading…' : `Download all · ${fmtSize(availableBytes)}`}
+            </button>
+          {/if}
+        </div>
+        <p class="section-hint">Japanese novels with English translations. Download to read offline.</p>
+        <div class="grid">
+          {#each available as entry (entry.id)}
+            {@const st = entryStatus(entry)}
+            {@const en = enLabel(entry)}
+            {@const pct = st.kind === 'downloading' ? Math.round(st.progress * 100) : 0}
+            <button
+              class="card bundled-card"
+              class:busy={st.kind === 'downloading'}
+              aria-label={st.kind === 'downloading'
+                ? `Downloading ${entry.title}, ${pct}%`
+                : `${st.kind === 'error' ? 'Retry download of' : 'Download'} ${entry.title}, ${fmtSize(entry.size)}`}
+              aria-busy={st.kind === 'downloading'}
+              onclick={() => {
+                if (st.kind !== 'downloading') void downloadBook(entry.id)
+              }}
+            >
+              <div class="cover-wrap">
+                <BookCover
+                  book={{ id: entry.id, title: entry.title, author: entry.author }}
+                  src={entry.cover ? bookUrl(entry.cover) : undefined}
+                />
+                {#if en}<span class="badge" title={en.title}>{en.text}</span>{/if}
+              </div>
+              <div class="progress" aria-hidden="true">
+                {#if st.kind === 'downloading'}<div class="progress-fill" style="width:{pct}%"></div>{/if}
+              </div>
+              <div class="meta">
+                <div class="title" lang="ja">{entry.title}</div>
+                {#if entry.author}<div class="sub-line"><span class="author" lang="ja">{entry.author}</span></div>{/if}
+              </div>
+              <span class="get" class:err={st.kind === 'error'} aria-hidden="true">
+                {#if st.kind === 'downloading'}
+                  <span class="spinner small"></span><span class="num">{pct}%</span>
+                {:else}
+                  <Icon name="download" size="sm" />
+                  <span>{st.kind === 'error' ? 'Retry' : fmtSize(entry.size)}</span>
+                {/if}
+              </span>
+              {#if st.kind === 'error'}<span class="err-msg" role="alert">{st.message}</span>{/if}
+            </button>
+          {/each}
+        </div>
+      </section>
+    {:else if catalog.error && books.length === 0}
+      <p class="catalog-err">
+        {catalog.error}
+        <button class="link" onclick={() => void loadCatalog()}>Try again</button>
+      </p>
+    {/if}
   {/if}
 </div>
 
@@ -260,7 +359,10 @@
     .bar,
     .grid,
     .import-error,
-    .state {
+    .state,
+    .bundled,
+    .intro,
+    .catalog-err {
       max-width: 1120px;
       margin-inline: auto;
     }
@@ -342,6 +444,103 @@
     font-weight: 600;
   }
 
+  .bundled {
+    margin-top: var(--sp-8);
+    padding-top: var(--sp-5);
+    border-top: 1px solid var(--line);
+  }
+  .bundled.first {
+    margin-top: var(--sp-2);
+    padding-top: 0;
+    border-top: 0;
+  }
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-4);
+  }
+  .section-head h2 {
+    margin: 0;
+    font-size: var(--fs-title);
+    font-weight: 650;
+  }
+  .get-all {
+    padding: 0 var(--sp-4);
+    font-size: var(--fs-footnote);
+    font-variant-numeric: tabular-nums;
+  }
+  .section-hint {
+    margin: var(--sp-1) 0 var(--sp-5);
+    font-size: var(--fs-footnote);
+    color: var(--ink-faint);
+  }
+  .cover-wrap {
+    position: relative;
+  }
+  .badge {
+    position: absolute;
+    top: var(--sp-2);
+    inset-inline-end: var(--sp-2);
+    padding: 2px 7px;
+    border-radius: var(--r-full);
+    font-size: var(--fs-caption);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    background: var(--glass-bg-strong);
+    box-shadow: var(--glass-edge);
+  }
+  .get {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 0 var(--sp-3) 0 10px;
+    border-radius: var(--r-full);
+    font-size: var(--fs-footnote);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--accent);
+    background: var(--accent-soft);
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+  .bundled-card:active .get {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .get.err {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
+  .get .num {
+    min-width: 4ch;
+  }
+  .spinner.small {
+    --spinner-size: 14px;
+    border-width: 2px;
+  }
+  .busy {
+    cursor: progress;
+  }
+  .busy .cover-wrap {
+    opacity: 0.7;
+  }
+  .err-msg {
+    font-size: var(--fs-caption);
+    line-height: 1.35;
+    color: var(--danger);
+  }
+  .catalog-err {
+    margin: var(--sp-4) auto 0;
+    text-align: center;
+    font-size: var(--fs-footnote);
+    color: var(--ink-faint);
+  }
+
   .skeleton-card {
     pointer-events: none;
   }
@@ -364,6 +563,25 @@
   }
   .state.small {
     min-height: 160px;
+  }
+  .intro {
+    margin-bottom: var(--sp-6);
+    padding: var(--sp-4) var(--sp-5);
+    border-radius: var(--r-md);
+    background: var(--paper-raised);
+    box-shadow: var(--shadow-1);
+  }
+  .intro h2 {
+    margin: 0 0 var(--sp-1);
+    font-size: var(--fs-callout);
+    font-weight: 650;
+  }
+  .intro p {
+    margin: 0;
+    max-width: 68ch;
+    font-size: var(--fs-footnote);
+    line-height: 1.5;
+    color: var(--ink-soft);
   }
   .empty {
     align-content: center;

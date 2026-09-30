@@ -14,6 +14,7 @@
     book: 'M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4ZM19 17H8a3 3 0 0 0-3 3',
     highlighter: 'M15 4l5 5-8.5 8.5H7V13L15 4ZM13 6l5 5M4 20h16',
     copy: 'M9 9h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1ZM5 15a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1',
+    download: 'M12 4v11M7 10l5 5 5-5M5 20h14',
     aa: 'M3 18 7 7l4 11M4.2 14.5h5.6M14 18l3-8 3 8M14.8 15.4h4.4',
   }
   const SIZES = { sm: 18, md: 22, lg: 48 } as const

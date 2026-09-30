@@ -106,6 +106,8 @@ async function buildBook(slug) {
     id: createHash('sha256').update(zip).digest('hex'),
     title: pkg.title,
     author: pkg.author,
+    language: pkg.language,
+    dir: pkg.dir,
     file: `${slug}.epub`,
     size: zip.length,
     cover,

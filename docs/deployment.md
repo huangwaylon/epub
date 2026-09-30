@@ -30,8 +30,10 @@ with `cancel-in-progress: false`.
 ## 2. The `/epub/` base path
 
 ```ts
-const base = command === 'build' ? '/epub/' : '/'   // vite.config.ts
+const base = command === 'build' || isPreview ? '/epub/' : '/'   // vite.config.ts
 ```
+
+(`vite preview` runs as command `serve`, hence `isPreview`.)
 
 `manifest.start_url`, `manifest.scope` and Workbox `navigateFallback`
 (`${base}index.html`) derive from `base`. Vite rewrites the root-relative hrefs in
@@ -42,21 +44,24 @@ relative (`icons/…`). In app code, never hard-code a root-relative URL: it esc
 
 ## 3. `sharp` is local-only
 
-`sharp` is used only by `scripts/gen-icons.mjs` and `scripts/make-test-epub.mjs`, never by
+`sharp` is used only by `scripts/gen-icons.mjs`, `scripts/make-test-epub.mjs` and
+`scripts/books/build.mjs`, never by
 `vite build`. Installing it in CI crashes npm ("Exit handler never called!") on its native
 `@img/*` packages, so CI deletes it and resolves fresh without the lockfile. As a result:
-- Regenerate icons, splash screens and the test EPUB locally and commit the outputs
-  (`public/icons/`, `public/splash/`, `index.html`).
+- Regenerate icons, splash screens, the bundled books and the test EPUB locally and commit the outputs
+  (`public/icons/`, `public/splash/`, `public/books/`, `index.html`).
 - CI doesn't install from `package-lock.json`; the lockfile only serves local installs. Keep its `resolved` URLs on `registry.npmjs.org` (npm substitutes your configured registry at install time).
 - A new dependency with heavy native optional deps may need the same treatment.
 
 ## 4. What ships (`dist/`)
 
 - App shell (JS/CSS/HTML), `manifest.webmanifest`, `sw.js` + Workbox runtime,
-  `favicon.svg`, `icons/`, `splash/` (36 PNGs, ~320 KB).
+  `favicon.svg`, `icons/`, `splash/` (80 PNGs, ~660 KB).
+- `books/`: `catalog.json` + 6 cover `.webp`s (precached, ~170 KB) and the bundled
+  `.epub`s (~3.7 MB; **not** precached, fetched `NetworkOnly` when the user downloads one).
 - `kuromoji/dict/*.dat.gz` (11 files, ~11.3 MB). It is **not** precached; it is
   runtime-cached in `kuromoji-ipadic-v2` on first use.
-- The precache is about 22 entries / ~420 KiB. Precache and runtime cache rules are in
+- The precache is 29 entries / ~610 KiB. Precache and runtime cache rules are in
   [storage-pwa-ios.md §5](./storage-pwa-ios.md#5-pwa--viteconfigts-indexhtml-srcmaints).
 
 Not shipped: `test-books/`, JMdict (downloaded on demand into IndexedDB), and user books

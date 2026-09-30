@@ -15,9 +15,10 @@ function appVersion(): string {
   }
 }
 
-export default defineConfig(({ command }) => {
+export default defineConfig(({ command, isPreview }) => {
   // GitHub Pages project site (https://<user>.github.io/epub/).
-  const base = command === 'build' ? '/epub/' : '/'
+  // `vite preview` runs as command 'serve'; it must use the build's base to serve dist/.
+  const base = command === 'build' || isPreview ? '/epub/' : '/'
   // Swap in our kuromoji dictionary loader. The regex matches the whole specifier so it
   // also pre-empts the package's `browser` field.
   const kuromojiLoader = fileURLToPath(new URL('./src/services/jp/kuromojiLoader.cjs', import.meta.url))
@@ -72,8 +73,16 @@ export default defineConfig(({ command }) => {
           // Control the first-visit page too, so the IPADIC dict fetched in that session is
           // runtime-cached. Updates still wait for the prompt (no skipWaiting mid-read).
           clientsClaim: true,
-          // App shell only. Manifest icons and splash screens are fetched by the OS at install.
-          globPatterns: ['**/*.{js,css,html}', 'favicon.svg', 'icons/apple-touch-icon-180.png'],
+          // App shell, plus the bundled-book catalog and its cover thumbnails (~170 KB) so the
+          // shelf lists them offline. Manifest icons and splash screens are fetched by the OS
+          // at install; the bundled EPUBs are downloaded on request (runtime route below).
+          globPatterns: [
+            '**/*.{js,css,html}',
+            'favicon.svg',
+            'icons/apple-touch-icon-180.png',
+            'books/catalog.json',
+            'books/*.webp',
+          ],
           // The IPADIC dict is runtime-cached (below). The foliate loaders are unreachable
           // (EPUB only, no TTS/search); the `foliate-` prefix comes from chunkFileNames.
           globIgnores: ['**/kuromoji/**', 'assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js'],
@@ -83,6 +92,12 @@ export default defineConfig(({ command }) => {
           // Deliberately NO expiration (age or maxEntries): the dict is an all-or-nothing
           // shard set, and evicting one shard leaves a partial dict that builds no trie.
           runtimeCaching: [
+            {
+              // Bundled EPUBs: the bytes are stored in OPFS by importEpub, so a Cache API copy
+              // would only double the storage. Offline, the fetch fails and the shelf says so.
+              urlPattern: /\/books\/[^/]+\.epub$/,
+              handler: 'NetworkOnly',
+            },
             {
               urlPattern: /\/kuromoji\/dict\/.*\.dat\.gz$/,
               handler: 'CacheFirst',
