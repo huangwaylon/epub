@@ -10,6 +10,7 @@ books/<slug>/en/<chapter>.json  English, one entry per unit (see below)
 books/<slug>/glossary.md        names, terms, voice — the translator's reference
 scripts/books/                  lib.mjs · extract.mjs · build.mjs
 public/books/                   build output (committed): <slug>.epub, <slug>.webp, catalog.json
+                                (downloaded on request from the shelf; see storage-pwa-ios.md §4a)
 ```
 
 ```sh

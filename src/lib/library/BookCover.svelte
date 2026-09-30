@@ -1,10 +1,15 @@
 <script lang="ts">
   import type { BookMeta } from '../../services/types'
 
-  let { book }: { book: BookMeta } = $props()
+  /** `src` (a bundled book's catalog thumbnail) is used as-is instead of the cover blob. */
+  let { book, src }: { book: Pick<BookMeta, 'id' | 'title' | 'author' | 'cover'>; src?: string } = $props()
 
   let url = $state<string | undefined>()
   $effect(() => {
+    if (src) {
+      url = src
+      return
+    }
     if (book.cover) {
       const u = URL.createObjectURL(book.cover)
       url = u

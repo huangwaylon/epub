@@ -57,6 +57,7 @@ framework-agnostic) → vendored engines (src/vendor/foliate-js)
 | Reader / foliate / pagination / taps / highlights | `src/services/reader.ts`, `src/lib/reader/*`, `src/vendor/foliate-js` | [reader-engine.md](docs/reader-engine.md) |
 | Dictionary, deinflection, lookup, word extraction | `src/services/jp/*` | [japanese.md](docs/japanese.md) |
 | Storage, data model, PWA, iOS viewport | `src/services/storage/*`, `src/services/viewport.ts`, `vite.config.ts`, `index.html` | [storage-pwa-ios.md](docs/storage-pwa-ios.md) |
+| Bundled books (catalog, download, Included books UI) | `src/services/catalog.ts`, `src/stores/catalog.svelte.ts`, `public/books/`, `scripts/books/*` | [storage-pwa-ios.md §4a](docs/storage-pwa-ios.md), [translation.md](docs/translation.md) |
 | Design tokens, components, responsive/iPad | `src/app.css`, `src/lib/components/*` | [ui-and-design.md](docs/ui-and-design.md) |
 | Deployment / CI / base path | `.github/workflows/deploy.yml`, `vite.config.ts` | [deployment.md](docs/deployment.md) |
 | Setup, scripts, verification recipes | `package.json`, `scripts/*` | [development.md](docs/development.md) |
@@ -137,7 +138,11 @@ npm run build    # production build → dist/ (base /epub/)
   create/remove goes through `addHighlight`/`removeHighlight` in `Reader.svelte` (paint
   first, persist in background, dedupe on CFI). Per-document listeners use `#docACs`.
 - **iOS storage/import:** EPUB import is `<input type="file">` only; OPFS with IndexedDB
-  fallback; installed PWAs are exempt from 7-day eviction.
+  fallback; installed PWAs are exempt from 7-day eviction. Bundled books
+  (`public/books/catalog.json`) are downloaded only when the user asks: fetch → SHA-256 must
+  equal the catalog `id` (= library id) → `importEpub` with catalog metadata (no foliate on
+  the shelf). "Downloaded" = the library has that id, so a deleted book is available again;
+  never auto-import. The SW precaches the catalog + covers, never the EPUBs (`NetworkOnly`).
 
 ## On-device status
 Verified on real iPad (iOS 26.5): import, pagination + 縦書き + furigana, swipe turns,

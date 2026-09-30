@@ -54,8 +54,8 @@ Generators (dev-only, both use `sharp`):
 
 ## 4. Tests
 
-Vitest with a plugin-free `vitest.config.ts`: `environment: 'node'`,
-`include: ['src/**/*.test.ts']`. No jsdom and no browser mode; IndexedDB tests use
+Vitest with `vitest.config.ts`: `environment: 'node'`, `include: ['src/**/*.test.ts']`, and only
+the Svelte plugin (so `*.svelte.ts` stores compile; no PWA plugin). No jsdom and no browser mode; IndexedDB tests use
 `fake-indexeddb`, and `extract.test.ts` runs against a hand-built fake `Document` that injects
 per-character rects.
 
@@ -64,6 +64,8 @@ per-character rects.
 | `src/lib/util/anchoredPosition.test.ts` | `placeAnchored`, `placeNearWord` |
 | `src/lib/util/chromeBand.test.ts` | `inChromeToggleBand` |
 | `src/lib/util/debounce.test.ts` | `debounce` |
+| `src/services/catalog.test.ts` | `deriveStatus`, streamed progress, error messages, `downloadEntry` (hash mismatch stores nothing, no foliate parse) |
+| `src/stores/catalog.test.ts` | available → downloading → downloaded → (delete) available, checksum/offline errors, `downloadAll` |
 | `src/services/cfi.test.ts` | `nearestFirst`, `cfiWithinPage` |
 | `src/services/library.test.ts` | `flattenLangMap`, `importEpub` |
 | `src/services/viewport.test.ts` | `viewportSize` cold-launch lift, `initViewport` height publishing |
@@ -79,6 +81,13 @@ per-character rects.
 
 Put new tests next to the module as `*.test.ts`. Anything that needs the real browser, OPFS or
 `<foliate-view>` is verified in the browser (§5) instead.
+
+**Scripted Chrome (`scripts/e2e/`).** `lib.mjs` starts `vite` / `vite preview` (base `/epub/`)
+and launches system Chrome with a fresh profile per launch (a first visit). `shelf.mjs`
+(`npm run build && node scripts/e2e/shelf.mjs`) measures first-visit load metrics and
+screenshots the shelf on every device preset (`/tmp/shelf-*.png`), then on iPad downloads a
+bundled book (throttled, progress screenshot), opens it, deletes it (back to available),
+fails a download with the server stopped (offline message), and times **Download all**.
 
 ## 5. Browser verification (chrome-devtools MCP)
 

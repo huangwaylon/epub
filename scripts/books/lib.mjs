@@ -75,6 +75,8 @@ export function readPackage(files) {
     spine,
     cover,
     title: text('dc:title'),
+    language: text('dc:language'),
+    dir: opf.getElementsByTagName('spine')[0]?.getAttribute('page-progression-direction') === 'rtl' ? 'rtl' : 'ltr',
     author: Array.from(opf.getElementsByTagName('dc:creator'))
       .map((c) => c.textContent.trim())
       .join('、'),

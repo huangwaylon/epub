@@ -6,6 +6,7 @@ IPADIC download/warm flow are in [japanese.md](./japanese.md).
 
 - **Structured data** → IndexedDB `tsuzuri` via `idb` (`src/services/storage/db.ts`).
 - **EPUB bytes** → OPFS, with an IndexedDB fallback (`src/services/storage/blobs.ts`).
+  Bundled books are downloaded on request into the same store (§4a).
 - **JMdict** → jpdict-idb's own IndexedDB. **kuromoji dict** → Cache API (service worker).
 
 Progress and annotations are CFI-anchored ([reader-engine.md §9](./reader-engine.md)).
@@ -82,12 +83,14 @@ Stored as OPFS `books/<id>.epub`.
 
 ## 4. Library import — `src/services/library.ts`
 
-`importEpub(file)`:
+`importEpub(file, { expectedId?, meta? } = {})`:
 1. `id = sha256Hex(await file.arrayBuffer())`. The buffer isn't bound, so peak heap stays
-   near 1× the file size.
+   near 1× the file size. With `expectedId`, a different hash throws `ChecksumError` before
+   anything is stored.
 2. **Dedupe:** if the meta row exists, restore the bytes if `!hasBook(id)`, bump
    `lastOpenedAt`, and return it. The reader's "please re-import" error relies on this.
-3. `Promise.all([putBook(id, file), parseMeta(file)])`. `parseMeta` dynamically imports
+3. `Promise.all([putBook(id, file), meta ?? parseMeta(file)])`. With `meta` (title, author,
+   language, dir, cover) foliate is not loaded. `parseMeta` dynamically imports
    foliate's `makeBook` and never throws; on failure it keeps the file-name title and no
    cover. `flattenLangMap` prefers `ja`, then `ja_JP`, then the first value. The cover is
    downscaled to a 320px-wide WebP via `OffscreenCanvas`; the original is kept if that
@@ -100,6 +103,26 @@ Also: `listBooks` (sorted by `lastOpenedAt` descending), `touchBook`, and `remov
 orphans the bytes). The `library` store surfaces failures in `library.importError`,
 because a standalone iOS PWA has no visible console.
 
+## 4a. Bundled books — `src/services/catalog.ts`
+
+`public/books/` (built by `npm run books:build`, [translation.md](./translation.md)) holds
+`<slug>.epub`, a 320px `<slug>.webp` cover and `catalog.json`:
+`[{slug, id, title, author, language, dir, file, size, cover, translation?: {lang, coverage}}]`.
+`id` is the EPUB's SHA-256, i.e. its library id.
+
+- **Status** (`deriveStatus`): in the library ⇒ `downloaded`; else the store's job
+  (`downloading` with progress 0–1, or `error` with a message); else `available`. Deleting a
+  downloaded book therefore returns it to `available`; nothing is ever auto-imported.
+- **Download** (`downloadEntry`): fetch the EPUB, read the stream against Content-Length
+  (ignored when content-encoded; falls back to `size`), fetch the cover (best-effort, from
+  the precache), then `importEpub(file, { expectedId: id, meta })`. The bytes land in OPFS
+  like a user import.
+- **Errors** (`downloadErrorMessage`): network `TypeError` / `navigator.onLine === false` →
+  "You're offline…", `ChecksumError` → "corrupted", `QuotaExceededError` → "Not enough
+  storage", else a generic retry message. The `catalog` store puts it on the card and in a
+  toast (one summary toast for **Download all**, which runs sequentially).
+- The first download calls `requestPersistence()` (it is also called at startup).
+
 ## 5. PWA — `vite.config.ts`, `index.html`, `src/main.ts`
 
 ### VitePWA / Workbox
@@ -109,12 +132,12 @@ because a standalone iOS PWA has no visible console.
 | `includeManifestIcons` | `false` |
 | `manifest` | `name` "Tsuzuri — Japanese Reader", `short_name` "Tsuzuri", `display: 'standalone'`, `orientation: 'any'`, `background_color`/`theme_color` `#f6f3ec`, `start_url`/`scope` = `base`; icons `icon-192`, `icon-512` (`any`), `maskable-512` (`maskable`) |
 | `clientsClaim` | `true`, so the first-visit page is controlled and the IPADIC dict fetched in that session gets runtime-cached |
-| `globPatterns` | `**/*.{js,css,html}`, `favicon.svg`, `icons/apple-touch-icon-180.png` (app shell only; manifest icons and splash screens are fetched by the OS at install) |
+| `globPatterns` | `**/*.{js,css,html}`, `favicon.svg`, `icons/apple-touch-icon-180.png`, `books/catalog.json`, `books/*.webp` (app shell plus the bundled catalog and covers, ~170 KB, so the shelf lists them offline; manifest icons and splash screens are fetched by the OS at install; EPUBs are never precached) |
 | `globIgnores` | `**/kuromoji/**`, `assets/foliate-{mobi,fb2,comic-book,tts,search}-*.js` (the `foliate-` prefix is set by `build.rolldownOptions.output.chunkFileNames`) |
 | `maximumFileSizeToCacheInBytes` | 6 MiB |
 | `navigateFallback` | `` `${base}index.html` `` |
 | `cleanupOutdatedCaches` | `true` (precaches only) |
-| `runtimeCaching` | `/\/kuromoji\/dict\/.*\.dat\.gz$/`, `CacheFirst`, `cacheName: 'kuromoji-ipadic-v2'` (must equal `IPADIC_CACHE` in `jp/ipadic.ts`), `statuses: [0, 200]`, **no `expiration`** (a partial shard set builds no trie) |
+| `runtimeCaching` | `/\/books\/[^/]+\.epub$/` → `NetworkOnly` (the bytes go to OPFS; a Cache API copy would double storage; offline the fetch fails and the shelf says so). `/\/kuromoji\/dict\/.*\.dat\.gz$/`, `CacheFirst`, `cacheName: 'kuromoji-ipadic-v2'` (must equal `IPADIC_CACHE` in `jp/ipadic.ts`), `statuses: [0, 200]`, **no `expiration`** (a partial shard set builds no trie) |
 | `devOptions` | `{ enabled: true, type: 'module' }`, so the SW also runs under `vite dev` (`server.host: true`) |
 
 `main.ts` deletes the superseded `kuromoji-ipadic` cache, since `cleanupOutdatedCaches`
@@ -138,9 +161,10 @@ book was removed.
   `apple-mobile-web-app-status-bar-style: black-translucent` (content runs under the
   status bar; `viewport.ts` depends on this), `apple-mobile-web-app-title`,
   `apple-touch-icon` (180px).
-- **Splash screens:** 36 `apple-touch-startup-image` links (9 iPad sizes × 2 orientations ×
+- **Splash screens:** 80 `apple-touch-startup-image` links (9 iPad sizes @2× and 11 iPhone
+  sizes @2×/@3× — the iOS 26 lineup, iPhone 11 / SE 2 and later — × 2 orientations ×
   light/dark), between `splash:start` / `splash:end`, generated with the PNGs in
-  `public/splash/` (~320 KB) by `scripts/gen-icons.mjs`. Edit the `IPADS` / `PAPER` lists
+  `public/splash/` (~660 KB) by `scripts/gen-icons.mjs`. Edit the `DEVICES` / `PAPER` lists
   there, not the HTML. iOS uses an image only on an exact media match. Whether iOS honours
   the dark variant is unverified on device.
 - **One `theme-color` meta** (no `media` variants). The inline script sets it and
@@ -184,7 +208,7 @@ is in [reader-engine.md §5a](./reader-engine.md).
 |---|---|---|
 | OPFS with `createWritable` | available | Primary byte store; IndexedDB fallback (§3). |
 | 7-day script-storage eviction | installed PWAs are exempt | `requestPersistence()` at startup as a backstop. If a Safari-tab origin is evicted, a `books` row can outlive its bytes; opening it shows "please re-import", and re-importing restores the bytes. |
-| `showOpenFilePicker` | unavailable | Hidden `<input type="file" accept=".epub,application/epub+zip" multiple>` in `Shelf.svelte`. |
+| `showOpenFilePicker` | unavailable | Hidden `<input type="file" accept=".epub,application/epub+zip" multiple>` in `Shelf.svelte`; bundled books download in-app (§4a). |
 | Web Share Target / file handlers | unavailable | None in the manifest; import is `<input>`-only. |
 | Storage quota | `estimate()` is coarse | `storageStatus()` + `formatBytes` (`persist.ts`) feed a text line in ShelfSettings → About: "Storage: X used of Y · persistent". |
 

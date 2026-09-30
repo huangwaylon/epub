@@ -13,7 +13,7 @@ export function flattenLangMap(x: unknown): string {
   return ''
 }
 
-async function sha256Hex(buf: ArrayBuffer): Promise<string> {
+export async function sha256Hex(buf: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', buf)
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))
@@ -78,10 +78,29 @@ async function parseMeta(file: File) {
   return out
 }
 
+/** Display metadata known ahead of time (the bundled-book catalog), used instead of parsing. */
+export type KnownMeta = Pick<BookMeta, 'title' | 'author' | 'language' | 'dir' | 'cover'>
+
+/** The bytes' SHA-256 isn't the id the caller expected (a corrupt or stale download). */
+export class ChecksumError extends Error {
+  constructor(readonly expected: string, readonly actual: string) {
+    super(`Checksum mismatch: expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…`)
+    this.name = 'ChecksumError'
+  }
+}
+
+export interface ImportOptions {
+  /** Reject (store nothing) unless the bytes hash to this id. */
+  expectedId?: string
+  /** Skip foliate's metadata parse (keeps foliate off the shelf). */
+  meta?: KnownMeta
+}
+
 /** Import an EPUB, deduped by content hash. Returns the new or existing shelf entry. */
-export async function importEpub(file: File): Promise<BookMeta> {
+export async function importEpub(file: File, opts: ImportOptions = {}): Promise<BookMeta> {
   // Don't bind the ArrayBuffer: keeps peak heap near 1× the file (large EPUBs can OOM an iPad tab).
   const id = await sha256Hex(await file.arrayBuffer())
+  if (opts.expectedId && id !== opts.expectedId) throw new ChecksumError(opts.expectedId, id)
 
   const existing = await getBookMeta(id)
   if (existing) {
@@ -94,7 +113,7 @@ export async function importEpub(file: File): Promise<BookMeta> {
 
   // On failure roll the bytes back, or they'd be orphaned (no `books` row) against quota.
   try {
-    const [, parsed] = await Promise.all([putBook(id, file), parseMeta(file)])
+    const [, parsed] = await Promise.all([putBook(id, file), opts.meta ?? parseMeta(file)])
     const now = Date.now()
     const meta: BookMeta = {
       id,

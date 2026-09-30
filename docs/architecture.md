@@ -33,7 +33,7 @@ SERVICES    src/services/**                      framework-agnostic: reader, lib
 VENDORED    src/vendor/foliate-js, jp/deinflect.ts
   │
 PLATFORM    OPFS (EPUB bytes) · IndexedDB (idb: app data; jpdict-idb: JMdict)
-            · Cache API / service worker (app shell, kuromoji dict)
+            · Cache API / service worker (app shell, bundled catalog + covers, kuromoji dict)
 ```
 
 ## 3. Entry point & routing
@@ -61,7 +61,8 @@ PLATFORM    OPFS (EPUB bytes) · IndexedDB (idb: app data; jpdict-idb: JMdict)
    ~1.5 s after mount (idle callback) and on pointerdown on a cover.
 
 **Lazy loading.** The shelf's critical path has no foliate: `library.ts` imports
-`view.js` only on import, `ShelfSettings` is a dynamic import, the reader is its own chunk,
+`view.js` only when a user-picked file is imported (bundled downloads use catalog metadata
+and never parse), `ShelfSettings` is a dynamic import, the reader is its own chunk,
 and the reader prefetches foliate's zip/epub/paginator chunks at mount.
 
 ## 4. Stores
@@ -73,6 +74,7 @@ the exported functions, so persistence and side effects happen together.
 |---|---|---|---|
 | `settings` | `settings: ReaderSettings`; `appearance.resolved` (theme with `'auto'` resolved, live) | `initSettings`, `updateSettings` | IDB `settings['reader']` (source of truth) + localStorage mirror `tsuzuri:settings` |
 | `library` | `books`, `progress` (by id), `loading`, `importing`, `importError` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` | IDB `books` / `progress`; bytes in OPFS |
+| `catalog` | bundled `entries`, `loaded`, `error`, `jobs` (by id: downloading + progress, or error); status is derived by `entryStatus(entry)` (in the library ⇒ downloaded) | `loadCatalog`, `downloadBook`, `downloadAll`, `availableEntries`, `entryStatus` | memory (downloads land in `library`) |
 | `annotations` | `annotations.items`: an immutable `$state.raw` array for the open book, with non-reactive lookup maps | `loadAnnotations`, `clearAnnotations`, `isHighlighted`, `highlightAt`, `addHighlightRecord`, `removeHighlightRecord`, `saveAnnotation`, `removeAnnotation`, `newId` | IDB `annotations` (`byBook`) |
 | `dict` | `state` (`init`/`empty`/`ok`/`unavailable`), `updating`, `progress`, `warming`, `error?` | mutated by `jp/dictdb.ts` | jpdict-idb's own IndexedDB |
 | `nav` | `route`: `{name:'shelf'}` or `{name:'reader', bookId}` | `openReader`, `openShelf`, `rememberRouteForReload`, `validateRestoredRoute`, `loadReader`, `warmReader` | sessionStorage `tsuzuri:route`, written only just before a deliberate reload |
@@ -92,6 +94,15 @@ they're missing, bump `lastOpenedAt`, and return. Otherwise `putBook` (OPFS or I
 fallback) runs in parallel with foliate's `makeBook` (title, author, language, `dir`,
 cover → 320px WebP thumbnail), then `putBookMeta`. On failure the bytes are rolled back.
 Details: [storage-pwa-ios.md §4](./storage-pwa-ios.md#4-library-import--srcserviceslibraryts).
+
+**Bundled books.** The shelf calls `loadCatalog()` (precached `books/catalog.json`) and lists
+entries not in the library under **Included books**. `downloadBook(id)` (first call also
+`requestPersistence()`) → `downloadEntry`: fetch `books/<slug>.epub` with streamed progress
+(Content-Length, else the catalog size) → `importEpub(file, { expectedId: entry.id, meta })`,
+which rejects a SHA-256 mismatch before storing anything and uses the catalog's
+title/author/language/dir plus the precached `.webp` cover instead of foliate. Nothing is
+imported automatically; deleting a downloaded book makes it available again. Failures become
+a per-card error + toast. Details: [storage-pwa-ios.md §4a](./storage-pwa-ios.md#4a-bundled-books--srcservicescatalogts).
 
 **Open.** Cover tap → `openReader(id)` + background `markOpened(id)`. `Reader.onMount`
 calls `prefetchEngine()` and warms the lookup worker, then runs
@@ -130,8 +141,10 @@ book.
 | `vitest.config.ts`, `tsconfig*.json` | Node-env tests (`src/**/*.test.ts`); app / node TS projects. |
 | `.github/workflows/deploy.yml` | Build and deploy to Pages on push to `main`. |
 | `scripts/copy-kuromoji-dict.mjs` | `predev` / `prebuild`: stage and trim the IPADIC dict into `public/kuromoji/dict/` (gitignored). |
-| `scripts/gen-icons.mjs` | sharp: `public/icons/*.png`, `public/splash/*.png`, and the splash `<link>`s in `index.html`. |
+| `scripts/gen-icons.mjs` | sharp: `public/icons/*.png`, `public/splash/*.png` (iPad + iPhone), and the splash `<link>`s in `index.html`. |
 | `scripts/make-test-epub.mjs` | fflate + sharp: `test-books/tsuki-to-neko.epub`. |
+| `scripts/books/*` | Bundled library build → `public/books/` ([translation.md](./translation.md)). |
+| `scripts/e2e/*` | puppeteer-core harness (`lib.mjs`) and the shelf/download check (`shelf.mjs`). |
 
 ### App (`src/`)
 | Path | Role |
@@ -148,7 +161,8 @@ book.
 | Path | Role |
 |---|---|
 | `types.ts` | Persisted model: `BookMeta`, `ReadingProgress`, `Annotation`, `ReaderSettings`, `DEFAULT_SETTINGS`, `HIGHLIGHT_HEX`. |
-| `library.ts` | `importEpub`, `listBooks`, `touchBook`, `removeBook`, `flattenLangMap`; re-exports `getBookFile`. |
+| `library.ts` | `importEpub(file, { expectedId?, meta? })`, `ChecksumError`, `listBooks`, `touchBook`, `removeBook`, `flattenLangMap`, `sha256Hex`; re-exports `getBookFile`. |
+| `catalog.ts` | Bundled books: `CatalogEntry`, `fetchCatalog`, `downloadEntry`, `readWithProgress`, `deriveStatus`, `downloadErrorMessage`, `bookUrl`. |
 | `reader.ts` | `ReaderController`: owns `<foliate-view>`; layout, appearance, gestures, page-turn slide, selection, highlights ([reader-engine.md](./reader-engine.md)). |
 | `cfi.ts` | CFI parsing / ordering for the highlight sweep. |
 | `viewport.ts` | `initViewport`, `viewportSize` ([storage-pwa-ios.md §6](./storage-pwa-ios.md#6-ios-viewport--srcservicesviewportts)). |
