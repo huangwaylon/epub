@@ -66,15 +66,15 @@
   },
   {
     "slug": "mokuyoubi-cocoa",
-    "id": "8f1f4d44c5709c8fe67bfa9f4c8ac432f96988f1e774039bc03c7a4c9b73fb8b",
+    "id": "fe1980ce30211f590ca6c450177a4f542587022aada6ef2c8046338161af9785",
     "title": "木曜日にはココアを",
     "author": "青山美智子",
     "file": "mokuyoubi-cocoa.epub",
-    "size": 1655796,
+    "size": 1728058,
     "cover": "mokuyoubi-cocoa.webp",
     "translation": {
       "lang": "en",
-      "coverage": 0.184
+      "coverage": 1
     }
   }
 ]
