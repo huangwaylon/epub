@@ -254,6 +254,8 @@ async function run(device, url) {
       if (device === 'iphone') check(`${p}: phone card has equal side margins`, !!s3.margins && Math.abs(s3.margins[0] - s3.margins[1]) <= 2, JSON.stringify(s3.margins))
       check(`${p}: the page doesn't move (English stays off the page)`, s3.hiddenOnPage && (await page.evaluate(() => window.__pageStart())) === start)
       check(`${p}: the tapped word is still on screen`, !!(await page.evaluate(() => window.__glyphPoint())))
+      const tinted = () => page.evaluate(() => !!window.__tsuzuri.doc.defaultView.CSS.highlights?.has('tz-unit'))
+      check(`${p}: the open translation tints its unit`, await tinted())
       await shot(`${mode}-translation`)
       await page.keyboard.press('t')
       await sleep(200)
@@ -266,7 +268,7 @@ async function run(device, url) {
       // Any tap dismisses; the same unit reopens expanded, another unit collapsed.
       await page.evaluate(() => window.__tapHost(5, innerHeight / 2))
       await sleep(300)
-      check(`${p}: a tap dismisses the card`, !(await page.evaluate(() => window.__tsuzuri.dictState.open)))
+      check(`${p}: a tap dismisses the card (and the tint)`, !(await page.evaluate(() => window.__tsuzuri.dictState.open)) && !(await tinted()))
       await page.evaluate(({ x, y }) => window.__tapDoc(x, y), g)
       await sleep(500)
       check(`${p}: the same unit reopens with its translation open`, (await st()).expanded)

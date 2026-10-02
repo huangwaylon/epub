@@ -5,6 +5,8 @@
  */
 
 export const EN_CLASS = 'tsuzuri-en'
+/** CSS Custom Highlight name tinting the unit whose English the card shows. */
+export const UNIT_HIGHLIGHT = 'tz-unit'
 /** In the `<head>` of every chapter that carries English. */
 export const EN_META_SELECTOR = 'meta[name="tsuzuri-translated"]'
 /** In the package (OPF) metadata of a book with any English: `<meta property=…>en</meta>`
@@ -63,6 +65,18 @@ export function unitEnglish(node: Node | null | undefined): Element | null {
     if (tag(n) === 'br') return null
   }
   return null
+}
+
+/** The first node of the unit whose English is `en`: its earliest previous sibling back to
+ *  the previous English or `<br>` (else `en` itself, an empty unit). A range from before it
+ *  to before `en` spans the unit's Japanese. */
+export function unitStart(en: Element): Node {
+  let first: Node = en
+  for (let n = en.previousSibling; n; n = n.previousSibling) {
+    if (n.nodeType === 1 && (isEnglish(n) || tag(n) === 'br')) break
+    first = n
+  }
+  return first
 }
 
 /** One character in a content document. */

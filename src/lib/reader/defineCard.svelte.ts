@@ -11,6 +11,7 @@ import { isHighlighted, highlightAt } from '../../stores/annotations.svelte'
 import type { ReaderController, TapInfo } from '../../services/reader'
 import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
 import { lookupAt, type LookupResult } from '../../services/jp/lookupClient'
+import { UNIT_HIGHLIGHT, unitStart } from '../../services/translation'
 import { isDictReady, downloadAndWarmDictionary } from '../../services/jp/dictdb'
 import type { AnchorRect } from '../util/anchoredPosition'
 
@@ -280,6 +281,36 @@ export function createDefineCard(deps: DefineCardDeps) {
   function highlightChanged(cfi: string, highlighted: boolean) {
     if (state.cfi === cfi) state.highlighted = highlighted
   }
+
+  // While the Translation is open, tint its unit's Japanese (CSS Custom Highlight: paint
+  // only, no DOM change or reflow; skipped where unsupported).
+  let tintedWin: (Window & { CSS?: any }) | null = null
+  function clearTint() {
+    try {
+      tintedWin?.CSS?.highlights?.delete(UNIT_HIGHLIGHT)
+    } catch {
+      /* window gone */
+    }
+    tintedWin = null
+  }
+  $effect(() => {
+    const on = state.open && state.translationOpen
+    untrack(() => {
+      clearTint()
+      const en = defineEnglish
+      const win = en?.ownerDocument.defaultView as (Window & { CSS?: any; Highlight?: any }) | null
+      if (!on || !en || !win?.CSS?.highlights || !win.Highlight) return
+      try {
+        const r = en.ownerDocument.createRange()
+        r.setStartBefore(unitStart(en))
+        r.setEndBefore(en)
+        win.CSS.highlights.set(UNIT_HIGHLIGHT, new win.Highlight(r))
+        tintedWin = win
+      } catch {
+        /* detached */
+      }
+    })
+  })
 
   // The card doesn't wait for the IPADIC warm: the effect below re-runs the pending lookup
   // as soon as JMdict is queryable. jpdict-idb reports the words series 'ok' early in the

@@ -4,6 +4,7 @@ import { DOMParser } from '@xmldom/xmldom'
 import * as CFI from '../vendor/foliate-js/epubcfi.js'
 import {
   unitEnglish,
+  unitStart,
   englishAncestor,
   clampOutOfEnglish,
   selectionText,
@@ -94,6 +95,12 @@ describe('unitEnglish', () => {
   })
   it('returns null for an untranslated block', () => {
     expect(unitEnglish(textStarting(doc, '三つ目'))).toBeNull()
+  })
+  it('unitStart walks back to the previous English or <br>', () => {
+    const en0 = unitEnglish(textStarting(doc, '今日は'))!
+    const en1 = unitEnglish(textStarting(doc, '明日'))!
+    expect(unitStart(en0)).toBe(textStarting(doc, '今日は'))
+    expect(unitStart(en1)).toBe(textStarting(doc, '明日'))
   })
   it('englishAncestor only matches inside a translation', () => {
     expect(englishAncestor(textStarting(doc, 'Rain'))).not.toBeNull()

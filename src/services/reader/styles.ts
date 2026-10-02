@@ -4,7 +4,7 @@
  * `reducedMotion`, which read the host document.
  */
 import type { ReaderSettings } from '../types'
-import { EN_CLASS } from '../translation'
+import { EN_CLASS, UNIT_HIGHLIGHT } from '../translation'
 
 /** Host CSS custom properties the content stylesheet uses (docs/ui-and-design.md). */
 export interface ThemeTokens {
@@ -109,6 +109,8 @@ export function appearanceCSS(s: ReaderSettings, t: ThemeTokens): string {
     [align="right"] { text-align: right; }
     a:any-link { color: ${t.accent}; }
     ::selection { background: ${t.accentSoft}; }
+    /* The unit whose English the card shows (CSS Custom Highlight, paint only). */
+    ::highlight(${UNIT_HIGHLIGHT}) { background-color: color-mix(in srgb, ${t.accent} 14%, transparent); }
     rt { -webkit-user-select: none; user-select: none; }
     pre { white-space: pre-wrap !important; }
   `
