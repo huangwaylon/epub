@@ -232,7 +232,8 @@
     display: flex;
     flex-direction: column;
     width: 340px;
-    max-height: 46dvh;
+    /* Short screens (iPhone landscape) still fit a definition, translation and footer. */
+    max-height: max(46dvh, min(320px, calc(100dvh - 24px)));
     background: var(--paper-raised);
     border-radius: var(--r-lg);
     box-shadow: var(--glass-edge), var(--shadow-3);
@@ -257,6 +258,8 @@
     }
   }
   .body {
+    flex: 1 1 auto;
+    min-height: 64px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
@@ -403,8 +406,10 @@
 
   /* The tapped unit's English: horizontal in every writing mode, scrolling on its own so
      the definition above stays in view. Selectable; never looks anything up. */
+  /* Shares the card's height with the definition: each scrolls on its own. */
   .translation {
-    flex: none;
+    flex: 0 1 auto;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     border-top: 1px solid var(--line);
@@ -447,6 +452,7 @@
     transform: rotate(180deg);
   }
   .tr-text {
+    min-height: 2.9em;
     margin: 0;
     padding: 0 var(--sp-4) var(--sp-3);
     max-height: min(10.5em, 24dvh);
