@@ -57,8 +57,8 @@ literary English, used by a learner reading alongside the Japanese.
 - **Faithful:** nothing added, nothing dropped, no explanations or glosses. Keep
   sentence-level emphasis, hedging, irony, understatement, and humor. Don't flatten a
   deadpan narrator into neutral prose, or brighten a flat one.
-- **Aligned:** each unit's English translates that unit only — a reader can reveal one
-  unit at a time. Don't pull content from the next unit to smooth a sentence.
+- **Aligned:** each unit's English translates that unit only — a reader can read one
+  unit at a time in the card. Don't pull content from the next unit to smooth a sentence.
 - **Register and voice:** match each speaker (polite/casual, dialect, age, gender
   markers expressed through word choice rather than stereotype). Keep a narrator's
   person and tense consistent with the glossary.

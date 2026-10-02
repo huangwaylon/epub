@@ -7,7 +7,6 @@ import {
   englishAncestor,
   clampOutOfEnglish,
   selectionText,
-  textFrom,
   packageHasEnglish,
   rectsOutsideEnglish,
 } from './translation'
@@ -231,23 +230,6 @@ describe('selectionText', () => {
   it('copies English when the selection lies inside one translation', () => {
     const en = textStarting(parse(JA_EN), 'Rain')
     expect(selectionText(over(en.parentNode!, en))).toBe('Rain today.')
-  })
-})
-
-describe('textFrom', () => {
-  const doc = parse(JA_EN)
-  it('returns the boundary itself in Japanese text', () => {
-    const t = textStarting(doc, '明日')
-    expect(textFrom(t, 2)).toEqual({ node: t, offset: 2 })
-  })
-  it('moves out of English to the next Japanese', () => {
-    expect(textFrom(textStarting(doc, 'Rain'), 3)).toEqual({ node: textStarting(doc, '明日'), offset: 0 })
-    expect(textFrom(textStarting(doc, 'Sunny'), 0)?.node).toBe(textStarting(doc, '三つ目'))
-  })
-  it('skips furigana and resolves element boundaries', () => {
-    expect(textFrom(textStarting(doc, 'あめ'), 0)?.node).toBe(textStarting(doc, 'だ。'))
-    const p = doc.getElementsByTagName('p')[1]
-    expect(textFrom(p.parentNode!, 1)?.node).toBe(textStarting(doc, '三つ目')) // body, before the 2nd <p>
   })
 })
 

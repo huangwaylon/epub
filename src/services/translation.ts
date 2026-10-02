@@ -97,26 +97,6 @@ export function textBeside(el: Node, dir: 'prev' | 'next'): Text | null {
   return null
 }
 
-/** The first non-blank character at or after the boundary (`node`, `offset`), outside
- *  translations and furigana — e.g. the start of a page's visible range. */
-export function textFrom(node: Node, offset: number): TextPoint | null {
-  const first = (t: Text, from = 0): TextPoint | null => {
-    const i = t.data.slice(from).search(/\S/)
-    return i < 0 ? null : { node: t, offset: from + i }
-  }
-  let t: Text | null
-  if (node.nodeType === 3) {
-    const out = englishAncestor(node) ?? (node.parentNode && isFurigana(node.parentNode) ? node.parentNode : null)
-    const here = out ? null : first(node as Text, offset)
-    if (here) return here
-    t = textBeside(out ?? node, 'next')
-  } else {
-    const child = node.childNodes[offset]
-    t = child ? (edgeText(child, false) ?? textBeside(child, 'next')) : textBeside(node, 'next')
-  }
-  return t && first(t)
-}
-
 /**
  * `range` with ends that fell inside English moved out of it — the start to the next
  * Japanese text, the end to the previous — or `null` when nothing outside remains. The

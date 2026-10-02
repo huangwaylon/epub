@@ -165,7 +165,7 @@ book.
 | `catalog.ts` | Bundled books: `CatalogEntry`, `fetchCatalog`, `downloadEntry`, `readWithProgress`, `deriveStatus`, `downloadErrorMessage`, `bookUrl`. |
 | `reader/` | `ReaderController` (`controller.ts`, owns `<foliate-view>`: open, layout, appearance, wiring) with `gestures.ts`, `turns.ts`, `highlights.ts`, `english.ts`, `styles.ts`, `timers.ts`, `types.ts`; `index.ts` is the public API ([reader-engine.md](./reader-engine.md)). |
 | `chapters.ts` | TOC helpers: `buildChapterIndex`, `chapterAt` (scrubber preview), `chapterOrder` (panel grouping). |
-| `translation.ts` | English-unit DOM helpers: `unitEnglish`, `clampOutOfEnglish`, `selectionText`, `textFrom`, `packageHasEnglish`, `rectsOutsideEnglish` ([reader-engine.md §4a](./reader-engine.md)). |
+| `translation.ts` | English-unit DOM helpers: `unitEnglish`, `clampOutOfEnglish`, `selectionText`, `packageHasEnglish`, `rectsOutsideEnglish` ([reader-engine.md §4a](./reader-engine.md)). |
 | `cfi.ts` | CFI parsing / ordering for the highlight sweep. |
 | `viewport.ts` | `initViewport`, `viewportSize` ([storage-pwa-ios.md §6](./storage-pwa-ios.md#6-ios-viewport--srcservicesviewportts)). |
 | `storage/db.ts`, `storage/blobs.ts`, `storage/persist.ts` | IndexedDB, EPUB bytes, Storage API ([storage-pwa-ios.md](./storage-pwa-ios.md)). |

@@ -28,8 +28,8 @@ reflow. The app is fully client-side — no backend.
 - 🖍 **Highlights & bookmarks** — CFI-anchored so they survive reflow; a notes panel
   lists them. Highlights are a single yellow (tap-to-define auto-highlights the word).
 - 🇬🇧 **English alongside the Japanese** — bundled books carry a paragraph-aligned English
-  translation: show all of it, hide all of it, or reveal one paragraph at a time from the
-  definition card (tap revealed English to hide it again).
+  translation: show all of it beside the Japanese, or hide it and read one passage at a time
+  in the definition card (Show translation).
 - 📚 **Included books** — six Japanese novels ship with the app as optional downloads
   (see [docs/translation.md](docs/translation.md)).
 - 🎨 Light / Sepia / Dark themes, adjustable font, size, spacing, margins.
@@ -91,7 +91,7 @@ src/
     reader/       foliate-view controller + gestures, page turns, highlights, English
     library.ts    import / list / delete
     catalog.ts    bundled-book catalog + download
-    translation.ts  English-unit helpers (reveal, clamp, copy)
+    translation.ts  English-unit helpers (unit lookup, clamp, copy)
   stores/         Svelte 5 rune stores (settings, library, annotations, dict, nav)
   vendor/foliate-js   pinned MIT rendering engine
 ```

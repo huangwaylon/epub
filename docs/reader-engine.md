@@ -11,7 +11,7 @@ symbol, not line number.
 | `src/services/reader/gestures.ts` | `trackGestures` (swipe / tap state machine) and `DocumentInput` (per-document gestures, keys, selection) (§7, §10) |
 | `src/services/reader/turns.ts` | `PageTurner` — push animation, end bounce, coalescing (§6) |
 | `src/services/reader/highlights.ts` | `HighlightPainter` (render set, chunked sweeps) and `drawHighlight` (§9) |
-| `src/services/reader/english.ts` | `EnglishState` — detection, show-all, reveals, `keepPage` (§4a) |
+| `src/services/reader/english.ts` | `EnglishState` — detection, show-all, `keepPage` (§4a) |
 | `src/services/reader/styles.ts` | `appearanceCSS(settings, tokens)` (pure), `readThemeTokens`, `reducedMotion` (§4) |
 | `src/services/reader/timers.ts` | `Timers` — the controller's one keyed timeout set |
 | `src/services/reader/types.ts`, `index.ts` | Shared types; `index.ts` re-exports the public API (`services/reader`) |
@@ -19,7 +19,7 @@ symbol, not line number.
 | `src/lib/reader/defineCard.svelte.ts` | `createDefineCard` — the dictionary card's state machine (§8, §11) |
 | `src/services/chapters.ts` | Pure TOC helpers: `buildChapterIndex`, `chapterAt`, `chapterOrder` (§11) |
 | `src/services/cfi.ts` | Pure CFI helpers: `nearestFirst` (§9), `cfiWithinPage` (§11) |
-| `src/services/translation.ts` | English (`.tsuzuri-en`) DOM helpers: `unitEnglish`, `englishAncestor`, `clampOutOfEnglish`, `textBeside`, `textFrom`, `selectionText`, `packageHasEnglish`, `rectsOutsideEnglish` (§4a, §10) |
+| `src/services/translation.ts` | English (`.tsuzuri-en`) DOM helpers: `unitEnglish`, `englishAncestor`, `clampOutOfEnglish`, `textBeside`, `selectionText`, `packageHasEnglish`, `rectsOutsideEnglish` (§4a, §10) |
 | `src/stores/annotations.svelte.ts` | Highlight/bookmark records (§9) |
 | `src/lib/util/chromeBand.ts` | `inChromeToggleBand(py, vh)` — the edge-band test (§8) |
 | `src/lib/util/anchoredPosition.ts` | `placeAnchored` / `placeNearWord` — popup + toolbar placement (§11) |
@@ -102,7 +102,7 @@ Public fields: `view`, `lastCFI` (last relocate CFI, seeded from `open()`'s hint
 | `goTo` / `goToFraction` / `clearSelection` | Thin wrappers (fraction clamped to 0..1). |
 | `cfiForSelection(doc, range)` | `#docIndex` → `view.getCFI`; `null` if unknown or it throws. |
 | `addHighlight` / `removeHighlight` / `setHighlights` | Render state only, via `HighlightPainter` (§9); seed with `setHighlights` **before `open()`**. |
-| `hasEnglish` / `isRevealed` / `setRevealed(en, on, at?)` | Delegate to `EnglishState` (§4a). |
+| `hasEnglish` | From `EnglishState` (§4a). |
 | `destroy()` | Remove resize listeners, cancel the highlight sweep and a coalesced turn, bump `#reopenGen`, abort every document's listeners and `#ac`, `#timers.clearAll()`, `view.close()` + `book.destroy()` (revokes the Book's blob URLs), remove the element. |
 
 `ReaderCallbacks`: `onRelocate`, `onLoad`, `onTap(TapInfo)`, `onTurn`, `onSelection`,
@@ -140,12 +140,12 @@ Pure (`styles.ts`, unit-tested). `readThemeTokens()` — one
   zoom would kill every tap and swipe. Pinch-zoom stays.
 - Text blocks get `line-height`, justify, hyphens; `rt` is unselectable; `::selection` uses
   `--accent-soft`. `setStyles` swaps the `<style>` text, so it reflows in place.
-- English (`.tsuzuri-en`) is `display: none` unless `showEnglish` is on or the element has
-  `tsuzuri-shown` (§4a); shown, it is one block style for both: logical properties only
-  (`margin-block`, `padding-inline-start`, `border-inline-start` in 40 % `--accent`), so in
-  縦書き it runs sideways with the accent above; 0.85em, `--ink-soft`, a Latin stack
-  (`ui-serif`/Iowan/Georgia, or `--font-ui` for ゴシック), `text-indent: 0`,
-  `text-align: start`, `hyphens: manual`.
+- English (`.tsuzuri-en`) is `display: none` unless `showEnglish` is on (§4a). Shown, it is a
+  block set apart by face, size, colour and spacing only (no border: `border-inline-start`
+  is a stray dash atop each column in 縦書き, where the English runs sideways): logical
+  `margin-block: 0.35em 0.9em`, 0.85em, `--ink` mixed 70 % with `--paper`,
+  `--font-latin-serif` (or `--font-ui` for ゴシック), `text-indent: 0`, `text-align: start`,
+  `hyphens: manual`.
 
 ### 4a. English translations
 
@@ -155,23 +155,16 @@ Bundled books carry English after each unit ([translation.md](translation.md)).
   `tsuzuri:translation` meta (`packageHasEnglish` on foliate's parsed OPF,
   `book.resources.opf`); else, as a fallback for books built without it, a loaded section
   with `meta[name="tsuzuri-translated"]`. No spine scan.
-- **State** lives in `EnglishState` (`english.ts`), which the controller builds with the
-  view and its `doc → index` map.
-- **Show all** is `settings.showEnglish` (CSS only). `applyAppearance` calls
-  `setShowAll(on)`, which on a change clears individual reveals and returns the anchor to
-  keep (below).
-- **Single reveal:** `setRevealed(en, on, at?)` toggles `tsuzuri-shown` and records `data-tz`
-  in `#revealed` (spine index → set, this session only); `load` re-applies it.
-  `isRevealed(en)` reads the class.
+- **State** lives in `EnglishState` (`english.ts`), which the controller builds with the view.
+- **Show all** is `settings.showEnglish` (CSS only) — the only way English enters the page.
+  `applyAppearance` calls `setShowAll(on)`, which on a change returns the anchor to keep.
 - **Re-anchor (`keepPage`).** foliate re-scrolls to its own anchor on the reflow, but that
-  anchor can be stale or start in now-hidden English. So each change anchors on one
-  character sampled before it (`renderer.scrollToAnchor`). A card's Show / Hide English
-  passes `at` — the tapped glyph, or a reopened highlight's first character — which nothing
-  before the English moves. Without it, a reveal keeps the page's first character
-  (`textFrom` on `view.lastLocation.range`; the unit's last character is no anchor, since the
-  unit may continue onto the next page) and a hide (tapping the English) the unit's last
-  Japanese character. A show-all change keeps the character at the view centre, moved to
-  the Japanese before it if that English is now hidden.
+  anchor can be stale or start in now-hidden English. So a show-all change anchors on the
+  character at the view centre sampled before it (`renderer.scrollToAnchor`), moved to the
+  Japanese before it if that English is now hidden.
+- **One unit** is read, never revealed: the card's Translation is the unit's
+  `.tsuzuri-en` `textContent` (plain text, readable while `display: none`), so the page
+  never reflows and the English is horizontal in 縦書き too (§8).
 - **Unit lookup** (`unitEnglish(node)`): climb to the leaf block's child holding the node,
   scan next siblings until a `.tsuzuri-en` (the unit's English) or `<br>` (none). A node
   inside English returns that English.
@@ -351,15 +344,12 @@ A content tap's `px/py` are offset by `frameElement.getBoundingClientRect()`.
    [japanese.md](japanese.md) §3). On a hit: `openDefine`, stamp `tapDefinedAt` /
    `tapDefinedKey`, hide the chrome. This wins **inside the edge band**, which overlaps
    the first/last glyphs of every column (at 1194×834: a 100px band vs a 63px margin).
-   With show-all off and the unit translated, the card offers **Show / Hide English**
-   (`card.state.english`); pressing it `setRevealed`s (keeping the tapped glyph) and closes
-   the card.
-3. **Revealed English → hide it** (`tryHideEnglish`): show-all off and
-   `elementFromPoint` is inside a `tsuzuri-shown` English → `setRevealed(en, false)`, hide
-   the chrome. In show-all English is a blank tap (falls through).
-4. **Blank tap in the edge band → toggle chrome** — `inChromeToggleBand(py,
+   With show-all off and the unit translated, the card has a **Translation** section
+   (`card.state.translation` / `translationOpen`, §4a). English is never a glyph, so a tap
+   on it falls through as blank.
+3. **Blank tap in the edge band → toggle chrome** — `inChromeToggleBand(py,
    viewportSize().h)`, band = `clamp(80, 0.12·vh, 160)`. The only way a tap shows the bars.
-5. **Blank tap elsewhere → hide the chrome** if visible; otherwise nothing.
+4. **Blank tap elsewhere → hide the chrome** if visible; otherwise nothing.
 
 Visible bars cover the bands, so a tap on a bar's empty area hides them
 (`dismissChromeFromBar`, ignoring buttons). While hidden, `.page-pct` shows the reading %.
@@ -466,11 +456,19 @@ state; [japanese.md](japanese.md) for the pipeline).
 was already open, and runs `runLookup`: no dictionary → `needsDownload`; a stale key
 (`lastKey`) is dropped; any error clears `loading` (never a stuck spinner). The popup's
 download button calls `downloadAndWarmDictionary('en')`; an `$effect` re-runs the pending
-lookup as soon as `dict.state === 'ok'`, without waiting for the IPADIC warm. The popup's
+lookup as soon as `dict.state === 'ok'`, without waiting for the IPADIC warm. jpdict-idb
+reports the words 'ok' early (~17 % of the download), so the popup shows the progress, not
+"No match", while it runs, and `downloadDict` looks up once more when it ends.
+**Translation:** collapsed by default; expanded if the previous card left the same unit's
+English open (a `WeakRef`, so no section is pinned), or when there is no dictionary yet
+(the translation leads and the download prompt shrinks); `t` toggles it. The popup's
 X and Escape go through `closeOverlays()`, which also releases `defineDoc` /
-`definePositions`. Placement: `placeNearWord(anchor, w, h, vertical, {gap: 16})` —
-horizontal text above/below the word; 縦書き beside the column (left, else right, else
-above/below). `placeAnchored` centres, prefers above, flips below, clamps inside the
+`definePositions`. Placement: `placeNearWord(anchor, w, h, vertical, {gap: 16, margin: 12,
+prefer})` — horizontal text above/below the word; 縦書き beside the column (left, else
+right, else above/below); `prefer` keeps the side it opened on as the card grows. Width:
+340px; phones (≤480px) full width with equal 12px gaps; ≥1024px 360px. Height cap
+`max(46dvh, min(320px, 100dvh − 24px))`; the definition and Translation share it, each
+scrolling. `placeAnchored` centres, prefers above, flips below, clamps inside the
 `--safe-*` insets (cached; re-read on resize/orientation change).
 
 **English controls.** Shown when `hasEnglish`: a top-bar toggle (`languages` icon,

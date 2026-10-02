@@ -1,6 +1,7 @@
 // English translation check: show-all on/off (page kept), the card's Translation (expand /
 // collapse, 't', sticky per unit, page never moves), English taps in show-all are blank, the
-// one-time sideways hint, in 縦書き and 横書き, on each device. Screenshots go to /tmp/en-<device>-<mode>-<step>.png.
+// one-time sideways hint, the dictionary download from a card, in 縦書き and 横書き, on
+// each device. Screenshots go to /tmp/en-<device>-<mode>-<step>.png.
 //
 //   node scripts/e2e/english.mjs [ipad|iphone|desktop …]   (default: all three)
 //
@@ -151,6 +152,25 @@ async function run(device, url) {
 
     for (const mode of ['vertical', 'horizontal']) {
       if (mode === 'horizontal') {
+        // Download the dictionary from a card (fresh profile): the card fills in once the
+        // download ends (jpdict-idb reports 'ok' early), and 横書き then runs with it.
+        const gd = await page.evaluate(() => window.__findUnitGlyph())
+        if (gd) {
+          await page.keyboard.press('e') // hide English so the tap lands on Japanese
+          await sleep(900)
+          await page.evaluate(({ x, y }) => window.__tapDoc(x, y), (await page.evaluate(() => window.__findUnitGlyph())) ?? gd)
+          await sleep(600)
+          await page.evaluate(() => document.querySelector('.popup .dl-btn')?.click())
+          const got = await page
+            .waitForFunction(() => window.__tsuzuri.dictState.result?.entries?.length, { timeout: 120_000 })
+            .then(() => true, () => false)
+          check(`${device}: the card fills in after downloading the dictionary from it`, got)
+          await shot('downloaded')
+          await page.evaluate(() => window.__tapHost(5, innerHeight / 2))
+          await sleep(300)
+          await page.keyboard.press('e')
+          await sleep(900)
+        }
         // Bars → Display → 横書き; the book re-opens.
         await page.evaluate(() => window.__tapHost(innerWidth / 2, 30))
         await sleep(400)

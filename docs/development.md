@@ -129,8 +129,10 @@ means a dead tap.
 
 Scripted checks: `scripts/e2e/lib.mjs` (puppeteer-core + system Chrome; `serve('dev')`,
 `launch(device, url)`). `node scripts/e2e/english.mjs [ipad|iphone|desktop]` checks the
-English translation flow (show-all, card reveal, tap-to-hide, both writing modes) and writes
-`/tmp/en-<device>-<mode>-<step>.png`.
+English translation flow (show-all, the card's Translation, the dictionary download from a
+card, both writing modes) and writes `/tmp/en-<device>-<mode>-<step>.png`.
+`node scripts/e2e/perf.mjs [device]` times a long chapter at 4× CPU throttle (load, turns,
+show-all long tasks, heap) and fails on an unhandled rejection.
 
 ## 6. Adding a reader setting
 

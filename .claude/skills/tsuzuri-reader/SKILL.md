@@ -48,8 +48,8 @@ area you're changing. This is the procedure.
 - Content-document listeners go through `DocumentInput` (one AbortController per document);
   host ones use `#ac`. Timeouts go in the controller's `Timers` (cleared on destroy).
 - **English** (`.tsuzuri-en`, [translation.md](../../../docs/translation.md)) is invisible to
-  CFIs (patch 5) and to extraction; show / hide goes through `applyAppearance` /
-  `setRevealed(en, on, at?)`, which re-anchor the page (doc §4a). Detection is the package
+  CFIs (patch 5) and to extraction; it enters the page only via show-all
+  (`applyAppearance`, re-anchored by `keepPage`); the card reads one unit's English (doc §4a). Detection is the package
   meta at open (no spine scan).
 - Services stay framework-free: no Svelte imports under `src/services/reader/` (the one
   existing exception elsewhere is `jp/dictdb.ts` → `stores/dict.svelte`).

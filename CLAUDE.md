@@ -22,9 +22,10 @@ https://huangwaylon.github.io/epub/ ([docs/deployment.md](docs/deployment.md)).
 - Tapping a highlight reopens its definition (without furigana) with **Remove highlight**.
 - **English** (bundled books, `.tsuzuri-en` after each unit): **Show / Hide all** from the
   top-bar button, `e`, or Display → Translation (persisted `showEnglish`). With it off, a
-  word's card offers **Show English** for that unit (inline, closes the card); tapping that
-  revealed English hides it; toggling show-all clears reveals. English never looks up; in
-  show-all a tap on it is a blank tap.
+  word's card has **Show translation**: that unit's English inside the card (horizontal in
+  縦書き too; the page never reflows; `t` toggles; stays open for the same unit; opens by
+  itself without the dictionary). English never looks up; a tap on it is a blank tap. A
+  one-time toast offers 横書き when show-all English would run sideways.
 - Bottom progress bar is **drag-to-scrub** (previews the target chapter).
 - Highlights are always yellow. **Highlights & Bookmarks** panel groups by chapter;
   deleting a book/highlight/bookmark is undoable from a toast. On iPad, **Display**
@@ -137,10 +138,9 @@ npm run build    # production build → dist/ (base /epub/)
   mark 縦書き only via calibre's `class="vrtl"` get `html{writing-mode:vertical-rl}`
   prepended (`#applyIntendedWritingMode`) — only that explicit marker counts.
 - **English:** `hasEnglish` from the package's `tsuzuri:translation` meta at open (fallback:
-  a loaded section's `tsuzuri-translated` meta; no spine scan). Per-unit reveals live in
-  `EnglishState` (`services/reader/english.ts`, session only). Any show/hide re-anchors the
-  page on one sampled character (`keepPage`; a card's Show / Hide on the tapped glyph) —
-  foliate's own anchor can be stale. Extraction and CFIs ignore English; selection
+  a loaded section's `tsuzuri-translated` meta; no spine scan). Show / hide all re-anchors the
+  page on the character sampled at the centre (`EnglishState.keepPage`) — foliate's own
+  anchor can be stale. A card reads its unit's English with `unitEnglish` (no page change). Extraction and CFIs ignore English; selection
   highlights clamp out of it, and drawn highlights skip visible English.
   Contract: [translation.md](docs/translation.md), depth: reader-engine.md §4a.
 - **iOS viewport:** a cold Home Screen launch reports a layout viewport short by the
