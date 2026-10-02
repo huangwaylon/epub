@@ -2,7 +2,8 @@
   import type { LookupResult } from '../../services/jp/lookupTypes'
   import { dictPhase } from '../../services/jp/dictdb'
   import { dict } from '../../stores/dict.svelte'
-  import { placeNearWord, type AnchorRect } from '../util/anchoredPosition'
+  import { placeNearWord, roomNearWord, type AnchorRect } from '../util/anchoredPosition'
+  import { viewportSize } from '../../services/viewport'
   import Icon from '../components/Icon.svelte'
 
   let {
@@ -101,7 +102,20 @@
     void translation
     void translationOpen
     void phase
-    const p = placeNearWord(a, card.offsetWidth, card.offsetHeight, v, { gap: 16, margin: 12, prefer: side })
+    const opts = { gap: 16, margin: 12, prefer: side }
+    // Cap the height to the room on the card's side of the word (it scrolls inside), so it
+    // never covers the word or jumps across it as it grows. A side with too little room
+    // left (a short card opened in a narrow gap) gives way to the larger one.
+    const vh = viewportSize().h
+    const cap = Math.max(0.46 * vh, Math.min(320, vh - 24))
+    let room = roomNearWord(a, card.offsetWidth, v, opts)
+    if (room < 140 && side) {
+      side = undefined
+      opts.prefer = undefined
+      room = roomNearWord(a, card.offsetWidth, v, opts)
+    }
+    card.style.maxHeight = `${Math.round(Math.max(120, Math.min(cap, room)))}px`
+    const p = placeNearWord(a, card.offsetWidth, card.offsetHeight, v, opts)
     // Right of the column, or below the word (also 縦書き on a phone, where neither side
     // of the column fits) = 'after'.
     side ??= v && p.left >= a.right ? 'after' : v && p.left + card.offsetWidth <= a.left ? 'before' : p.top >= a.bottom ? 'after' : 'before'
@@ -204,13 +218,13 @@
     {/if}
     {#if translation}
       <section class="translation" class:open={translationOpen} class:first={downloading}>
-        <button class="tr-toggle" aria-expanded={translationOpen} onclick={ontoggletranslation}>
+        <button class="tr-toggle" aria-expanded={translationOpen} aria-controls="tz-translation" onclick={ontoggletranslation}>
           <Icon name="languages" size="sm" />
           <span class="tr-label">{translationOpen ? 'Translation' : 'Show translation'}</span>
           <span class="chev" aria-hidden="true"><Icon name="chevron-down" size="sm" /></span>
         </button>
         {#if translationOpen}
-          <p class="tr-text" lang="en">{translation}</p>
+          <p class="tr-text" id="tz-translation" lang="en">{translation}</p>
         {/if}
       </section>
     {/if}
@@ -232,7 +246,7 @@
     display: flex;
     flex-direction: column;
     width: 340px;
-    /* Short screens (iPhone landscape) still fit a definition, translation and footer. */
+    /* Before placement; then capped inline to the room beside the word (see the effect). */
     max-height: max(46dvh, min(320px, calc(100dvh - 24px)));
     background: var(--paper-raised);
     border-radius: var(--r-lg);
@@ -410,6 +424,7 @@
   .translation {
     flex: 0 1 auto;
     min-height: 0;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     border-top: 1px solid var(--line);
@@ -434,6 +449,10 @@
   }
   .tr-toggle:active {
     background: var(--control-track);
+  }
+  /* Header + about two lines before it gives way to the definition. */
+  .translation.open {
+    min-height: 100px;
   }
   .translation.open .tr-toggle {
     min-height: 36px;

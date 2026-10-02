@@ -19,6 +19,7 @@ const win = {
 
 let placeAnchored: typeof import('./anchoredPosition').placeAnchored
 let placeNearWord: typeof import('./anchoredPosition').placeNearWord
+let roomNearWord: typeof import('./anchoredPosition').roomNearWord
 
 beforeAll(async () => {
   vi.stubGlobal('window', win)
@@ -26,7 +27,7 @@ beforeAll(async () => {
   vi.stubGlobal('getComputedStyle', () => ({
     getPropertyValue: (name: string) => insets[name] ?? '',
   }))
-  ;({ placeAnchored, placeNearWord } = await import('./anchoredPosition'))
+  ;({ placeAnchored, placeNearWord, roomNearWord } = await import('./anchoredPosition'))
 })
 
 beforeEach(() => {
@@ -127,5 +128,23 @@ describe('placeNearWord', () => {
     // …unless that side no longer fits.
     const right = { left: 1100, top: 300, right: 1124, bottom: 372 }
     expect(placeNearWord(right, 300, 160, true, { gap: 16, prefer: 'after' }).left).toBe(1100 - 16 - 300)
+  })
+})
+
+describe('roomNearWord', () => {
+  it('horizontal: the room on the chosen side, else the larger', () => {
+    const w = { left: 600, top: 300, right: 680, bottom: 330 }
+    expect(roomNearWord(w, 340, false, { gap: 16, margin: 12, prefer: 'before' })).toBe(300 - 12 - 16)
+    expect(roomNearWord(w, 340, false, { gap: 16, margin: 12, prefer: 'after' })).toBe(834 - 12 - 330 - 16)
+    expect(roomNearWord(w, 340, false, { gap: 16, margin: 12 })).toBe(834 - 12 - 330 - 16)
+  })
+
+  it('vertical beside a column: the full height; on a phone, above/below', () => {
+    const col = { left: 600, top: 300, right: 624, bottom: 372 }
+    expect(roomNearWord(col, 340, true, { gap: 16, margin: 12 })).toBe(834 - 24)
+    win.innerWidth = 393
+    win.innerHeight = 852
+    const narrow = { left: 180, top: 300, right: 204, bottom: 372 }
+    expect(roomNearWord(narrow, 369, true, { gap: 16, margin: 12, prefer: 'before' })).toBe(300 - 12 - 16)
   })
 })

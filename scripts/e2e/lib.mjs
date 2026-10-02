@@ -13,6 +13,7 @@ export const CHROME =
   process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
 export const DEVICES = {
+  'iphone-se': { width: 375, height: 667, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
   iphone: { width: 393, height: 852, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
   'iphone-landscape': { width: 852, height: 393, deviceScaleFactor: 3, isMobile: true, hasTouch: true, isLandscape: true },
   ipad: { width: 1194, height: 834, deviceScaleFactor: 2, isMobile: true, hasTouch: true, isLandscape: true },

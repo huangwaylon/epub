@@ -190,6 +190,7 @@ export function createDefineCard(deps: DefineCardDeps) {
     // Plain text (build.mjs writes no markup inside); readable while display:none.
     state.translation = defineEnglish?.textContent?.trim() ?? ''
     state.translationOpen = !!state.translation && defineEnglish === expandedEnglish?.deref()
+    if (!state.translationOpen) expandedEnglish = null // sticky only from one card to the next
     state.open = true
     state.anchor = o.anchor
     state.vertical = controller?.vertical ?? false
@@ -287,9 +288,11 @@ export function createDefineCard(deps: DefineCardDeps) {
     try {
       await downloadAndWarmDictionary('en')
     } catch {
-      /* error surfaced via the dict store */
+      return // error surfaced via the dict store
     }
-    if (state.open && !state.loading && !state.needsDownload && !state.result?.entries.length) {
+    // A fresh key: an early lookup still in flight on partial data must not land after this.
+    if (state.open && !state.needsDownload && !state.result?.entries.length) {
+      state.lastKey += '#dl'
       state.loading = true
       void runLookup(state.text, state.tapOffset, state.lastKey)
     }

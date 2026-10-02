@@ -42,8 +42,11 @@
 <style>
   .toast {
     position: fixed;
-    left: 50%;
-    translate: -50% 0;
+    /* Centred by auto margins: `left: 50%` would cap the shrink-to-fit width at 50vw. */
+    left: 0;
+    right: 0;
+    margin-inline: auto;
+    width: fit-content;
     bottom: calc(var(--safe-bottom) + var(--sp-5));
     z-index: var(--z-toast);
     display: flex;
@@ -52,7 +55,7 @@
     max-width: calc(100vw - var(--sp-8));
     min-height: 52px;
     padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-5);
-    border-radius: var(--r-full);
+    border-radius: 26px; /* a pill at one line; a rounded card at two */
     font-size: var(--fs-body);
     color: var(--ink);
     background: var(--glass-bg-strong);
@@ -61,17 +64,23 @@
   .toast.lift {
     bottom: calc(var(--safe-bottom) + 92px);
   }
+  /* Wraps to two lines on a narrow phone rather than truncating the message. */
   .msg {
     padding-inline-end: var(--sp-2);
-    white-space: nowrap;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.3;
   }
   .msg:last-child {
     padding-inline-end: var(--sp-4);
   }
   .act {
+    flex: none;
     padding: 0 var(--sp-4);
+    white-space: nowrap;
   }
   .dismiss {
     color: var(--ink-faint);

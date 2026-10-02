@@ -105,3 +105,22 @@ export function placeNearWord(
   top = Math.max(mTop, Math.min(vh - h - mBottom, top))
   return { left, top }
 }
+
+/**
+ * The tallest card `placeNearWord` can place without covering the word: beside a 縦書き
+ * column that fits, the full height; else the room above (`'before'`), below (`'after'`),
+ * or the larger of the two.
+ */
+export function roomNearWord(rect: AnchorRect, w: number, vertical: boolean, opts: PlaceOpts = {}): number {
+  const gap = opts.gap ?? 12
+  const base = opts.margin ?? 10
+  const ins = safeInsets()
+  const { w: vw, h: vh } = viewportSize()
+  const mTop = base + ins.top
+  const mBottom = base + ins.bottom
+  if (vertical && (rect.left - gap - w >= base + ins.left || rect.right + gap + w <= vw - base - ins.right))
+    return vh - mTop - mBottom
+  const above = rect.top - mTop - gap
+  const below = vh - mBottom - rect.bottom - gap
+  return opts.prefer === 'before' ? above : opts.prefer === 'after' ? below : Math.max(above, below)
+}
