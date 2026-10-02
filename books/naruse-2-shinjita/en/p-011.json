@@ -22,7 +22,7 @@
  {
   "id": 4,
   "ja": "成瀬の部屋番号を入力して呼び出すと、ピロピロと呼び出し音が鳴る。少しして、機械の向こうとつながる気配があった。",
-  "en": "I entered Naruse's apartment number and called, and the chime went pi-ro-pi-ro. After a moment there was the sense of a connection on the other end of the machine."
+  "en": "I entered Naruse's apartment number and called, and the chime went pi-ro-pi-ro. After a moment I sensed the intercom connect on the other end."
  },
  {
   "id": 5,
@@ -72,7 +72,7 @@
  {
   "id": 14,
   "ja": "成瀬だってスマホを持っているし、連絡がつかないわけではないだろう。そう思ったのも束の間、お母さんが衝撃の事実を告げる。",
-  "en": "Naruse had a phone too, so it wasn't as if we couldn't get hold of her. That thought lasted only a moment before her mother delivered a shocking fact."
+  "en": "Naruse had a phone, after all, so it wasn't as if we couldn't get hold of her. That thought lasted only a moment before her mother delivered a shocking fact."
  },
  {
   "id": 15,
@@ -117,7 +117,7 @@
  {
   "id": 23,
   "ja": "それ以外にもＬＩＮＥでやり取りはしていたものの、成瀬のすべてを知っているわけではない。さすがに自殺は考えていないにしても、近くで見ていた家族だけがわかることもあるだろう。",
-  "en": "Besides that we'd messaged on LINE, but that didn't mean I knew everything about her. Even if she certainly wasn't thinking of suicide, there might be things only the family who saw her up close could tell."
+  "en": "Besides that we'd messaged on LINE, but that didn't mean I knew everything about her. Surely she wasn't thinking of suicide, but there might be things only the family who saw her up close could tell."
  },
  {
   "id": 24,
@@ -207,7 +207,7 @@
  {
   "id": 41,
   "ja": "わたしはスマホでインスタを開く。びわ湖大津観光大使の公式アカウントはフォローしているけれど、ここにダイレクトメッセージを送ったところで見てもらえるかわからない。篠原かれんで検索しても、本名ではヒットしなかった。",
-  "en": "I opened Instagram on my phone. I followed the official Biwako Otsu Tourism Ambassador account, but even if I sent a direct message there, I didn't know whether anyone would see it. Searching for Shinohara Karen, her real name got no hits."
+  "en": "I opened Instagram on my phone. I followed the official Biwako Otsu Tourism Ambassador account, but even if I sent a direct message there, I didn't know whether anyone would see it. Searching for \"Shinohara Karen\" got no hits under her real name."
  },
  {
   "id": 42,
@@ -262,7 +262,7 @@
  {
   "id": 52,
   "ja": "お父さんはどうにも危なっかしくて、任せられない。成瀬の行動パターンが読めないのはお互い様だが、ゼゼカラの相方であるわたしも多少は役に立つだろう。",
-  "en": "Her father seemed so precarious that I couldn't leave it to him. Neither of us could read Naruse's patterns, but as her Zezekara partner I'd probably be of some use."
+  "en": "Her father seemed so shaky that I couldn't leave it to him. Neither of us could read Naruse's patterns, but as her Zezekara partner I'd probably be of some use."
  },
  {
   "id": 53,
@@ -287,7 +287,7 @@
  {
   "id": 57,
   "ja": "わたしが助けになればと思っていたけれど、相手はあまり話したこともないようなおじさんである。どれぐらいの距離感で接したらいいのだろう。",
-  "en": "I'd hoped to be of help, but my companion was a middle-aged man I'd barely ever talked to. How close or distant was I supposed to be with him?"
+  "en": "I'd hoped to be of help, but my companion was a middle-aged man I'd barely ever talked to. How familiar was I supposed to be with him?"
  },
  {
   "id": 58,
@@ -482,7 +482,7 @@
  {
   "id": 96,
   "ja": "その見解で、言実さんが成瀬に詳しい人だとわかる。成瀬は神出鬼没だから、「みんな集まって、どうしたんだ」と言いながら悠然とこの場に現れてもおかしくない。",
-  "en": "From that opinion I could tell Kotomi-san knew Naruse well. Naruse pops up out of nowhere, so it wouldn't be strange for her to show up here unhurriedly, saying, \"Everyone's gathered. What's going on?\""
+  "en": "From that opinion I could tell Kotomi-san knew Naruse well. Naruse pops up out of nowhere, so it wouldn't be strange for her to show up here unhurriedly, saying, \"You are all gathered here. What is going on?\""
  },
  {
   "id": 97,
@@ -842,7 +842,7 @@
  {
   "id": 168,
   "ja": "トイレから出てきたお母さんは、怪訝《けげん》そうに篠原さんとみらいちゃんを見た。",
-  "en": "Her mother came out of the toilet and looked at Shinohara-san and Mirai-chan dubiously."
+  "en": "Her mother came out of the bathroom and looked at Shinohara-san and Mirai-chan dubiously."
  },
  {
   "id": 169,
@@ -982,7 +982,7 @@
  {
   "id": 196,
   "ja": "長野県から届いたという信州そばは喉越《のどご》しがよく、温かい出汁《だし》が身にしみた。関西のシャキシャキした青ネギが懐かしく感じる。",
-  "en": "The Shinshu soba, which she said had come from Nagano Prefecture, slid down easily, and the warm broth soaked into me. I found myself missing the crisp green onions of Kansai."
+  "en": "The Shinshu soba, which she said had come from Nagano Prefecture, slid down easily, and the warm broth soaked into me. The crisp Kansai green onions tasted like home."
  },
  {
   "id": 197,
@@ -1082,7 +1082,7 @@
  {
   "id": 216,
   "ja": "テレビでは正午のＮＨＫニュースがはじまって、「全国各地で大晦日を迎えています」と大晦日の風景を流している。混み合うそば屋の様子なんて、去年の映像を流してもバレないんじゃないかと思う。",
-  "en": "On TV the noon NHK news began, showing New Year's Eve scenes: \"People across the country are greeting New Year's Eve.\" Footage of crowded soba shops and such, I thought, they could run last year's and no one would notice."
+  "en": "On TV the noon NHK news began, showing New Year's Eve scenes: \"People across the country are greeting New Year's Eve.\" I thought they could probably air last year's footage of crowded soba shops and no one would notice."
  },
  {
   "id": 217,
@@ -1137,7 +1137,7 @@
  {
   "id": 227,
   "ja": "「たしかに、静岡駅で観光イベントがあったとき、家康のスタンプを押しにいくって言ってたわ」",
-  "en": "\"Now that you mention it, when there was a tourism event at Shizuoka Station, she said she was going to go stamp the Ieyasu stamp.\""
+  "en": "\"Now that you mention it, when there was a tourism event at Shizuoka Station, she said she was going to go get the Ieyasu stamp.\""
  },
  {
   "id": 228,
@@ -1222,7 +1222,7 @@
  {
   "id": 244,
   "ja": "「そうそう、名古屋は二月に行く予定で、まだ行ってないんだよね。岐阜城のスタンプも押してないんじゃないかな？ 成瀬が岐阜に寄って名古屋に行くなら先回りできるかも」",
-  "en": "\"Right, right, we're scheduled to go to Nagoya in February, so she hasn't been yet. I bet she hasn't stamped the Gifu Castle stamp either. If Naruse stops in Gifu and then goes to Nagoya, we might be able to get there ahead of her.\""
+  "en": "\"Right, right, we're scheduled to go to Nagoya in February, so she hasn't been yet. I bet she hasn't gotten the Gifu Castle stamp either. If Naruse stops in Gifu and then goes to Nagoya, we might be able to get there ahead of her.\""
  },
  {
   "id": 245,
@@ -1287,7 +1287,7 @@
  {
   "id": 257,
   "ja": "「あったあった！ 言われてみれば心当たりがすごくある……。ＪＲ西日本の妖怪スタンプラリーも熱心に集めてたし、平和堂のはとっぴースタンプラリーもやってた。ほら、コロナでしばらくスタンプラリーできなかったから、その反動で今スタンプラリーブームになってるんだよ」",
-  "en": "\"There was, there was! Now that you mention it, that rings a lot of bells... She was keen on collecting the JR West yokai stamp rally too, and she did the Heiwado Hatoppy stamp rally. You know, we couldn't do stamp rallies for a while because of COVID, so as a backlash there's a stamp-rally boom now.\""
+  "en": "\"There was, there was! Now that you mention it, that rings a lot of bells... She was really into the JR West yokai stamp rally too, and she did the Heiwado Hatoppy stamp rally. You know, we couldn't do stamp rallies for a while because of COVID, so as a backlash there's a stamp-rally boom now.\""
  },
  {
   "id": 258,
@@ -1317,7 +1317,7 @@
  {
   "id": 263,
   "ja": "大学では同じクラスの子たちとすぐに仲良くなった。関西出身の子もけっこういて、関西電気保安協会とかホテルニューアワジのＣＭの話で盛り上がった。Ｍ‐１グランプリに出たときの話をしたらお笑い好きの友達がたくさんできて、誰かの下宿に集まって芸人さんの動画を見たり、お笑いライブを見に行ったりして楽しく過ごしているのだけど、ふとした瞬間に成瀬がいないことを寂しく思う。",
-  "en": "At university I quickly made friends with the kids in my class. Quite a few of them were from Kansai too, and we got excited talking about the Kansai Electrical Safety Inspection Association and Hotel New Awaji commercials. When I told them about entering the M-1 Grand Prix, I made lots of comedy-loving friends, and we'd gather at someone's lodgings to watch comedians' videos or go see live comedy shows, and I was having a good time, but in stray moments I'd feel lonely that Naruse wasn't there."
+  "en": "At university I quickly made friends with the kids in my class. Quite a few of them were from Kansai too, and we got excited talking about the Kansai Electrical Safety Inspection Association and Hotel New Awaji commercials. When I told them about entering the M-1 Grand Prix, I made lots of comedy-loving friends, and we'd gather at someone's apartment to watch comedians' videos or go see live comedy shows, and I was having a good time, but in stray moments I'd feel lonely that Naruse wasn't there."
  },
  {
   "id": 264,
@@ -1347,7 +1347,7 @@
  {
   "id": 269,
   "ja": "そっけない言い方になってしまった。だいたい、わたしたちはコンビを組んで「た」のではなくて、組んで「る」のだ。",
-  "en": "It came out curt. Besides, we weren't a duo that \"used to be.\" We were a duo that \"is.\""
+  "en": "It came out curt. Besides, it wasn't that we \"were\" a duo. We \"are\" a duo."
  },
  {
   "id": 270,
@@ -1372,7 +1372,7 @@
  {
   "id": 274,
   "ja": "──でも、成瀬もゼゼカラを組んで「た」って思っていたとしたら？",
-  "en": "—But what if Naruse also thought of Zezekara as a duo she \"used to be\" in?"
+  "en": "—But what if Naruse also thought of Zezekara as something we \"were\"?"
  },
  {
   "id": 275,
@@ -1397,7 +1397,7 @@
  {
   "id": 279,
   "ja": "カーナビの予測はだいたい合っていて、名古屋城には一時間四十分で着いた。正門前の駐車場は満車で、ひとまずわたしたち三人で先に車を降りた。",
-  "en": "The car navigation's estimate was about right, and we reached Nagoya Castle in an hour and forty minutes. The parking lot in front of the main gate was full, so for the moment the three of us got out of the car first."
+  "en": "The GPS estimate was about right, and we reached Nagoya Castle in an hour and forty minutes. The parking lot in front of the main gate was full, so for now the three of us got out first."
  },
  {
   "id": 280,
@@ -1412,7 +1412,7 @@
  {
   "id": 282,
   "ja": "みらいちゃんが感心したように言う。",
-  "en": "Mirai-chan said it admiringly."
+  "en": "Mirai-chan sounded impressed."
  },
  {
   "id": 283,
@@ -1472,7 +1472,7 @@
  {
   "id": 294,
   "ja": "毛筆で書かれた「織田信長」の名札をつけたおじさんが作った声で言う。",
-  "en": "A middle-aged man wearing a name tag that said \"Oda Nobunaga\" in brush calligraphy said it in a put-on voice."
+  "en": "A middle-aged man wearing a name tag that said \"Oda Nobunaga\" in brush calligraphy spoke in a put-on voice."
  },
  {
   "id": 295,
@@ -1497,12 +1497,12 @@
  {
   "id": 299,
   "ja": "「少し前って、何分前ですか？」",
-  "en": "\"A little while ago, how many minutes?\""
+  "en": "\"When you say a little while ago, how many minutes ago?\""
  },
  {
   "id": 300,
   "ja": "「三十分ぐらい前でしょうか。やっと全部のスタンプが集まったと見せてくれたので、間違いありません」",
-  "en": "\"About thirty minutes ago, I'd say. She showed me that she'd finally collected all the stamps, so there's no mistake.\""
+  "en": "\"About thirty minutes ago, I'd say. She showed me she'd finally collected all the stamps, so I'm sure of it.\""
  },
  {
   "id": 301,
@@ -1522,7 +1522,7 @@
  {
   "id": 304,
   "ja": "みらいちゃんの的確な質問に、信長は「地下鉄でスタンプラリーをやっていた気がしますが……」と自信なさげに答える。",
-  "en": "To Mirai-chan's sharp question, Nobunaga answered uncertainly, \"I think there was a stamp rally on the subway...\""
+  "en": "In answer to Mirai-chan's precise question, Nobunaga said uncertainly, \"I think there was a stamp rally on the subway...\""
  },
  {
   "id": 305,
@@ -1532,7 +1532,7 @@
  {
   "id": 306,
   "ja": "篠原さんがスマホを見て残念そうに言った。",
-  "en": "Shinohara-san said it with disappointment, looking at her phone."
+  "en": "Shinohara-san looked at her phone and sounded disappointed."
  },
  {
   "id": 307,
@@ -1562,7 +1562,7 @@
  {
   "id": 312,
   "ja": "「あっ、呉間祐生さんからＬＩＮＥが来ました！」",
-  "en": "\"Oh, a LINE came from Kurema Yusei-san!\""
+  "en": "\"Oh, Kurema Yusei-san sent a message on LINE!\""
  },
  {
   "id": 313,
@@ -1577,7 +1577,7 @@
  {
   "id": 315,
   "ja": "あれほど嫌がっていた言実さんも協力してくれていたらしい。リンクを開くと改札口の雑踏の中に、びわ湖大津観光大使のたすきをつけた成瀬が写り込んでいた。写真の中の時計は十分前を指している。",
-  "en": "Apparently Kotomi-san, who had been so reluctant, was helping too. When I opened the link, there was Naruse, wearing her Biwako Otsu Tourism Ambassador sash, caught in the crowd at a ticket gate. The clock in the photo showed ten minutes ago."
+  "en": "Apparently Kotomi-san, who had been so reluctant, was helping too. When I opened the link, there was Naruse, wearing her Biwako Otsu Tourism Ambassador sash, caught in the crowd at a ticket gate. The clock in the photo showed a time ten minutes earlier."
  },
  {
   "id": 316,
@@ -1587,7 +1587,7 @@
  {
   "id": 317,
   "ja": "車を停めてから遅れて到着したお父さんに、成瀬がここに立ち寄ったこと、名古屋駅の新幹線乗り場で目撃情報があったことを話した。",
-  "en": "When her father arrived late after parking the car, we told him that Naruse had stopped by here and that she'd been sighted at the Shinkansen platforms at Nagoya Station."
+  "en": "When her father caught up with us after parking the car, we told him that Naruse had stopped by here and that she'd been sighted at the Shinkansen gates at Nagoya Station."
  },
  {
   "id": 318,
@@ -1617,12 +1617,12 @@
  {
   "id": 323,
   "ja": "帰り道、後部座席の篠原さんとみらいちゃんは寝てしまった。五時半に起きたわたしこそ眠いはずなのになぜか眠れなくて、カーラジオから流れるのんきなトークと音楽に耳を傾けていた。大晦日というだけあって、メッセージテーマは「二〇二五年の出来事」だ。",
-  "en": "On the way back, Shinohara-san and Mirai-chan in the back seat fell asleep. I was the one who'd gotten up at five-thirty and should have been sleepy, but for some reason I couldn't sleep, and I listened to the carefree talk and music coming from the car radio. It being New Year's Eve, the theme for listener messages was \"Events of 2025.\""
+  "en": "On the way back, Shinohara-san and Mirai-chan fell asleep in the back seat. I'd gotten up at five-thirty and should have been the sleepiest of all, but for some reason I couldn't sleep, and I listened to the carefree talk and music coming from the car radio. It being New Year's Eve, the theme for listener messages was \"Events of 2025.\""
  },
  {
   "id": 324,
   "ja": "今年のはじめは受験生だったから、一応勉強していた。成瀬と一緒に近江神宮に行って合格祈願をしたのだが、わたしは自分の学力で受かりそうな大学しか受けなかったし、成瀬は京大合格間違いなしと言われていたので、近江神宮にとってはどちらも力を入れなくていい案件だったと思う。",
-  "en": "At the start of this year I was facing entrance exams, so I did study, more or less. I went to Omi Jingu with Naruse to pray for success, but I'd only applied to universities I was likely to get into with my grades, and Naruse was said to be a sure thing for Kyoto University, so I think for Omi Jingu neither of us was a case that needed much effort."
+  "en": "At the start of this year I was studying for entrance exams, so I did study, more or less. I went to Omi Jingu with Naruse to pray for success, but I'd only applied to universities I was likely to get into on my own ability, and Naruse was said to be a sure thing for Kyoto University, so I suspect neither of us was a case Omi Jingu had to put much effort into."
  },
  {
   "id": 325,
@@ -1692,7 +1692,7 @@
  {
   "id": 338,
   "ja": "わたしにとって勉強なんてなるべくやりたくないものだ。成瀬も実はやりたくないけれど、挑戦の一環としてやってるだけなんじゃないかと疑ったこともあった。でも、お父さんの証言によれば大学の講義には熱心に出ていて、前期のテストやレポートではすべて八十点以上の成績を収めたらしい。",
-  "en": "For me, studying is something I'd rather do as little of as possible. I had once suspected that Naruse didn't actually want to either and was only doing it as part of a challenge. But according to her father's testimony, she was diligent about attending her university lectures, and had scored eighty or above on all her first-semester tests and reports."
+  "en": "For me, studying is something I'd rather do as little of as possible. I had once suspected that Naruse didn't actually want to either and was only doing it as part of a challenge. But according to her father's testimony, she was diligent about attending her university lectures, and had scored eighty or above on all her first-semester tests and papers."
  },
  {
   "id": 339,
@@ -1707,7 +1707,7 @@
  {
   "id": 341,
   "ja": "もしかしたらわたしは、成瀬に置いていかれたくなくて、自分から膳所を離れたのかもしれない。今まで考えたこともなかったけれど、そんな気がしてくる。成瀬は膳所にとどまるようなスケールの人間じゃない。だからお父さんにも「いなくなりませんよ」なんて無責任なことは言えなかった。",
-  "en": "Maybe I had left Zeze on my own because I didn't want to be left behind by Naruse. It had never occurred to me before, but I was beginning to feel that way. Naruse isn't a person on a small enough scale to stay in Zeze. So I couldn't say something as irresponsible to her father as \"She won't go anywhere.\""
+  "en": "Maybe I had left Zeze on my own because I didn't want to be left behind by Naruse. It had never occurred to me before, but I was beginning to feel that way. Naruse is on too big a scale to stay in Zeze. So I couldn't say something as irresponsible to her father as \"She won't go anywhere.\""
  },
  {
   "id": 342,
@@ -1727,12 +1727,12 @@
  {
   "id": 345,
   "ja": "篠原さんが目覚めて声を上げる。",
-  "en": "Shinohara-san woke up and said it out loud."
+  "en": "Shinohara-san woke up and exclaimed."
  },
  {
   "id": 346,
   "ja": "「成瀬さんが新幹線に乗ってたら、すでに家に着いててもおかしくありません」",
-  "en": "\"If Naruse-san took the Shinkansen, it wouldn't be strange if she were already home.\""
+  "en": "\"If Naruse-san took the Shinkansen, she could easily be home already.\""
  },
  {
   "id": 347,
@@ -1832,7 +1832,7 @@
  {
   "id": 366,
   "ja": "わたしは通話を切った。どうリアクションして良いものかわからず、車内にはなんとも言えない沈黙が広がる。",
-  "en": "I ended the call. Not knowing how to react, we fell into an indescribable silence that spread through the car."
+  "en": "I ended the call. No one knew how to react, and an indescribable silence settled over the car."
  },
  {
   "id": 367,
@@ -1842,7 +1842,7 @@
  {
   "id": 368,
   "ja": "篠原さんがお父さんに向けて場をとりなすように言うと、みらいちゃんも「成瀬捜索班のグループに情報を上げておきますね」と明るい声を出す。",
-  "en": "When Shinohara-san said it to her father as if to smooth things over, Mirai-chan chimed in brightly, \"I'll post the information to the Naruse Search Party group.\""
+  "en": "Shinohara-san said this to her father as if to smooth things over, and Mirai-chan chimed in brightly, \"I'll post the information to the Naruse Search Party group.\""
  },
  {
   "id": 369,
@@ -1907,7 +1907,7 @@
  {
   "id": 381,
   "ja": "篠原さんとみらいちゃんをそれぞれ送り届けて、成瀬の自宅に帰り着いたのは十七時すぎだった。お母さんはキッチンに立っていて、煮物のいい匂いが漂っている。",
-  "en": "After we'd dropped off Shinohara-san and Mirai-chan, it was past five in the evening when we got back to Naruse's home. Her mother was standing in the kitchen, and the good smell of simmered vegetables filled the air."
+  "en": "After we'd dropped off Shinohara-san and Mirai-chan, it was past five in the evening when we got back to Naruse's home. Her mother was standing in the kitchen, and the good smell of something simmering filled the air."
  },
  {
   "id": 382,
@@ -1932,7 +1932,7 @@
  {
   "id": 386,
   "ja": "「たしかに、あかりがいなかったらみゆきちゃんもいづらいよな……」",
-  "en": "\"True, without Akari it must be uncomfortable for you to be here, Miyuki-chan...\""
+  "en": "\"True, you'd feel awkward staying here without Akari, Miyuki-chan...\""
  },
  {
   "id": 387,
@@ -1947,12 +1947,12 @@
  {
   "id": 389,
   "ja": "「今年も大晦日恒例のけん玉ギネス記録にチャレンジします！」",
-  "en": "\"This year again we'll take on the New Year's Eve tradition, the kendama Guinness record challenge!\""
+  "en": "\"Once again this year, we'll be taking on our New Year's Eve tradition: the kendama Guinness World Record challenge!\""
  },
  {
   "id": 390,
   "ja": "ふとテレビに目を向けると、「ＮＨＫ紅白歌合戦」の直前特番が流れていた。けん玉を持ってゼッケンを付けた参加者たちが、大皿の練習をしている。",
-  "en": "When I happened to glance at the TV, a special just before the NHK Kohaku Uta Gassen was on. Participants holding kendama and wearing number bibs were practicing the big cup."
+  "en": "When I happened to glance at the TV, the pre-show special for the NHK Kohaku Uta Gassen was on. Participants holding kendama and wearing number bibs were practicing the big cup."
  },
  {
   "id": 391,
@@ -1977,7 +1977,7 @@
  {
   "id": 395,
   "ja": "成瀬以外にも、偉人のコスプレをした人や、名産品パネルを背負っている人、ご当地キャラのぬいぐるみを背負った人たちが全国各地の代表であることをアピールしている。",
-  "en": "Besides Naruse, there were people in costume as historical figures, people carrying panels of local specialties on their backs, and people carrying plushies of local mascots on their backs, all showing off that they were representatives from all over the country."
+  "en": "Besides Naruse, there were people dressed as historical figures, people with panels of local specialties strapped to their backs, and people carrying plushies of local mascots on their backs, all making a show of representing their regions from across the country."
  },
  {
   "id": 396,
@@ -2117,7 +2117,7 @@
  {
   "id": 423,
   "ja": "静岡県、愛知県、三重県と過ぎ、いよいよ滋賀県代表のびわ湖大津観光大使、成瀬が映る。わたしの不安をよそに、成瀬はだれよりも涼しい顔で赤い玉を振り上げ、大皿で軽々と受け止めた。",
-  "en": "Shizuoka Prefecture, Aichi Prefecture, Mie Prefecture went by, and finally Shiga Prefecture's representative, Biwako Otsu Tourism Ambassador Naruse, came on screen. Paying no mind to my anxiety, Naruse swung the red ball up with a cooler face than anyone and caught it lightly on the big cup."
+  "en": "Shizuoka Prefecture, Aichi Prefecture, Mie Prefecture went by, and finally Shiga Prefecture's representative, Biwako Otsu Tourism Ambassador Naruse, came on screen. Heedless of my anxiety, Naruse, looking calmer than anyone, swung the red ball up and caught it lightly on the big cup."
  },
  {
   "id": 424,
@@ -2207,7 +2207,7 @@
  {
   "id": 441,
   "ja": "女性アナウンサーが高らかに宣言した瞬間、玄関の鍵が回る音がした。小さい頃から幾度となく聞いた、このマンションのドアが開く音だ。一瞬状況がわからなくて、自分の父親が帰ってきたのかと思った。",
-  "en": "The moment the female announcer declared it ringingly, I heard the sound of the key turning in the front door. It was the sound of this building's doors opening, which I'd heard countless times since I was little. For a moment I didn't understand the situation, and thought my own father had come home."
+  "en": "The instant the female announcer made her ringing announcement, I heard the sound of the key turning in the front door. It was the sound of this building's doors opening, which I'd heard countless times since I was little. For a moment I didn't understand the situation, and thought my own father had come home."
  },
  {
   "id": 442,
@@ -2302,7 +2302,7 @@
  {
   "id": 460,
   "ja": "滋賀で成瀬と一緒に年を越せた。当初の予定とはまったく違うところに転がったけれど、今この瞬間を共有できた。",
-  "en": "I'd gotten to see in the new year with Naruse in Shiga. Things had rolled somewhere completely different from the original plan, but we'd gotten to share this very moment."
+  "en": "I'd gotten to see in the new year with Naruse in Shiga. Things had ended up somewhere completely different from the original plan, but we'd gotten to share this very moment."
  },
  {
   "id": 461,
@@ -2327,7 +2327,7 @@
  {
   "id": 465,
   "ja": "「こっちは大変だったんだから」",
-  "en": "\"We had a hard time over here, you know.\""
+  "en": "\"You put us through a lot, you know.\""
  },
  {
   "id": 466,
@@ -2357,7 +2357,7 @@
  {
   "id": 471,
   "ja": "「あんなこと書いたら余計に心配するでしょ。どこに行くかちゃんと書きなさい」",
-  "en": "\"Writing something like that only makes people worry more. Write properly where you're going.\""
+  "en": "\"Writing something like that only makes people worry more. Write down properly where you're going.\""
  },
  {
   "id": 472,
@@ -2377,7 +2377,7 @@
  {
   "id": 475,
   "ja": "「ＧＰＳを調べられたら、わたしがＮＨＫに行くことがバレてしまうじゃないか」",
-  "en": "\"If you had checked the GPS, you would have found out I was going to NHK, would you not?\""
+  "en": "\"If you had checked my GPS, you would have found out I was going to NHK, wouldn't you?\""
  },
  {
   "id": 476,
@@ -2417,7 +2417,7 @@
  {
   "id": 483,
   "ja": "いち早く反応したのは祐生さんで、「年越しに間に合ってよかったね～」とその口調まで思い浮かぶようなメッセージが届く。次いでみらいちゃんから「よかったです！ 今年もよろしくお願いします」のメッセージとマイメロちゃんがお辞儀しているスタンプが届き、篠原さんからは涙を流して爆笑する顔のスタンプのあと、「けん玉成功おめでとう！ 成瀬が一番映《ば》えてたよ」というメッセージが届いた。",
-  "en": "The first to react was Yusei-san, with a message so in character I could practically hear his tone: \"So glad you made it in time for the New Year~.\" Next came a message from Mirai-chan, \"I'm so glad! Please take care of me this year too,\" with a stamp of My Melody bowing, and from Shinohara-san, after a stamp of a face laughing so hard it was crying, came the message: \"Congrats on nailing the kendama! You were the most Insta-worthy of all, Naruse.\""
+  "en": "The first to react was Yusei-san, with a message so in character I could practically hear his tone: \"So glad you made it in time for the New Year~.\" Next came a message from Mirai-chan, \"I'm so glad! Looking forward to another year with you,\" with a stamp of My Melody bowing, and from Shinohara-san, after a stamp of a face laughing so hard it was crying, came the message: \"Congrats on nailing the kendama! You were the most Insta-worthy of all, Naruse.\""
  },
  {
   "id": 484,
@@ -2427,7 +2427,7 @@
  {
   "id": 485,
   "ja": "「何万回とやってきた大皿だが、さすがにこんな大舞台でやることはないから勝手が違ったな。もっと深く膝を曲げたほうがいいのだが、フォームが崩れている」",
-  "en": "\"I have done the big cup tens of thousands of times, but never on a stage this big, so it felt different. I ought to bend my knees more deeply, but my form has broken down.\""
+  "en": "\"I have done the big cup tens of thousands of times, but never on a stage this big, so it felt different. I ought to bend my knees more deeply, but my form is falling apart.\""
  },
  {
   "id": 486,
@@ -2442,7 +2442,7 @@
  {
   "id": 488,
   "ja": "わたしが指摘すると、成瀬ははっとした顔をする。",
-  "en": "When I pointed it out, Naruse looked struck."
+  "en": "When I pointed it out, Naruse looked as if it had just dawned on her."
  },
  {
   "id": 489,
@@ -2457,7 +2457,7 @@
  {
   "id": 491,
   "ja": "「しかし、紅白歌合戦はとても楽しかった。わたしでも知っているような歌手や芸能人をたくさん見かけたし、今度はゼゼカラで出られるといいな」",
-  "en": "\"Still, the Kohaku Uta Gassen was a great deal of fun. I saw many singers and celebrities that even I know of. It would be good if next time we could appear as Zezekara.\""
+  "en": "\"Still, the Kohaku Uta Gassen was a great deal of fun. I saw many singers and celebrities that even I know of. I hope next time we can appear as Zezekara.\""
  },
  {
   "id": 492,
@@ -2532,7 +2532,7 @@
  {
   "id": 506,
   "ja": "成瀬は何を祈るのだろう。訊いたら教えてくれそうだけど、知りたくない気もする。わたしだって、本当の願いは成瀬には言いづらい。",
-  "en": "What would Naruse pray for? She'd probably tell me if I asked, but part of me didn't want to know. Even I would find it hard to tell Naruse my real wish."
+  "en": "What would Naruse pray for? She'd probably tell me if I asked, but part of me didn't want to know. I, too, would find it hard to tell Naruse my real wish."
  },
  {
   "id": 507,
@@ -2572,6 +2572,6 @@
  {
   "id": 514,
   "ja": "これからもずっと、成瀬を見ていられますように。さっき神社で祈ったことを、琵琶湖に向かってもう一度祈った。",
-  "en": "May I always be able to keep watching Naruse. I prayed once more, toward Lake Biwa, what I had prayed for at the shrine a little while ago."
+  "en": "May I always be able to keep watching Naruse. Facing Lake Biwa, I said once more the prayer I had made at the shrine a little while ago."
  }
 ]

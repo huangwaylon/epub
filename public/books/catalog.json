@@ -1,13 +1,13 @@
 [
   {
     "slug": "naruse-1-tenka",
-    "id": "55c6120edb660bd4aa6b1857ee78008260be1bc2f2e03d87537a1883bee10519",
+    "id": "4c52a21b0a30de144820ddb74d7647722102d696f715fee41d709b77fed6297f",
     "title": "成瀬は天下を取りにいく",
     "author": "宮島未奈",
     "language": "ja",
     "dir": "rtl",
     "file": "naruse-1-tenka.epub",
-    "size": 551126,
+    "size": 551161,
     "cover": "naruse-1-tenka.webp",
     "translation": {
       "lang": "en",
@@ -16,13 +16,13 @@
   },
   {
     "slug": "naruse-2-shinjita",
-    "id": "0c66fbdfc245bd280b6efb888058c024ed92a1150374718db916e41d6673e768",
+    "id": "11bdd792c0c6f0f7574b3f879a9d1002fd8400ab554c9390d038d7388ba88bb6",
     "title": "成瀬は信じた道をいく",
     "author": "宮島未奈",
     "language": "ja",
     "dir": "rtl",
     "file": "naruse-2-shinjita.epub",
-    "size": 567286,
+    "size": 567363,
     "cover": "naruse-2-shinjita.webp",
     "translation": {
       "lang": "en",
@@ -31,13 +31,13 @@
   },
   {
     "slug": "naruse-3-miyako",
-    "id": "26b6bdc4a5a890549ee73f6eae4f3f0e3a3fb2110c8bbbb2131957137eced16a",
+    "id": "b171f1cf183c582a8cd9d492161746773a532d43b911efdc1a7f66c268150d29",
     "title": "成瀬は都を駆け抜ける",
     "author": "宮島未奈",
     "language": "ja",
     "dir": "rtl",
     "file": "naruse-3-miyako.epub",
-    "size": 573485,
+    "size": 573482,
     "cover": "naruse-3-miyako.webp",
     "translation": {
       "lang": "en",
@@ -46,13 +46,13 @@
   },
   {
     "slug": "konbini-ningen",
-    "id": "bbd83ca1dc9ff0c42525ffa647e319645c04021692020e47c5cbe2aca2c2faa3",
+    "id": "42ab98dc474e3b47389fd8d67eba72effab0e83b43218d3eb0f4e0e8457a19d8",
     "title": "コンビニ人間",
     "author": "村田沙耶香",
     "language": "ja",
     "dir": "rtl",
     "file": "konbini-ningen.epub",
-    "size": 446712,
+    "size": 446756,
     "cover": "konbini-ningen.webp",
     "translation": {
       "lang": "en",
@@ -61,13 +61,13 @@
   },
   {
     "slug": "morisaki-shoten",
-    "id": "1b69519c52e7bbe25df3c3302c65631de7daf14b24a41f8f752efab6b138634b",
+    "id": "6a084caa0ffb7220ef52f0906f0e494ead2d8b621db01852329c72e2a85cfbe0",
     "title": "森崎書店の日々",
     "author": "八木沢里志",
     "language": "ja",
     "dir": "rtl",
     "file": "morisaki-shoten.epub",
-    "size": 356465,
+    "size": 356464,
     "cover": "morisaki-shoten.webp",
     "translation": {
       "lang": "en",
@@ -76,13 +76,13 @@
   },
   {
     "slug": "mokuyoubi-cocoa",
-    "id": "f6be3ed1cfec6f4e840d3734d849f73fa3c0b5b09f11caf99c1f708ac996851a",
+    "id": "265f9df83b83b67b7592adeb9749497878bcd982623ce11747e5a322603ccaa8",
     "title": "木曜日にはココアを",
     "author": "青山美智子",
     "language": "ja",
     "dir": "rtl",
     "file": "mokuyoubi-cocoa.epub",
-    "size": 1728136,
+    "size": 1728157,
     "cover": "mokuyoubi-cocoa.webp",
     "translation": {
       "lang": "en",
