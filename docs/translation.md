@@ -45,8 +45,12 @@ and `<meta name="tsuzuri-translated" content="en"/>` into the head of every chap
 has one. A book with any English also gets `<meta property="tsuzuri:translation">en</meta>`
 in its package metadata (EPUB 3, with the `tsuzuri:` prefix declared on `<package>`; EPUB 2
 books get `<meta name="tsuzuri:translation" content="en"/>`), so the reader knows at open.
-The Japanese is never wrapped or modified. It also strips Kobo sync markup
-(`koboSpan`, `kobo.js`), and re-encodes JPEGs over 400 KB (mozjpeg q80).
+The Japanese is never wrapped or modified, so CFIs (which skip `.tsuzuri-en`) are the
+same in every build. It also strips Kobo sync markup (`koboSpan`, `kobo.js`), and re-encodes
+JPEGs over 400 KB (mozjpeg q80). A rebuild that changes the bytes changes the book's id (its
+SHA-256); a user holding the old build sees **Update**, which carries progress and annotations over
+([storage-pwa-ios.md §4a](storage-pwa-ios.md#4a-bundled-books--srcservicescatalogts)). How the
+reader uses the markup: [reader-engine.md §4a](reader-engine.md).
 
 ## Translation standard
 

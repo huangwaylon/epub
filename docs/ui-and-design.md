@@ -1,28 +1,15 @@
 # UI & design system
 
-Svelte conventions, design tokens, shared primitives, the component catalogue and the responsive
-rules. Target: iPad landscape (Home Screen PWA), iPhone second. Engine-side styling (the EPUB
-iframe, reading margins) lives in [reader-engine.md](reader-engine.md).
+Svelte conventions, design tokens, shared primitives, components and responsive rules.
+Target: iPad landscape (Home Screen PWA), iPhone second. Engine-side styling (the EPUB iframe,
+reading margins): [reader-engine.md §4–5](reader-engine.md).
 
 ## 1. Svelte conventions
 
 - **Stores** are `src/stores/*.svelte.ts` modules exporting a module-level `$state` object plus
-  mutator functions. Components read `store.x` directly. Never reassign the exported binding;
-  mutate in place. Persisted stores (settings, library, annotations) are only changed through
-  their mutators, so persistence and side effects run; `pwa` and `dict` are plain flag objects and
-  are written directly.
-
-  | Store | State | Mutators |
-  | --- | --- | --- |
-  | `settings` | `ReaderSettings` (`theme`, `fontScale`, `lineHeight`, `marginScale`, `fontFamily`, `writingMode`, `highlightLookups`); `appearance.resolved` | `initSettings`, `updateSettings` |
-  | `library` | `books`, `progress`, `loading`, `importing`, `importError` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` |
-  | `catalog` | bundled `entries`, `loaded`, `error`, `jobs`; per-entry status via `entryStatus()` | `loadCatalog`, `downloadBook`, `downloadAll`; query `availableEntries` |
-  | `annotations` | `items` (read-only getter over an immutable `$state.raw` array; replaced, never mutated) | `loadAnnotations`, `clearAnnotations`, `addHighlightRecord`, `removeHighlightRecord`, `saveAnnotation`, `removeAnnotation`; queries `isHighlighted`, `highlightAt` |
-  | `dict` | offline-dictionary status (`state`, `progress`, `error`, …) | written by `services/jp/dictdb.ts` |
-  | `pwa` | `needRefresh`, `offlineReady`, `update()` | written by SW registration in `main.ts` |
-  | `toast` | `current` (one toast at a time) | `showToast`, `actOnToast`, `dismissToast` |
-  | `nav` | `route` (`shelf` \| `reader` + `bookId`) | `openReader`, `openShelf`, `warmReader` |
-
+  mutator functions (table: [architecture.md §3](architecture.md#3-stores)). Components read
+  `store.x` directly. Never reassign the exported binding; mutate in place, and change
+  persisted stores only through their mutators.
 - **Props** via `$props()`; two-way props via `$bindable()`. Events are callback props
   (`onclose`, `onchange`, …), never `createEventDispatcher`. Content is passed as snippets
   (`children: Snippet`, `{@render children()}`).
@@ -45,7 +32,7 @@ Base tokens on `:root`:
 
 | Group | Tokens |
 | --- | --- |
-| Fonts | `--font-ui` (system sans), `--font-serif` (Hiragino Mincho → Noto Serif JP → Yu Mincho → Georgia), `--font-jp-sans` (read by `services/reader/styles.ts` for ゴシック), `--font-mono`. No web fonts. |
+| Fonts | `--font-ui` (system sans), `--font-serif` (Hiragino Mincho → Noto Serif JP → Yu Mincho → Georgia), `--font-jp-sans` (ゴシック), `--font-latin-serif` (English in the book), `--font-mono`. The reader reads the font tokens into the iframe CSS. No web fonts. |
 | Type | `--fs-caption` 12 · `--fs-footnote` 13 · `--fs-body` 15 · `--fs-callout` 17 · `--fs-title` 20 · `--fs-headword` 24 · `--fs-display` clamp(30–36px). Nothing below 12px. |
 | Spacing | `--sp-1`…`--sp-8` = 4…32px (4pt steps), `--sp-10` = 40px |
 | Radii | `--r-xs` 6 · `--r-sm` 10 · `--r-md` 14 · `--r-lg` 20 · `--r-xl` 28 · `--r-full` 999 |
@@ -62,8 +49,7 @@ default): `--paper`, `--paper-raised`, `--ink`, `--ink-soft`, `--ink-faint` (≥
 near-black: white on its accent is 2.7:1), `--control-track`, `--control-active`, `--danger`,
 `--scrim`, `--glass-edge`, plus `color-scheme`.
 
-**Highlights are one colour:** `HIGHLIGHT_HEX` in `services/types.ts`, used by the reader overlay,
-`SelectionToolbar`, `DictionaryPopup` and `AnnotationsPanel`. No colour picker.
+**Highlights are one colour:** `HIGHLIGHT_HEX` (`services/types.ts`) everywhere; no colour picker.
 
 **Theme resolution:** `applyTheme()` (internal to the settings store, run by `initSettings`/`updateSettings`) resolves `'auto'` against
 `prefers-color-scheme` (live), sets `<html data-theme>`, publishes `appearance.resolved`, and
@@ -101,19 +87,19 @@ used by `SelectionToolbar` and the scrubber bubble).
 | --- | --- | --- |
 | `components/Sheet` | `open`★ (false), `title?`, `onclose?`, `children`, `maxHeight` ('85dvh'), `variant` ('sheet' \| 'popover'), `anchor?` | `sheet`: bottom sheet on phones, centred card ≥768px, dimming scrim. `popover`: clear scrim; on iPad a `--glass-bg-strong` popover hung under `anchor` (re-placed on resize), bottom sheet on phones. Closes on scrim, grip, × (32px disc, 44pt hit) and Escape. `role="dialog" aria-modal`; focus moves in and returns to the trigger. Motion: `sheetMotion`. |
 | `components/Segmented` | `value`★, `options: {value, label?, icon?, count?, lang?, ariaLabel?}[]`, `onchange?`, `label?` | Capsule segmented control, 44pt options, `aria-pressed`, optional count badge. |
-| `components/Icon` | `name`, `size` ('sm' 18 \| 'md' 22 \| 'lg' 48 \| px), `stroke` (2), `fill` (false) | 24×24 stroke paths: `plus minus gear bookmark list chevron-left chevron-down x trash search book highlighter copy download aa`. `fill` solidifies the same path. `aria-hidden`. |
+| `components/Icon` | `name`, `size` ('sm' 18 \| 'md' 22 \| 'lg' 48 \| px), `stroke` (2), `fill` (false) | 24×24 stroke paths: `plus minus gear bookmark list chevron-left chevron-down x trash search book highlighter copy download aa languages`. `fill` solidifies the same path. `aria-hidden`. |
 | `components/Toast` | `message`, `actionLabel?`, `onaction?`, `ondismiss?`, `lift` (false) | Glass pill, `role="status"`; `lift` clears the reader's bottom bar. |
 | `components/ToastHost` | — | Mounted by `App`. App toasts win over the PWA "new version · Refresh" prompt and "Ready to read offline" (auto-dismiss 4s). |
 | `components/LoadingScreen` | `title?`, `onback?` | Serif title over an indeterminate bar, fading in after 0.25s; used by `App` (reader chunk loading) and `Reader` (book opening). |
-| `library/Shelf` | — | Header (Settings + Import `icon-btn`s), cover grid with progress rule and `NN%`/New/Finished, skeleton cards while importing. Long-press / right-click → book sheet (Read / Remove with Undo). Below it, **Included books**: bundled entries not in the library, same card grid; each card is one button (whole card = ≥44pt target) with the catalog cover, an `EN`/`EN NN%` glass badge (translation coverage), and a tinted pill showing the size, a spinner + `NN%` while downloading (the progress rule fills), or **Retry** + a danger-coloured message on error; **Download all · size** in the section header. Empty library + bundled books → a compact raised intro card (so covers stay above the fold on a landscape phone); no bundled books → the full empty state. Settings sheet lazy-loads `ShelfSettings`. |
+| `library/Shelf` | — | Header (Settings + Import `icon-btn`s), cover grid with progress rule and `NN%`/New/Finished, skeleton cards while importing. Long-press / right-click → book sheet (Read / Remove with Undo). **Included books** below: bundled entries not in the library, each card one button with the catalog cover, an `EN`/`EN NN%` badge (translation coverage) and a pill: size, **Update** (an older build is in the library), spinner + `NN%`, or **Retry** + message; **Download all · size** in the header. Empty library + bundled books → a compact intro card (covers stay above the fold on a landscape phone). Settings sheet lazy-loads `ShelfSettings`. |
 | `library/BookCover` | `book` (`id`, `title`, `author`, `cover?`), `src?` | Cover blob via object URL (revoked on cleanup), or `src` as-is (catalog thumbnail), or a hue-from-id placeholder; 2:3. |
 | `library/ShelfSettings` | — | Dictionary status/Download/Retry + progress, theme picker, About (storage, version, credits). |
-| `reader/ReaderSettings` | `onchange(kind: 'appearance' \| 'layout' \| 'writingmode')` | Display panel: theme, typeface, size/line-spacing/margin steppers, writing direction, "Highlight looked-up words" switch (`role="switch"`). |
+| `reader/ReaderSettings` | `hasEnglish` (false), `onchange(kind: 'appearance' \| 'layout' \| 'writingmode' \| 'english')` | Display panel: theme, typeface, size/line-spacing/margin steppers, writing direction, "Highlight looked-up words" and (with `hasEnglish`) Translation switches (`role="switch"`). |
 | `reader/TocSheet` | `toc`, `currentId?`, `currentLabel?`, `onnavigate(href)` | Flattened TOC; current chapter in accent, scrolled into view. |
 | `reader/AnnotationsPanel` | `onnavigate(cfi)`, `onremove(a)`, `chapterOrder` ([]) | Highlights & Bookmarks tabs with counts; highlights grouped by chapter in TOC order; single words as serif headwords. |
 | `reader/SelectionToolbar` | `open` (false), `rect`, `onHighlight?`, `onCopy?` | Glass capsule above a selection (`placeAnchored`). |
 | `reader/ProgressScrubber` | `fraction` (0), `sectionLabel` (''), `labelAt?(frac)`, `onseek?(frac)` | Bottom-bar progress. Drag arms past 8px touch / 4px mouse and seeks on release; bubble shows the target chapter + %; a tap only flashes the thumb. `role="slider"`, arrow/Home/End keys. |
-| `reader/DictionaryPopup` | `open`, `anchor`, `vertical`, `loading`, `needsDownload`, `result`, `highlighted`, `onclose`, `ondownload`, `ontogglehighlight` | Floating card (`--z-popup`) placed by `placeNearWord`; not a sheet. Owned by the reader. |
+| `reader/DictionaryPopup` | see [japanese.md §8](japanese.md#8-card-dictionarypopupsvelte) | Floating card (`--z-popup`) placed by `placeNearWord`; not a sheet. Owned by the reader. |
 
 Utilities: `use:longpress` (`lib/actions/longpress.ts`; 450ms, cancels on >10px movement),
 `debounce` (`lib/util/debounce.ts`, with `.cancel()`), `placeAnchored` / `placeNearWord`

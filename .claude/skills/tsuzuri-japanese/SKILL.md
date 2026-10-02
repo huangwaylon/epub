@@ -23,7 +23,7 @@ Read [`docs/japanese.md`](../../../docs/japanese.md) first (the reference); this
 | Conjugation not recognised | deinflection (vendored GPL, don't edit) | `deinflect.ts` |
 | Stale / slow answers, worker dies | worker lifecycle, `RESULT_CACHE` | `lookupClient.ts`, `lookup.worker.ts` |
 | Download / offline / "Preparing…" stuck | `downloadDictionary`, `cacheIpadic`, `dictPhase` | `dictdb.ts`, `stores/dict.svelte.ts` |
-| Card content / states | popup | `src/lib/reader/DictionaryPopup.svelte` |
+| Card content / states | card (incl. the Translation section) | `src/lib/reader/DictionaryPopup.svelte`, `defineCard.svelte.ts` |
 | Tap routing, card placement, highlight paint | reader | see the **tsuzuri-reader** skill |
 
 ## 2. Invariants to preserve

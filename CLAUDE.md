@@ -24,7 +24,7 @@ https://huangwaylon.github.io/epub/ ([docs/deployment.md](docs/deployment.md)).
   top-bar button, `e`, or Display → Translation (persisted `showEnglish`). With it off, a
   word's card has **Show translation**: that unit's English inside the card (horizontal in
   縦書き too; the page never reflows; `t` toggles; stays open for the same unit; opens by
-  itself without the dictionary). English never looks up; a tap on it is a blank tap. A
+  itself without the dictionary; tints its Japanese). English never looks up; a tap on it is a blank tap. A
   one-time toast offers 横書き when show-all English would run sideways.
 - Bottom progress bar is **drag-to-scrub** (previews the target chapter).
 - Highlights are always yellow. **Highlights & Bookmarks** panel groups by chapter;
@@ -32,12 +32,10 @@ https://huangwaylon.github.io/epub/ ([docs/deployment.md](docs/deployment.md)).
   settings open as a glass popover under the Aa button.
 
 ## Stack
-Svelte 5 (runes) · TypeScript · Vite + `vite-plugin-pwa`. Rendering: **foliate-js**
-(vendored, MIT, `src/vendor/foliate-js`). Dictionary: **10ten** ecosystem —
-`@birchill/jpdict-idb` + `@birchill/normal-jp` + a **vendored GPL-3.0** deinflector
-(`src/services/jp/deinflect.ts`). Segmentation: **kuromoji** (`@sglkc/kuromoji`, IPADIC).
-Storage: **OPFS** (EPUB bytes, IndexedDB fallback) + **IndexedDB** via `idb`.
-Runtime deps: jpdict-idb, normal-jp, kuromoji, idb. Backend-free.
+Svelte 5 (runes) · TypeScript · Vite + `vite-plugin-pwa`. Rendering: **foliate-js** (vendored,
+MIT). Dictionary: `@birchill/jpdict-idb` + `@birchill/normal-jp` + a **vendored GPL-3.0** 10ten
+deinflector. Segmentation: **kuromoji** (`@sglkc/kuromoji`, IPADIC). Storage: **OPFS** (EPUB
+bytes, IndexedDB fallback) + **IndexedDB** via `idb`. Those four are the only runtime deps.
 
 ## Architecture (strict downward deps)
 ```
@@ -46,13 +44,11 @@ framework-agnostic) → vendored engines (src/vendor/foliate-js)
 ```
 - **Entry:** `src/main.ts` mounts immediately (no IndexedDB await). An inline script in
   `index.html` sets `data-theme` from a localStorage mirror (`tsuzuri:settings`) before
-  first paint; `initSettings` then hydrates from IDB (source of truth). Theme defaults to
-  `'auto'` (`appearance.resolved` = light/sepia/dark). SW update check on foreground (≤ hourly).
-- **Routing:** `App.svelte` switches Shelf ↔ Reader via the `nav` store. The route is saved
-  to sessionStorage only right before a deliberate reload (SW update, "Try again").
-- **Lazy loading:** the Shelf never loads foliate (`library.ts` imports `view.js` on
-  demand). The Reader chunk loads via retryable `loadReader()` (warmed after mount and on
-  cover press) and prefetches foliate's zip/epub/paginator chunks at mount.
+  first paint; `initSettings` then hydrates from IDB (source of truth).
+- **Routing:** `App.svelte` switches Shelf ↔ Reader via the `nav` store; the route goes to
+  sessionStorage only right before a deliberate reload (SW update, "Try again").
+- **Lazy loading:** the Shelf never loads foliate. The Reader chunk loads via retryable
+  `loadReader()` and prefetches foliate's zip/epub/paginator chunks at mount.
 - **Reader core:** one `ReaderController` (`src/services/reader/controller.ts`) owns
   `<foliate-view>`, with single-purpose helpers beside it (`gestures`, `turns`, `highlights`,
   `english`, `styles`, `timers`); `src/lib/reader/Reader.svelte` wires it to the UI and
@@ -80,20 +76,16 @@ npm run build    # production build → dist/ (base /epub/)
 ```
 - **Test book:** `node scripts/make-test-epub.mjs` → `test-books/tsuki-to-neko.epub`
   (vertical JP, ruby, conjugated verbs, multi-page).
-- **Browser check:** chrome-devtools MCP at iPad landscape 1194×834 with touch: import the
-  test EPUB → open → download the dictionary (Settings) → verify the interaction model
-  above (swipe both ways, tap-define incl. first/last glyph of a column, tap-to-dismiss,
-  highlight reopen/remove, drag-select → highlight/copy, scrubber, bookmark). Console should
-  show only foliate's benign iframe `allow-scripts and allow-same-origin` warning. The DEV
-  `window.__tsuzuri` hook exposes the content doc/controller for scripted taps. Recipes:
-  [development.md](docs/development.md), the **tsuzuri-verify** skill.
+- **Browser check:** the **tsuzuri-verify** skill (chrome-devtools MCP, iPad landscape
+  1194×834): verify the interaction model above. Console: only foliate's iframe
+  `allow-scripts and allow-same-origin` warning. DEV `window.__tsuzuri` exposes the content
+  doc for scripted taps ([development.md](docs/development.md)).
 
 ## Conventions
 - Svelte 5 runes. Stores are `*.svelte.ts` modules exporting module-level `$state`; mutate
   via exported functions (e.g. `updateSettings`). No Svelte imports in `src/services/**`.
-- Scoped component styles on the tokens in `src/app.css` (spacing, type, radii, glass,
-  motion); theme is CSS custom properties on `<html data-theme>`, re-injected into the
-  content iframe.
+- Scoped component styles on the tokens in `src/app.css`; theme is CSS custom properties on
+  `<html data-theme>`, re-injected into the content iframe.
 - `lang="ja"` on Japanese text; `aria-label` on icon-only buttons; ≥44pt touch targets;
   pad with `env(safe-area-inset-*)`.
 - Match surrounding style; run `npm run check` and `npm test` after changes.
@@ -104,14 +96,13 @@ npm run build    # production build → dist/ (base /epub/)
 - **Lookup runs in a Web Worker** (`lookup.worker.ts` ↔ `lookupClient.ts`); only DOM work
   (`extractTextAt`/`rangeForSpan`) is on the main thread. Worker: warmed at reader mount,
   re-created on resume if `pingLookup()` fails, shed after 60 s backgrounded, disposed on
-  reader exit. A tap waits ≤1.2 s for an in-flight kuromoji build rather than answering
-  greedily; `lookupClient` caches only ready-derived results (cleared after a download).
+  exit. A tap waits ≤1.2 s for an in-flight kuromoji build rather than answering greedily;
+  only ready-derived results are cached (cleared after a download).
 - **kuromoji dict:** 11 trimmed `*.dat.gz` (~11 MB, ≈33 MB resident) staged to
-  `public/kuromoji/dict/` by `scripts/copy-kuromoji-dict.mjs` (gitignored; `tid_pos` is
-  dropped — boundaries come from the lattice, pinned by `segment.golden.test.ts`).
-  `kuromojiLoader.cjs` (aliased in `vite.config.ts`) inflates with `DecompressionStream`
-  and uses flat target maps. SW cache `kuromoji-ipadic-v2`, **no expiration** (a partial
-  shard set builds no trie); `cacheIpadic()` pre-fills it. Depth: [japanese.md](docs/japanese.md).
+  `public/kuromoji/dict/` (gitignored; `tid_pos` dropped, boundaries from the lattice, pinned
+  by `segment.golden.test.ts`). `kuromojiLoader.cjs` (aliased in `vite.config.ts`) inflates
+  with `DecompressionStream`. SW cache `kuromoji-ipadic-v2` has **no expiration** (a partial
+  shard set builds no trie). Depth: [japanese.md](docs/japanese.md).
 - **Lookup ranking:** deinflections must match the entry's word type (10ten
   `entryMatchesType`); common deinflections lead; an uncommon conjugation parse that
   overruns the kuromoji token yields to a shorter common match (したように → する).
@@ -124,25 +115,24 @@ npm run build    # production build → dist/ (base /epub/)
   live selection; `touch-action: manipulation` on `.reader` and the content body (a stray
   double-tap zoom kills taps and swipes). A touch swipe is decided on move once it crosses
   45px. A highlight `click` on the same gesture stands down (`tapDefinedAt`/`tapDismissedAt`).
-- **Vendored foliate-js:** edit only as a documented `TSUZURI PATCH`. Current patches:
-  (1) `view.js` PDF branch removed (unmarked); (2) `paginator.js` own touch page-turn disabled (our
-  swipe drives turns); (3) `#turnPage` resolves immediately, holding its lock 100 ms on a
-  timer only after a section crossing; (4) `View#render` and `Paginator#render` skip a body-less document;
-  (5) `epubcfi.js` `fromRange`/`toRange` reject `.tsuzuri-en`, so CFIs match the
-  untranslated book (a start inside English moves forward, an end back; old-format
-  `.tsuzuri-ja` documents stay unfiltered).
-  `animated` stays **off**; we animate turns ourselves. Content is in a **closed-shadow
-  iframe** — reach it only via foliate's `load` event `doc` (or DEV `window.__tsuzuri`).
+- **Vendored foliate-js:** edit only as a documented `TSUZURI PATCH` (table:
+  [reader-engine.md §1](docs/reader-engine.md)): (1) `view.js` PDF branch removed (unmarked);
+  (2) `paginator.js` touch page-turn disabled; (3) `#turnPage` resolves immediately;
+  (4) `View#render` and `Paginator#render` skip a body-less document; (5) `epubcfi.js`
+  `fromRange`/`toRange` reject `.tsuzuri-en`, so CFIs match the untranslated book.
+  `animated` stays **off**; turns are animated by the app. Content is in a **closed-shadow
+  iframe**, reachable only via foliate's `load` event `doc` (or DEV `window.__tsuzuri`).
 - **Vertical layout:** `applyLayout` derives vertical caps from the live viewport and is
   idempotent; `#expectVertical()` pre-sets writing mode before `view.init`. Books that
   mark 縦書き only via calibre's `class="vrtl"` get `html{writing-mode:vertical-rl}`
   prepended (`#applyIntendedWritingMode`) — only that explicit marker counts.
 - **English:** `hasEnglish` from the package's `tsuzuri:translation` meta at open (fallback:
   a loaded section's `tsuzuri-translated` meta; no spine scan). Show / hide all re-anchors the
-  page on the character sampled at the centre (`EnglishState.keepPage`) — foliate's own
-  anchor can be stale. A card reads its unit's English with `unitEnglish` (no page change). Extraction and CFIs ignore English; selection
-  highlights clamp out of it, and drawn highlights skip visible English.
-  Contract: [translation.md](docs/translation.md), depth: reader-engine.md §4a.
+  page on the character sampled at the centre (`EnglishState.keepPage`); foliate's own anchor
+  can be stale. A card reads its unit's English with `unitEnglish` (no page change).
+  Extraction and CFIs ignore English; selection highlights clamp out of it, and drawn
+  highlights skip visible English. Contract: [translation.md](docs/translation.md), depth:
+  reader-engine.md §4a.
 - **iOS viewport:** a cold Home Screen launch reports a layout viewport short by the
   status-bar inset (852 → 793 on iPhone) until a rotation, and WebKit paints nothing below
   the document box. `viewport.ts` publishes the **screen** height when standalone at full
@@ -150,17 +140,18 @@ npm run build    # production build → dist/ (base /epub/)
   both depend only on screen size + window width, so they can't feed back into layout.
   Relies on `black-translucent` + `viewport-fit=cover` in `index.html`.
 - **Highlight volume is a perf constraint:** `HighlightPainter.drawSections` paints 24 per
-  task in `nearestFirst` order (`src/services/cfi.ts`), seeded before `open()`, generation-guarded.
-  The `annotations` store is an immutable `$state.raw` array with lookup maps; all
-  create/remove goes through `addHighlight`/`removeHighlight` in `Reader.svelte` (paint
-  first, persist in background, dedupe on CFI). Per-document listeners use `DocumentInput`'s
-  per-document AbortControllers; every timeout lives in the controller's one `Timers` set.
+  task in `nearestFirst` order, seeded before `open()`, generation-guarded. The `annotations`
+  store is an immutable `$state.raw` array with lookup maps; all create/remove goes through
+  `addHighlight`/`removeHighlight` in `Reader.svelte` (paint first, persist in background,
+  dedupe on CFI). Per-document listeners use `DocumentInput`'s per-document AbortControllers;
+  every timeout lives in the controller's one `Timers` set.
 - **iOS storage/import:** EPUB import is `<input type="file">` only; OPFS with IndexedDB
   fallback; installed PWAs are exempt from 7-day eviction. Bundled books
   (`public/books/catalog.json`) are downloaded only when the user asks: fetch → SHA-256 must
   equal the catalog `id` (= library id) → `importEpub` with catalog metadata (no foliate on
-  the shelf). "Downloaded" = the library has that id, so a deleted book is available again;
-  never auto-import. The SW precaches the catalog + covers, never the EPUBs (`NetworkOnly`).
+  the shelf). "Downloaded" = the library has that id; never auto-import. A newer build of a
+  held book shows **Update** and carries progress/annotations over. The SW precaches the
+  catalog + covers, never the EPUBs (`NetworkOnly`).
 
 ## On-device status
 Verified on real iPad (iOS 26.5): import, pagination + 縦書き + furigana, swipe turns,

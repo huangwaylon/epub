@@ -18,7 +18,7 @@ Depth: [`docs/development.md`](../../../docs/development.md) §5–7.
    `test-books/tsuki-to-neko.epub` is missing: `node scripts/make-test-epub.mjs`.
 3. **Browser** (chrome-devtools MCP, load via ToolSearch): `new_page` → `resize_page`
    **1194×834** → dev URL. Dismiss any update toast. `upload_file` on **Import book**, open the
-   book, download the dictionary (shelf Settings or the popup's Download).
+   book, download the dictionary (shelf Settings or the card's Download).
 4. **Check** (`take_screenshot` as you go; snapshots expose iframe text nodes with uids):
    - 縦書き RTL columns fill the page box (no bottom dead band), furigana beside kanji.
    - Horizontal swipe turns the page with a **short horizontal push** (dragging right advances
@@ -32,6 +32,9 @@ Depth: [`docs/development.md`](../../../docs/development.md) §5–7.
      (決けっ心 is the regression).
    - Drag-select → toolbar → Highlight / Copy. Drag the bottom progress bar to scrub (a plain tap
      must not seek). Bookmark → listed in **Highlights & Bookmarks**.
+   - English (a downloaded bundled book): `e` / the top-bar button shows and hides all
+     English without losing the page; with it hidden, a word's card offers **Show
+     translation** (horizontal in 縦書き, page unchanged).
    - Sheets (TOC, Highlights & Bookmarks, Settings) are centred cards; Display (Aa) is a glass
      popover under its button. Shelf content is centred (max 1120px).
 5. **Console:** `list_console_messages` — only the foliate iframe `allow-scripts and
@@ -44,8 +47,5 @@ Synthetic gestures inside the book: the content lives in a closed shadow root. I
 
 ## On a real iPhone/iPad
 
-Service workers and Add to Home Screen need HTTPS: tunnel `npm run dev` (`cloudflared tunnel`,
-`ngrok`) or `npm run build && npm run preview` (open `/epub/`), or use the deployed site. Safari →
-Share → **Add to Home Screen**, launch the icon, then re-check the items CLAUDE.md marks as
-unconfirmed on iOS (landscape column fill, `--app-height`/`--doc-height` cold launch, tap
-accuracy in vertical text, storage durability across relaunch).
+[`docs/development.md`](../../../docs/development.md) §7 (HTTPS tunnel or the deployed site,
+Add to Home Screen), then re-check the items CLAUDE.md lists as not yet verified on iOS.

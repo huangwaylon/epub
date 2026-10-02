@@ -48,32 +48,28 @@ area you're changing. This is the procedure.
 - Content-document listeners go through `DocumentInput` (one AbortController per document);
   host ones use `#ac`. Timeouts go in the controller's `Timers` (cleared on destroy).
 - **English** (`.tsuzuri-en`, [translation.md](../../../docs/translation.md)) is invisible to
-  CFIs (patch 5) and to extraction; it enters the page only via show-all
-  (`applyAppearance`, re-anchored by `keepPage`); the card reads one unit's English (doc §4a). Detection is the package
-  meta at open (no spine scan).
+  CFIs (patch 5) and to extraction. It enters the page only via show-all (`applyAppearance`,
+  re-anchored by `keepPage`); the card reads one unit's English as text (doc §4a, §11).
+  Detection is the package meta at open (no spine scan).
 - Services stay framework-free: no Svelte imports under `src/services/reader/` (the one
   existing exception elsewhere is `jp/dictdb.ts` → `stores/dict.svelte`).
 
 ## Common tasks
 | Task | Where |
 | --- | --- |
-| Add a reader setting | `types.ts` → `ReaderSettings.svelte` (`updateSettings` + `onchange(kind)`) → `appearanceCSS` / `applyLayout` (doc §12) |
+| Add a reader setting | `types.ts` → `ReaderSettings.svelte` (`updateSettings` + `onchange(kind)`) → `appearanceCSS` / `applyLayout` ([development.md §6](../../../docs/development.md#6-adding-a-reader-setting)) |
 | Margins / measure / spread | `applyLayout`; mind the vertical axis swap (doc §5a) |
 | Dead band at the bottom of a vertical page | viewport-derived caps, `#onResize`, `#nudgeLayout` (doc §5a) |
 | RTL spread order, calibre `vrtl` books | `#applyPageProgression`, `#applyIntendedWritingMode` (doc §5b–c) |
 | Swipe / tap thresholds | constants + `trackGestures` in `gestures.ts` (doc §7) |
 | Page-turn animation, end bounce | `PageTurner` in `turns.ts` (doc §6) |
 | Highlight or bookmark behaviour | doc §9, §11; `cfi.ts` helpers are unit-tested |
-| Popup / toolbar placement | `placeNearWord` / `placeAnchored` in `src/lib/util/anchoredPosition.ts` |
+| Card / toolbar placement | `placeNearWord` / `placeAnchored` in `src/lib/util/anchoredPosition.ts` (doc §11) |
 | Keyboard | `onKey` in `Reader.svelte` (doc §8) |
 | Dictionary card behaviour | `createDefineCard` in `defineCard.svelte.ts` (doc §8, §11) |
 
 ## Verify
 1. `npm run check` and `npm test`.
-2. Use the **tsuzuri-verify** skill (chrome-devtools, iPad landscape 1194×834): import the
-   test EPUB, check vertical RTL pagination, swipe both ways (and the end bounce), tap to
-   define (including a column's first/last glyph under the bar band), tap-to-dismiss,
-   highlight reopen + Remove, drag-select → Highlight/Copy, scrubber, bookmark ribbon.
-   Console: only the foliate sandbox warning.
+2. The **tsuzuri-verify** skill (chrome-devtools, iPad landscape 1194×834).
 3. Anything iOS-specific (viewport, column fill, caret seeds) is unverified until tested on
-   a device — say so.
+   a device; say so.

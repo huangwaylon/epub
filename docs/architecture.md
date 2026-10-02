@@ -1,179 +1,109 @@
 # Tsuzuri — System Architecture
 
-The system map: layers, entry point, stores, data flows and a file index. Subsystem
-depth lives in [reader-engine.md](./reader-engine.md) (foliate, pagination, taps,
-highlights), [japanese.md](./japanese.md) (dictionary and lookup),
-[storage-pwa-ios.md](./storage-pwa-ios.md) (persistence, service worker, iOS),
-[ui-and-design.md](./ui-and-design.md) (components, tokens) and
-[development.md](./development.md) (scripts, testing, verification).
+The system map: layers, entry point, stores, data flows and a file index. Subsystem depth:
+[reader-engine.md](./reader-engine.md), [japanese.md](./japanese.md),
+[storage-pwa-ios.md](./storage-pwa-ios.md), [ui-and-design.md](./ui-and-design.md),
+[translation.md](./translation.md), [development.md](./development.md).
 
-## 1. Overview
+## 1. Layers
 
-A single-page, offline-first, **backend-free** EPUB reader for Japanese books, shipped as
-static files to GitHub Pages ([deployment.md](./deployment.md)). Features: paginated
-縦書き/横書き reading via vendored foliate-js, offline tap-to-define (kuromoji segmentation +
-vendored 10ten deinflection + JMdict via jpdict-idb, run in a Web Worker), CFI-anchored
-highlights (always yellow) and bookmarks, and an installable iOS PWA.
-
-**Runtime npm deps (4):** `@birchill/jpdict-idb`, `@birchill/normal-jp`, `@sglkc/kuromoji`,
-`idb`. foliate-js (MIT) and the 10ten deinflector (**GPL-3.0-or-later**, which makes the
-app GPL) are vendored.
-
-## 2. Layers
-
-Dependencies point strictly downward. No Svelte imports in `src/services/**`.
+Dependencies point strictly downward. No Svelte imports in `src/services/**` (one exception:
+`jp/dictdb.ts` writes `stores/dict.svelte`).
 
 ```
 UI          src/App.svelte, src/lib/**           Svelte 5 components
   │ read/mutate stores, call services
 STORES      src/stores/*.svelte.ts               module-level rune singletons
   │ call services, persist
-SERVICES    src/services/**                      framework-agnostic: reader, library,
+SERVICES    src/services/**                      framework-agnostic: reader, library, catalog,
   │                                              storage, viewport, jp (+ lookup worker)
-VENDORED    src/vendor/foliate-js, jp/deinflect.ts
+VENDORED    src/vendor/foliate-js (MIT), jp/deinflect.ts (GPL-3.0-or-later)
   │
 PLATFORM    OPFS (EPUB bytes) · IndexedDB (idb: app data; jpdict-idb: JMdict)
             · Cache API / service worker (app shell, bundled catalog + covers, kuromoji dict)
 ```
 
-## 3. Entry point & routing
+## 2. Entry point & routing
 
-1. **`index.html`** — an inline script reads the localStorage settings mirror
+1. **`index.html`**: an inline script reads the localStorage settings mirror
    (`tsuzuri:settings`), resolves `'auto'` via `prefers-color-scheme`, and sets
-   `<html data-theme>` + the `theme-color` meta before first paint.
-2. **`src/main.ts`** (no top-level `await`):
-   - `void initSettings()`: seed from the mirror, apply the theme, hydrate from IndexedDB
-     in the background.
-   - `initViewport()`: publish `--doc-height` / `--app-height`
-     ([storage-pwa-ios.md §6](./storage-pwa-ios.md#6-ios-viewport--srcservicesviewportts)).
-   - `void validateRestoredRoute(...)`: a reader route restored from sessionStorage falls
-     back to the shelf if the book is gone.
-   - `void requestPersistence()`.
-   - `registerSW(...)`: wires the `pwa` store, and on return to the foreground calls
-     `registration.update()` at most hourly.
-   - Deletes the superseded `kuromoji-ipadic` cache, and 4 s later (online, dictionary
-     installed) re-fills the IPADIC cache via a dynamic `dictdb` import (`cacheIpadic()`).
-   - `mount(App)`.
-3. **`src/App.svelte`** — `nav.route.name === 'reader'` renders the lazily loaded
-   `Reader` (`loadReader()`, inside `{#key bookId}`), showing `LoadingScreen` while it
-   loads, and **Try again** (full reload) / **Back to library** if the chunk fails.
-   Otherwise it renders `Shelf`. `ToastHost` is always mounted. The reader chunk is warmed
-   ~1.5 s after mount (idle callback) and on pointerdown on a cover.
+   `<html data-theme>` + `theme-color` before first paint.
+2. **`src/main.ts`** (no top-level `await`): `void initSettings()` (mirror first, IndexedDB in
+   the background), `initViewport()`, `validateRestoredRoute` (a restored reader route falls
+   back to the shelf if the book is gone), `requestPersistence()`, `registerSW` (update check
+   on foreground, at most hourly), the IPADIC cache housekeeping
+   ([storage-pwa-ios.md §5](./storage-pwa-ios.md#5-pwa--viteconfigts-indexhtml-srcmaints)),
+   then `mount(App)`.
+3. **`src/App.svelte`**: `nav.route.name === 'reader'` renders the lazily loaded `Reader`
+   (`loadReader()`, inside `{#key bookId}`) behind a `LoadingScreen`, with **Try again** (full
+   reload) / **Back to library** if the chunk fails; otherwise `Shelf`. `ToastHost` is always
+   mounted. The reader chunk is warmed ~1.5 s after mount (idle callback) and on pointerdown
+   on a cover.
 
-**Lazy loading.** The shelf's critical path has no foliate: `library.ts` imports
-`view.js` only when a user-picked file is imported (bundled downloads use catalog metadata
-and never parse), `ShelfSettings` is a dynamic import, the reader is its own chunk,
-and the reader prefetches foliate's zip/epub/paginator chunks at mount.
+**Lazy loading.** The shelf's critical path has no foliate: `library.ts` imports `view.js` only
+for a user-picked file (bundled downloads use catalog metadata), `ShelfSettings` is a dynamic
+import, and the reader is its own chunk that prefetches foliate's zip/epub/paginator chunks at
+mount.
 
-## 4. Stores
+## 3. Stores
 
-Each store exports a `$state` object that components read directly. Mutate only through
-the exported functions, so persistence and side effects happen together.
+Each store exports a `$state` object that components read directly; mutate only through the
+exported functions so persistence and side effects run. `dict` and `pwa` are plain flag
+objects written by their owners.
 
 | Store | Holds | Key functions | Persisted in |
 |---|---|---|---|
-| `settings` | `settings: ReaderSettings` (incl. `showEnglish`; a stored `showTranslations` is read as `showEnglish`); `appearance.resolved` (theme with `'auto'` resolved, live) | `initSettings`, `updateSettings` | IDB `settings['reader']` (source of truth) + localStorage mirror `tsuzuri:settings` |
+| `settings` | `settings: ReaderSettings`; `appearance.resolved` (live theme with `'auto'` resolved) | `initSettings`, `updateSettings` | IDB `settings['reader']` (source of truth) + localStorage mirror `tsuzuri:settings` |
 | `library` | `books`, `progress` (by id), `loading`, `importing`, `importError` | `refreshLibrary`, `importFiles`, `deleteBook`, `markOpened` | IDB `books` / `progress`; bytes in OPFS |
-| `catalog` | bundled `entries`, `loaded`, `error`, `jobs` (by id: downloading + progress, or error); status is derived by `entryStatus(entry)` (in the library ⇒ downloaded) | `loadCatalog`, `downloadBook`, `downloadAll`, `availableEntries`, `entryStatus` | memory (downloads land in `library`) |
-| `annotations` | `annotations.items`: an immutable `$state.raw` array for the open book, with non-reactive lookup maps | `loadAnnotations`, `clearAnnotations`, `isHighlighted`, `highlightAt`, `addHighlightRecord`, `removeHighlightRecord`, `saveAnnotation`, `removeAnnotation`, `newId` | IDB `annotations` (`byBook`) |
-| `dict` | `state` (`init`/`empty`/`ok`/`unavailable`), `updating`, `progress`, `warming`, `error?` | mutated by `jp/dictdb.ts` | jpdict-idb's own IndexedDB |
-| `nav` | `route`: `{name:'shelf'}` or `{name:'reader', bookId}` | `openReader`, `openShelf`, `rememberRouteForReload`, `validateRestoredRoute`, `loadReader`, `warmReader` | sessionStorage `tsuzuri:route`, written only just before a deliberate reload |
+| `catalog` | bundled `entries`, `loaded`, `error`, `jobs` (by id) | `loadCatalog`, `downloadBook`, `downloadAll`, `availableEntries`, `entryStatus` | memory (downloads land in `library`) |
+| `annotations` | `items`: immutable `$state.raw` array for the open book, plus non-reactive lookup maps | `loadAnnotations`, `clearAnnotations`, `isHighlighted`, `highlightAt`, `addHighlightRecord`, `removeHighlightRecord`, `saveAnnotation`, `removeAnnotation` | IDB `annotations` (`byBook`) |
+| `dict` | `state`, `updating`, `progress`, `warming`, `error?` | written by `jp/dictdb.ts` | jpdict-idb's own IndexedDB |
+| `nav` | `route`: `{name:'shelf'}` or `{name:'reader', bookId}` | `openReader`, `openShelf`, `rememberRouteForReload`, `validateRestoredRoute`, `loadReader`, `warmReader` | sessionStorage `tsuzuri:route`, only just before a deliberate reload |
 | `pwa` | `needRefresh`, `offlineReady`, `update()` | set by `main.ts` | memory |
-| `toast` | `toast.current` (one toast at a time) | `showToast`, `actOnToast`, `dismissToast` | memory |
+| `toast` | `current` (one at a time) | `showToast`, `actOnToast`, `dismissToast` | memory |
 
-`refreshLibrary` uses a generation counter to drop stale results, and keeps unchanged
-books' object identity so covers aren't re-decoded. Store conventions are covered in
-[ui-and-design.md §1](./ui-and-design.md).
+`refreshLibrary` drops stale results with a generation counter and keeps unchanged books'
+object identity so covers aren't re-decoded.
 
-## 5. Data flows
+## 4. Data flows
 
-**Import.** Shelf `<input type=file>` → `importFiles` (filters `.epub` /
-`application/epub+zip`, imports sequentially, refreshes after each file of a batch) →
-`importEpub`: `id` = SHA-256 of the bytes. If the id already exists, restore the bytes if
-they're missing, bump `lastOpenedAt`, and return. Otherwise `putBook` (OPFS or IDB
-fallback) runs in parallel with foliate's `makeBook` (title, author, language, `dir`,
-cover → 320px WebP thumbnail), then `putBookMeta`. On failure the bytes are rolled back.
-Details: [storage-pwa-ios.md §4](./storage-pwa-ios.md#4-library-import--srcserviceslibraryts).
+| Flow | Path | Depth |
+|---|---|---|
+| Import | Shelf `<input type=file>` → `importFiles` (sequential, refresh after each) → `importEpub` (id = SHA-256, dedupe, bytes ‖ metadata, rollback) | [storage-pwa-ios.md §4](./storage-pwa-ios.md#4-library-import--srcserviceslibraryts) |
+| Bundled books | `loadCatalog()` → **Included books** → `downloadBook` → `downloadEntry` (fetch, SHA-256 must equal the catalog id) → `importEpub` with catalog metadata | [storage-pwa-ios.md §4a](./storage-pwa-ios.md#4a-bundled-books--srcservicescatalogts) |
+| Open | `openReader(id)` + `markOpened` → `Reader` mount → `ReaderController`, highlights seeded before `open(file, progress?.cfi)` | [reader-engine.md §11](./reader-engine.md) |
+| Tap / swipe | `trackGestures` → swipe turns; tap → `extractTextAt` (main) → `lookupAt` (worker) → card + yellow highlight | [reader-engine.md §7–8](./reader-engine.md), [japanese.md](./japanese.md) |
+| Highlight / bookmark | selection → `cfiForSelection` → `addHighlight` (paint first, persist in background, dedupe on CFI); bookmark at the current CFI | [reader-engine.md §9](./reader-engine.md) |
+| Progress | `relocate` → debounced `saveProgress` → `putProgress` (flushed on hide / `pagehide` / destroy) → next open's `lastLocation`; shelf ring reads `progress[id].fraction` | [reader-engine.md §11](./reader-engine.md) |
+| App update | SW `onNeedRefresh` → toast **Refresh** → `rememberRouteForReload()` + `updateSW(true)`; the reload reopens the book | [storage-pwa-ios.md §5](./storage-pwa-ios.md#5-pwa--viteconfigts-indexhtml-srcmaints) |
 
-**Bundled books.** The shelf calls `loadCatalog()` (precached `books/catalog.json`) and lists
-entries not in the library under **Included books**. `downloadBook(id)` (first call also
-`requestPersistence()`) → `downloadEntry`: fetch `books/<slug>.epub` with streamed progress
-(Content-Length, else the catalog size) → `importEpub(file, { expectedId: entry.id, meta })`,
-which rejects a SHA-256 mismatch before storing anything and uses the catalog's
-title/author/language/dir plus the precached `.webp` cover instead of foliate. Nothing is
-imported automatically; deleting a downloaded book makes it available again. Failures become
-a per-card error + toast. Details: [storage-pwa-ios.md §4a](./storage-pwa-ios.md#4a-bundled-books--srcservicescatalogts).
-
-**Open.** Cover tap → `openReader(id)` + background `markOpened(id)`. `Reader.onMount`
-calls `prefetchEngine()` and warms the lookup worker, then runs
-`Promise.all([getBookMeta, getBookFile, getProgress, loadAnnotations])`. A meta row with no
-bytes shows a "please re-import" error. Next it creates `new ReaderController(host,
-settings, callbacks)`, seeds highlights with `setHighlights(...)` **before**
-`controller.open(file, progress?.cfi)`, then builds the TOC and chapter index. See
-[reader-engine.md §3](./reader-engine.md).
-
-**Tap / swipe.** `trackGestures` (`services/reader/gestures.ts`) turns a horizontal swipe into a page
-turn and a clean tap into `onTap`. With a card open, any tap only dismisses it. Otherwise
-a tap on a Japanese glyph defines it (even in the nav-bar band) → `extractTextAt` (main
-thread) → `lookupClient.lookupAt` (worker) → `DictionaryPopup` + yellow highlight. A tap
-on blank paper toggles chrome in the top/bottom band, otherwise hides the bars. Details: [reader-engine.md §8](./reader-engine.md), [japanese.md](./japanese.md).
-
-**Highlight / bookmark.** Selection → `SelectionToolbar` → `cfiForSelection` →
-`addHighlight` in `Reader.svelte` (paint first, persist in the background, dedupe on CFI).
-Bookmarks toggle a `bookmark` annotation at the current CFI. `AnnotationsPanel` lists both,
-grouped by chapter. Details: [reader-engine.md §9](./reader-engine.md).
-
-**Progress.** foliate `relocate` → `Reader.onRelocate` → debounced `saveProgress` →
-`putProgress` (flushed on `pagehide` / destroy). The next open passes `progress.cfi` to
-`view.init({ lastLocation })`, and the shelf ring reads `library.progress[id].fraction`.
-
-**Update.** SW `onNeedRefresh` → `pwa.needRefresh` → `ToastHost` "A new version is ready" →
-`pwa.update()` = `rememberRouteForReload()` + `updateSW(true)`. The reload reopens the
-book.
-
-## 6. File index
+## 5. File index
 
 ### Root & build
 | Path | Role |
 |---|---|
 | `index.html` | App shell, iOS PWA meta, generated splash links, inline first-paint theme script. |
-| `vite.config.ts` | Svelte + VitePWA (manifest, Workbox), `base` (`/epub/` build, `/` dev), kuromoji loader alias, `foliate-` chunk prefix, `__APP_VERSION__`. |
-| `vitest.config.ts`, `tsconfig*.json` | Node-env tests (`src/**/*.test.ts`); app / node TS projects. |
-| `.github/workflows/deploy.yml` | Build and deploy to Pages on push to `main`. |
-| `scripts/copy-kuromoji-dict.mjs` | `predev` / `prebuild`: stage and trim the IPADIC dict into `public/kuromoji/dict/` (gitignored). |
-| `scripts/gen-icons.mjs` | sharp: `public/icons/*.png`, `public/splash/*.png` (iPad + iPhone), and the splash `<link>`s in `index.html`. |
-| `scripts/make-test-epub.mjs` | fflate + sharp: `test-books/tsuki-to-neko.epub`. |
-| `scripts/books/*` | Bundled library build → `public/books/` ([translation.md](./translation.md)). |
-| `scripts/e2e/*` | puppeteer-core harness (`lib.mjs`) and the shelf/download check (`shelf.mjs`). |
+| `vite.config.ts` | Svelte + VitePWA (manifest, Workbox), `base`, kuromoji loader alias, `foliate-` chunk prefix, `__APP_VERSION__`. |
+| `vitest.config.ts`, `tsconfig*.json` | Node-env tests; app / node TS projects ([development.md](./development.md)). |
+| `.github/workflows/deploy.yml` | Build and deploy to Pages ([deployment.md](./deployment.md)). |
+| `scripts/copy-kuromoji-dict.mjs` | `predev` / `prebuild`: stage the trimmed IPADIC into `public/kuromoji/dict/` (gitignored). |
+| `scripts/gen-icons.mjs`, `scripts/make-test-epub.mjs` | Icons + splash screens; the test EPUB. |
+| `scripts/books/*`, `books/` | Bundled library sources and build → `public/books/` ([translation.md](./translation.md)). |
+| `scripts/e2e/*` | puppeteer-core harness and scripted browser checks. |
 
 ### App (`src/`)
 | Path | Role |
 |---|---|
-| `main.ts`, `App.svelte` | Entry and two-screen router view (§3). |
-| `app.css` | Design tokens and the light/sepia/dark palettes ([ui-and-design.md](./ui-and-design.md)). |
-| `stores/*.svelte.ts` | §4. |
+| `main.ts`, `App.svelte` | Entry and two-screen router (§2). |
+| `app.css` | Tokens and palettes ([ui-and-design.md](./ui-and-design.md)). |
+| `stores/*.svelte.ts` | §3. |
 | `lib/library/` | `Shelf`, `BookCover`, `ShelfSettings`. |
-| `lib/reader/` | `Reader` (screen wiring), `defineCard.svelte.ts` (dictionary-card state machine), `DictionaryPopup`, `SelectionToolbar`, `AnnotationsPanel`, `TocSheet`, `ReaderSettings`, `ProgressScrubber`. |
+| `lib/reader/` | `Reader`, `defineCard.svelte.ts`, `DictionaryPopup`, `SelectionToolbar`, `AnnotationsPanel`, `TocSheet`, `ReaderSettings`, `ProgressScrubber`. |
 | `lib/components/` | `Sheet`, `Segmented`, `Icon`, `Toast`, `ToastHost`, `LoadingScreen`. |
 | `lib/actions/`, `lib/util/` | `longpress`; `debounce`, `anchoredPosition`, `chromeBand`, `motion`. |
-
-### Services (`src/services/`)
-| Path | Role |
-|---|---|
-| `types.ts` | Persisted model: `BookMeta`, `ReadingProgress`, `Annotation`, `ReaderSettings`, `DEFAULT_SETTINGS`, `HIGHLIGHT_HEX`. |
-| `library.ts` | `importEpub(file, { expectedId?, meta? })`, `ChecksumError`, `listBooks`, `touchBook`, `removeBook`, `flattenLangMap`, `sha256Hex`; re-exports `getBookFile`. |
-| `catalog.ts` | Bundled books: `CatalogEntry`, `fetchCatalog`, `downloadEntry`, `readWithProgress`, `deriveStatus`, `downloadErrorMessage`, `bookUrl`. |
-| `reader/` | `ReaderController` (`controller.ts`, owns `<foliate-view>`: open, layout, appearance, wiring) with `gestures.ts`, `turns.ts`, `highlights.ts`, `english.ts`, `styles.ts`, `timers.ts`, `types.ts`; `index.ts` is the public API ([reader-engine.md](./reader-engine.md)). |
-| `chapters.ts` | TOC helpers: `buildChapterIndex`, `chapterAt` (scrubber preview), `chapterOrder` (panel grouping). |
-| `translation.ts` | English-unit DOM helpers: `unitEnglish`, `clampOutOfEnglish`, `selectionText`, `packageHasEnglish`, `rectsOutsideEnglish` ([reader-engine.md §4a](./reader-engine.md)). |
-| `cfi.ts` | CFI parsing / ordering for the highlight sweep. |
-| `viewport.ts` | `initViewport`, `viewportSize` ([storage-pwa-ios.md §6](./storage-pwa-ios.md#6-ios-viewport--srcservicesviewportts)). |
-| `storage/db.ts`, `storage/blobs.ts`, `storage/persist.ts` | IndexedDB, EPUB bytes, Storage API ([storage-pwa-ios.md](./storage-pwa-ios.md)). |
-| `jp/*` | `dictdb`, `lookupClient` ↔ `lookup.worker`, `lookup`, `segment`, `deinflect` (GPL), `extract`, `ipadic`, `kuromojiLoader.cjs` ([japanese.md](./japanese.md)). |
-
-### Vendored (`src/vendor/foliate-js/`, MIT)
-`view.js` (`<foliate-view>`, `makeBook`; the only module the app imports directly),
-`paginator.js`, `epub.js`, `epubcfi.js`, `overlayer.js`, `vendor/zip.js`, plus unused
-format modules (mobi, fb2, comic-book, tts, search, …), which are excluded from the
-precache. The local patches (PDF removed from `view.js`; three `TSUZURI PATCH` edits in
-`paginator.js`; the English CFI filter in `epubcfi.js`) are listed in [reader-engine.md §1](./reader-engine.md).
+| `services/types.ts` | Persisted model, `DEFAULT_SETTINGS`, `HIGHLIGHT_HEX` ([storage-pwa-ios.md §1](./storage-pwa-ios.md)). |
+| `services/library.ts`, `services/catalog.ts` | Import / list / remove / supersede; bundled catalog + download. |
+| `services/reader/`, `chapters.ts`, `cfi.ts`, `translation.ts` | Reader engine and its pure helpers ([reader-engine.md](./reader-engine.md)). |
+| `services/viewport.ts`, `services/storage/*` | iOS viewport; IndexedDB, EPUB bytes, Storage API ([storage-pwa-ios.md](./storage-pwa-ios.md)). |
+| `services/jp/*` | Dictionary, lookup worker, extraction ([japanese.md](./japanese.md)). |
+| `vendor/foliate-js/` | `view.js` (`<foliate-view>`, `makeBook`; the only module the app imports directly), `paginator.js`, `epub.js`, `epubcfi.js`, `overlayer.js`, `vendor/zip.js`, plus unused format modules excluded from the precache. Patches: PDF removed from `view.js`, patches 2–4 in `paginator.js`, the English CFI filter in `epubcfi.js` ([reader-engine.md §1](./reader-engine.md)). |
