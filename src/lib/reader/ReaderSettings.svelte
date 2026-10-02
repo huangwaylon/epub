@@ -144,7 +144,7 @@
           <span class="knob"></span>
         </button>
       </div>
-      <p class="settings-hint">English follows each passage. When off, a word’s card can show the English for just that passage; tap it to hide it again.</p>
+      <p class="settings-hint">English follows each passage. When off, tap a word and choose Show translation to read its passage’s English in the card.</p>
     </section>
   {/if}
 </div>

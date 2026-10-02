@@ -20,9 +20,10 @@
   import { cfiWithinPage } from '../../services/cfi'
   import { buildChapterIndex, chapterAt, chapterOrder, type ChapterStart } from '../../services/chapters'
   import { extractTextAt } from '../../services/jp/extract'
-  import { englishAncestor, selectionIsEnglish, selectionText, unitEnglish } from '../../services/translation'
+  import { selectionIsEnglish, selectionText, unitEnglish } from '../../services/translation'
   import { lookupAt, warmupLookup, disposeLookup, pingLookup } from '../../services/jp/lookupClient'
   import { isDictReady } from '../../services/jp/dictdb'
+  import { dict } from '../../stores/dict.svelte'
   import { createDefineCard } from './defineCard.svelte'
   import {
     annotations,
@@ -134,6 +135,7 @@
     userInteracted = true
     chromeVisible = false
     closeOverlays()
+    maybeHintSideways() // the opening page may be a horizontal cover
   }
 
   /** The single close path for the card and the selection toolbar. Also releases the
@@ -144,27 +146,31 @@
   }
 
   // ── English ───────────────────────────────────────────────────────────────
-  /** Show-all / hide-all (top-bar button, `e`, the Display switch). Clears single reveals. */
+  /** Show-all / hide-all (top-bar button, `e`, the Display switch). */
   function toggleEnglish() {
     updateSettings({ showEnglish: !settings.showEnglish })
     onSettingChange('english')
   }
-  /** The unit's English for a card action — only while show-all is off. */
+  /** The unit's English for the card's Translation — only while show-all is off (with it
+   *  on, the English is already on the page). */
   function englishFor(node: Node | null | undefined): Element | null {
     return hasEnglish && !settings.showEnglish ? unitEnglish(node) : null
   }
-  /** Card action: reveal / hide the tapped unit's English, then close the card. */
-  function toggleUnitEnglish() {
-    card.toggleUnitEnglish()
-    closeOverlays()
-  }
-  /** A blank tap on an individually revealed unit's English hides it. */
-  function tryHideEnglish(info: TapInfo): boolean {
-    if (!info.doc || !controller || !hasEnglish || settings.showEnglish) return false
-    const en = englishAncestor(info.doc.elementFromPoint(info.ix, info.iy))
-    if (!en || !controller.isRevealed(en)) return false
-    controller.setRevealed(en, false)
-    return true
+  /** Once per install: show-all English in 縦書き runs sideways — offer 横書き. */
+  function maybeHintSideways() {
+    if (!hasEnglish || !settings.showEnglish || settings.sidewaysHintShown) return
+    if (settings.writingMode !== 'auto' || !controller?.vertical) return
+    updateSettings({ sidewaysHintShown: true })
+    showToast({
+      message: 'English runs sideways in vertical text.',
+      action: {
+        label: 'Use horizontal',
+        run: () => {
+          updateSettings({ writingMode: 'horizontal' })
+          onSettingChange('writingmode')
+        },
+      },
+    })
   }
 
   // ── Highlights: the one create/remove pair ────────────────────────────────
@@ -274,8 +280,8 @@
   }
 
   /** Tap routing: open card → dismiss; glyph → define (even in the edge band, which
-   *  overlaps each column's end glyphs); a revealed unit's English → hide it; blank edge
-   *  band → toggle chrome; else hide it. */
+   *  overlaps each column's end glyphs); blank edge band (English counts as blank) →
+   *  toggle chrome; else hide it. */
   function onTap(info: TapInfo) {
     if (card.state.open) {
       card.noteDismissTap()
@@ -283,10 +289,6 @@
       return
     }
     if (card.tryDefine(info)) {
-      chromeVisible = false
-      return
-    }
-    if (tryHideEnglish(info)) {
       chromeVisible = false
       return
     }
@@ -298,8 +300,8 @@
   }
 
   /** ←/→ turn that way, Space/Shift-Space go forward/back in reading order, `e` shows /
-   *  hides English, Escape closes the card, else the chrome. Also receives keys forwarded
-   *  from content documents. */
+   *  hides all English, `t` the open card's Translation, Escape closes the card, else the
+   *  chrome. Also receives keys forwarded from content documents. */
   function onKey(e: KeyboardEvent) {
     if (status !== 'ready' || !controller || e.defaultPrevented) return
     if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -326,6 +328,12 @@
         if (!hasEnglish) return
         e.preventDefault()
         toggleEnglish()
+        break
+      case 't':
+      case 'T':
+        if (!card.state.open || !card.state.translation) return
+        e.preventDefault()
+        card.toggleTranslation()
         break
       case 'Escape':
         if (card.state.open || sel.open) {
@@ -373,8 +381,9 @@
   function onSettingChange(kind: 'appearance' | 'layout' | 'writingmode' | 'english') {
     if (!controller) return
     if (kind === 'english') {
-      closeOverlays() // a card's Show / Hide English no longer applies
+      closeOverlays() // the card's Translation follows show-all
       applyAppearance()
+      maybeHintSideways()
     } else if (kind === 'appearance') applyAppearance()
     else if (kind === 'layout') controller.applyLayout(settings)
     else if (kind === 'writingmode' && bookFile) {
@@ -436,6 +445,7 @@
       get dictState() {
         return card.state
       },
+      dict,
       extractTextAt,
       lookupAt,
     }
@@ -488,6 +498,7 @@
       const view = controller.view
       chapterStarts = buildChapterIndex(toc, view.getSectionFractions() ?? [], view.book?.resolveHref?.bind(view.book))
       installDevHook()
+      maybeHintSideways()
       document.addEventListener('visibilitychange', onVisibility)
       window.addEventListener('pagehide', onPageHide)
     } catch (err) {
@@ -557,6 +568,7 @@
             class:on={settings.showEnglish}
             onclick={toggleEnglish}
             aria-label={settings.showEnglish ? 'Hide English' : 'Show English'}
+            title={settings.showEnglish ? 'Hide English (E)' : 'Show English (E)'}
             aria-pressed={settings.showEnglish}
           >
             <Icon name="languages" />
@@ -624,11 +636,12 @@
   needsDownload={card.state.needsDownload}
   result={card.state.result}
   highlighted={card.state.highlighted}
-  english={card.state.english}
+  translation={card.state.translation}
+  translationOpen={card.state.translationOpen}
   onclose={closeOverlays}
   ondownload={card.downloadDict}
   ontogglehighlight={card.toggleWordHighlight}
-  ontoggleenglish={toggleUnitEnglish}
+  ontoggletranslation={card.toggleTranslation}
 />
 
 <SelectionToolbar

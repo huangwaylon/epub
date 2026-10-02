@@ -120,4 +120,12 @@ describe('placeNearWord', () => {
     const p = placeNearWord(w, 340, 180, true, { gap: 16 })
     expect(p.top).toBe(110 + 16) // no room above → below the glyph
   })
+
+  it("prefer 'after' keeps a card that opened below / right on that side as it grows", () => {
+    expect(placeNearWord(word, 300, 160, false, { gap: 16, prefer: 'after' }).top).toBe(372 + 16)
+    expect(placeNearWord(word, 300, 160, true, { gap: 16, prefer: 'after' }).left).toBe(624 + 16)
+    // …unless that side no longer fits.
+    const right = { left: 1100, top: 300, right: 1124, bottom: 372 }
+    expect(placeNearWord(right, 300, 160, true, { gap: 16, prefer: 'after' }).left).toBe(1100 - 16 - 300)
+  })
 })

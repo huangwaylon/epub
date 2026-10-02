@@ -6,6 +6,8 @@
   --font-serif: 'Hiragino Mincho ProN', 'Noto Serif JP', 'Yu Mincho', 'YuMincho',
     Georgia, 'Times New Roman', serif;
   --font-jp-sans: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+  /* English beside Japanese (in-book translation, the card's Translation). */
+  --font-latin-serif: ui-serif, 'Iowan Old Style', 'Palatino', Georgia, serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --fs-caption: 12px;

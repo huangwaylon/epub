@@ -62,9 +62,11 @@ export interface ReaderSettings {
   writingMode: WritingModePref
   /** Tap-to-define also highlights the looked-up word (a vocab record). */
   highlightLookups: boolean
-  /** Show every unit's English in translated books (`.tsuzuri-en`); off, single units
-   *  can still be revealed from the dictionary card. Was `showTranslations`. */
+  /** Show every unit's English in translated books (`.tsuzuri-en`); off, a word's card
+   *  still shows its unit's English. Was `showTranslations`. */
   showEnglish: boolean
+  /** The one-time "English runs sideways in vertical text" hint was shown. */
+  sidewaysHintShown: boolean
 }
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
@@ -76,4 +78,5 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   writingMode: 'auto',
   highlightLookups: true,
   showEnglish: true,
+  sidewaysHintShown: false,
 }

@@ -13,11 +13,12 @@
     needsDownload = false,
     result = null,
     highlighted = false,
-    english = '',
+    translation = '',
+    translationOpen = false,
     onclose,
     ondownload,
     ontogglehighlight,
-    ontoggleenglish,
+    ontoggletranslation,
   }: {
     open?: boolean
     /** The tapped glyph / matched word, in top-window coords. The card never covers it. */
@@ -31,13 +32,14 @@
     result?: LookupResult | null
     /** Whether the looked-up word is currently highlighted (drives the footer toggle). */
     highlighted?: boolean
-    /** The tapped unit's English action ('' = none): reveals / hides it inline. */
-    english?: '' | 'show' | 'hide'
+    /** The tapped unit's English ('' = none), shown in the card — the page never reflows. */
+    translation?: string
+    translationOpen?: boolean
     /** Close request (X). The reader owns closing — it also releases the define context. */
     onclose?: () => void
     ondownload?: () => void
     ontogglehighlight?: () => void
-    ontoggleenglish?: () => void
+    ontoggletranslation?: () => void
   } = $props()
 
   let card = $state<HTMLDivElement>()
@@ -71,13 +73,20 @@
   const showActions = $derived(!loading && !needsDownload && !!result?.entries.length)
   // Never re-offer Download while one is running, retrying, or preparing.
   const phase = $derived(dictPhase())
+  // jpdict-idb reports the words 'ok' early in the download: until it finishes, an empty
+  // answer is "still downloading", not "no match".
+  const downloading = $derived(needsDownload || ((phase === 'downloading' || phase === 'retrying') && !loading && !result?.entries.length))
 
   // Place against the word whenever the anchor or content (hence size) changes — in the
-  // same flush, before paint, so there is never a frame at 0,0.
+  // same flush, before paint, so there is never a frame at 0,0. Once open, the card keeps
+  // the side of the word it opened on (`side`), so expanding the Translation never makes it
+  // jump across the word.
   let pos = $state<{ left: number; top: number } | null>(null)
+  let side: 'before' | 'after' | undefined
   $effect(() => {
     if (!open) {
       pos = null
+      side = undefined
       return
     }
     if (!card || !anchor) return
@@ -86,11 +95,17 @@
     void loading
     void slow
     void needsDownload
+    void downloading
     void result
     void showActions
-    void english
+    void translation
+    void translationOpen
     void phase
-    pos = placeNearWord(a, card.offsetWidth, card.offsetHeight, v, { gap: 16 })
+    const p = placeNearWord(a, card.offsetWidth, card.offsetHeight, v, { gap: 16, margin: 12, prefer: side })
+    // Right of the column, or below the word (also 縦書き on a phone, where neither side
+    // of the column fits) = 'after'.
+    side ??= v && p.left >= a.right ? 'after' : v && p.left + card.offsetWidth <= a.left ? 'before' : p.top >= a.bottom ? 'after' : 'before'
+    pos = p
   })
 </script>
 
@@ -107,7 +122,7 @@
       <Icon name="x" size="sm" />
     </button>
     <div class="body" class:stale={loading && !!result} aria-busy={loading}>
-      {#if needsDownload}
+      {#if downloading}
         <div class="download">
           {#if phase === 'downloading'}
             <p class="dl-title">Downloading dictionary…</p>
@@ -124,6 +139,12 @@
           {:else if phase === 'unavailable'}
             <p class="dl-title">Dictionary unavailable</p>
             <p class="dl-sub">This device’s storage couldn’t be opened. Try again after restarting the app.</p>
+          {:else if translation}
+            <!-- Compact: the translation below is what this tap can already give. -->
+            <p class="dl-sub">Download the dictionary to look up words.</p>
+            <button class="btn btn-tinted dl-btn compact" onclick={ondownload}>Download dictionary</button>
+            <p class="dl-foot">One-time download · works offline</p>
+            {#if dict.error}<p class="err">{dict.error}</p>{/if}
           {:else}
             <p class="dl-title">Dictionary not installed</p>
             <p class="dl-sub">Look up any word in the book with the Japanese–English dictionary.</p>
@@ -181,20 +202,24 @@
     {#if loading && result && slow}
       <div class="spin-over" aria-hidden="true"><div class="spinner" style="--spinner-size:20px"></div></div>
     {/if}
-    {#if showActions || english}
+    {#if translation}
+      <section class="translation" class:open={translationOpen} class:first={downloading}>
+        <button class="tr-toggle" aria-expanded={translationOpen} onclick={ontoggletranslation}>
+          <Icon name="languages" size="sm" />
+          <span class="tr-label">{translationOpen ? 'Translation' : 'Show translation'}</span>
+          <span class="chev" aria-hidden="true"><Icon name="chevron-down" size="sm" /></span>
+        </button>
+        {#if translationOpen}
+          <p class="tr-text" lang="en">{translation}</p>
+        {/if}
+      </section>
+    {/if}
+    {#if showActions}
       <div class="actions">
-        {#if showActions}
-          <button class="hl-toggle" class:on={highlighted} onclick={ontogglehighlight}>
-            <span class="hl-swatch" class:filled={highlighted}></span>
-            {highlighted ? 'Remove highlight' : 'Highlight'}
-          </button>
-        {/if}
-        {#if english}
-          <button class="hl-toggle en-toggle" class:on={english === 'hide'} onclick={ontoggleenglish}>
-            <Icon name="languages" size="sm" />
-            {english === 'hide' ? 'Hide English' : 'Show English'}
-          </button>
-        {/if}
+        <button class="hl-toggle" class:on={highlighted} onclick={ontogglehighlight}>
+          <span class="hl-swatch" class:filled={highlighted}></span>
+          {highlighted ? 'Remove highlight' : 'Highlight'}
+        </button>
       </div>
     {/if}
   </div>
@@ -206,13 +231,24 @@
     z-index: var(--z-popup);
     display: flex;
     flex-direction: column;
-    width: min(340px, calc(100vw - 40px - var(--safe-left, 0px) - var(--safe-right, 0px)));
+    width: 340px;
     max-height: 46dvh;
     background: var(--paper-raised);
     border-radius: var(--r-lg);
     box-shadow: var(--glass-edge), var(--shadow-3);
     outline: none;
     animation: pop var(--dur-fast) var(--ease-out);
+  }
+  /* A phone: full width with equal 12px gaps (placeNearWord clamps with the same margin). */
+  @media (max-width: 480px) {
+    .popup {
+      width: calc(100vw - 24px - var(--safe-left, 0px) - var(--safe-right, 0px));
+    }
+  }
+  @media (min-width: 1024px) {
+    .popup {
+      width: 360px;
+    }
   }
   @keyframes pop {
     from {
@@ -365,6 +401,66 @@
     font-size: var(--fs-body);
   }
 
+  /* The tapped unit's English: horizontal in every writing mode, scrolling on its own so
+     the definition above stays in view. Selectable; never looks anything up. */
+  .translation {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--line);
+  }
+  /* No dictionary yet: the translation leads (clear of the corner ×). */
+  .translation.first {
+    order: -1;
+    border-top: 0;
+    border-bottom: 1px solid var(--line);
+    padding-inline-end: var(--sp-8);
+  }
+  .tr-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    min-height: var(--control-h);
+    padding: 0 var(--sp-4);
+    font-size: var(--fs-body);
+    font-weight: 600;
+    color: var(--accent);
+    text-align: start;
+  }
+  .tr-toggle:active {
+    background: var(--control-track);
+  }
+  .translation.open .tr-toggle {
+    min-height: 36px;
+    font-size: var(--fs-footnote);
+    color: var(--ink-faint);
+  }
+  .tr-label {
+    flex: 1;
+  }
+  .chev {
+    display: flex;
+    color: var(--ink-faint);
+    transition: transform var(--dur-fast) var(--ease-out);
+  }
+  .translation.open .chev {
+    transform: rotate(180deg);
+  }
+  .tr-text {
+    margin: 0;
+    padding: 0 var(--sp-4) var(--sp-3);
+    max-height: min(10.5em, 24dvh);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    font-family: var(--font-latin-serif);
+    font-size: 16px;
+    line-height: 1.45;
+    color: var(--ink);
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
   /* Sticky footer action: toggle the word's yellow vocab highlight. */
   .actions {
     flex: none;
@@ -376,14 +472,6 @@
   .actions > * {
     flex: 1 1 0;
     min-width: 0;
-  }
-  /* Show / Hide English (the tapped unit), beside the highlight toggle. */
-  .en-toggle {
-    gap: var(--sp-2);
-    white-space: nowrap;
-  }
-  .en-toggle.on {
-    color: var(--ink-soft);
   }
   .hl-toggle {
     display: flex;
@@ -447,6 +535,10 @@
   .dl-btn {
     align-self: stretch;
     margin-top: var(--sp-2);
+  }
+  .dl-btn.compact {
+    margin-top: 0;
+    min-height: 36px;
   }
   .num {
     font-variant-numeric: tabular-nums;

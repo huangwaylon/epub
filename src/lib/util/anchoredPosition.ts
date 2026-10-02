@@ -24,6 +24,14 @@ function safeInsets() {
   return insetCache
 }
 
+/** Placement options. `prefer: 'after'` tries below (beside-column: right) first — a card
+ *  that grows while open keeps the side it opened on instead of jumping across the word. */
+export interface PlaceOpts {
+  gap?: number
+  margin?: number
+  prefer?: 'before' | 'after'
+}
+
 /** Centre on `centerX`, prefer above the anchor, flip below when it doesn't fit, clamp. */
 export function placeAnchored(
   centerX: number,
@@ -31,7 +39,7 @@ export function placeAnchored(
   anchorBottom: number,
   w: number,
   h: number,
-  opts: { gap?: number; margin?: number } = {},
+  opts: PlaceOpts = {},
 ): { left: number; top: number } {
   const gap = opts.gap ?? 12
   const base = opts.margin ?? 10
@@ -45,8 +53,10 @@ export function placeAnchored(
   let left = centerX - w / 2
   left = Math.max(mLeft, Math.min(vw - w - mRight, left))
 
-  let top = anchorTop - h - gap
-  if (anchorTop - mTop - gap < h) top = anchorBottom + gap
+  const fitsAbove = anchorTop - mTop - gap >= h
+  const fitsBelow = vh - mBottom - anchorBottom - gap >= h
+  const below = opts.prefer === 'after' ? fitsBelow || !fitsAbove : !fitsAbove
+  let top = below ? anchorBottom + gap : anchorTop - h - gap
   top = Math.max(mTop, Math.min(vh - h - mBottom, top))
 
   return { left, top }
@@ -70,7 +80,7 @@ export function placeNearWord(
   w: number,
   h: number,
   vertical: boolean,
-  opts: { gap?: number; margin?: number } = {},
+  opts: PlaceOpts = {},
 ): { left: number; top: number } {
   if (!vertical) return placeAnchored((rect.left + rect.right) / 2, rect.top, rect.bottom, w, h, opts)
   const gap = opts.gap ?? 12
@@ -82,9 +92,11 @@ export function placeNearWord(
   const mRight = base + ins.right
   const { w: vw, h: vh } = viewportSize()
 
+  const fitsLeft = rect.left - gap - w >= mLeft
+  const fitsRight = rect.right + gap + w <= vw - mRight
   let left: number
-  if (rect.left - gap - w >= mLeft) left = rect.left - gap - w
-  else if (rect.right + gap + w <= vw - mRight) left = rect.right + gap
+  if (fitsRight && (opts.prefer === 'after' || !fitsLeft)) left = rect.right + gap
+  else if (fitsLeft) left = rect.left - gap - w
   // Neither side fits (phone portrait): a clamped side would cover the word.
   else return placeAnchored((rect.left + rect.right) / 2, rect.top, rect.bottom, w, h, opts)
   left = Math.max(mLeft, Math.min(vw - w - mRight, left))

@@ -5,8 +5,6 @@
  */
 
 export const EN_CLASS = 'tsuzuri-en'
-/** Added to an individually revealed unit's English (styled like show-all English). */
-export const EN_SHOWN_CLASS = 'tsuzuri-shown'
 /** In the `<head>` of every chapter that carries English. */
 export const EN_META_SELECTOR = 'meta[name="tsuzuri-translated"]'
 /** In the package (OPF) metadata of a book with any English: `<meta property=…>en</meta>`

@@ -1,5 +1,6 @@
-// English translation check: show-all on/off, single-unit reveal from the card, tap-to-hide,
-// in 縦書き and 横書き, on each device. Screenshots go to /tmp/en-<device>-<mode>-<step>.png.
+// English translation check: show-all on/off (page kept), the card's Translation (expand /
+// collapse, 't', sticky per unit, page never moves), English taps in show-all are blank, the
+// one-time sideways hint, in 縦書き and 横書き, on each device. Screenshots go to /tmp/en-<device>-<mode>-<step>.png.
 //
 //   node scripts/e2e/english.mjs [ipad|iphone|desktop …]   (default: all three)
 //
@@ -51,7 +52,7 @@ const HELPERS = () => {
    *  `spanning`: a unit that continues onto the next page (its last character off screen) —
    *  anchoring a reveal on the unit's end would push the tapped word away — else one that
    *  ends on this page (so its revealed English is on screen too). */
-  window.__findUnitGlyph = (spanning = false) => {
+  window.__findUnitGlyph = (spanning = false, exclude = null) => {
     const doc = T().doc
     const JA = /[぀-ヿ一-鿿]/
     /** The unit's text nodes (furigana excluded): the siblings before its English, back to
@@ -68,6 +69,7 @@ const HELPERS = () => {
       return out
     }
     for (const en of doc.querySelectorAll('.tsuzuri-en')) {
+      if (en.dataset.tz === exclude) continue
       const texts = unitTexts(en)
       const last = texts.findLast((t) => JA.test(t.data))
       if (!last) continue
@@ -120,10 +122,6 @@ const HELPERS = () => {
     const en = s.node.parentElement.closest('.tsuzuri-en')
     if (en && getComputedStyle(en).display === 'none') return null
     return onScreen(charRect(s.node, s.offset), 0)
-  }
-  window.__enState = (tz) => {
-    const en = T().doc.querySelector(`.tsuzuri-en[data-tz="${tz}"]`)
-    return { shown: en?.classList.contains('tsuzuri-shown'), display: en && getComputedStyle(en).display }
   }
   /** First visible text of the page (to judge that toggles don't jump). */
   window.__pageStart = () => {
@@ -181,6 +179,8 @@ async function run(device, url) {
         await sleep(500)
       }
       await sleep(800)
+      if (mode === 'vertical')
+        check(`${p}: one-time hint offers horizontal for sideways English`, await page.evaluate(() => document.body.textContent.includes('English runs sideways')))
       await shot(`${mode}-all`)
       const start0 = await page.evaluate(() => window.__pageStart())
       await page.evaluate(() => window.__saveCentre())
@@ -194,84 +194,79 @@ async function run(device, url) {
       check(`${p}: 'e' hides all English`, await page.evaluate(() => [...window.__tsuzuri.doc.querySelectorAll('.tsuzuri-en')].every((e) => getComputedStyle(e).display === 'none')))
       console.log(`     page start: all=${JSON.stringify(start0)} hidden=${JSON.stringify(start1)}`)
 
-      // A unit continuing onto the next page (a few pages on, if this one has none): reveal
-      // and hide from the card keep the tapped word.
-      let gs = await page.evaluate(() => window.__findUnitGlyph(true))
-      for (let k = 0; !gs && k < 3; k++) {
-        await page.evaluate(() => window.__tsuzuri.controller.goForward())
-        await sleep(700)
-        gs = await page.evaluate(() => window.__findUnitGlyph(true))
-      }
-      if (gs) {
-        const clickCard = (label) =>
-          page.evaluate((l) => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === l)?.click(), label)
-        await page.evaluate(({ x, y }) => window.__tapDoc(x, y), gs)
-        await sleep(600)
-        await clickCard('Show English')
-        await sleep(900)
-        const shown = await page.evaluate((tz) => window.__enState(tz), gs.tz)
-        const at = await page.evaluate(() => window.__glyphPoint())
-        check(`${p}: a reveal keeps the tapped word on screen when its unit continues on the next page`, shown.shown && !!at, JSON.stringify(shown))
-        if (at) {
-          await page.evaluate(({ x, y }) => window.__tapDoc(x, y), at)
-          await sleep(600)
-          await clickCard('Hide English')
-          await sleep(900)
-          const hidden = await page.evaluate((tz) => window.__enState(tz), gs.tz)
-          check(`${p}: hiding from the card keeps the tapped word on screen`, !hidden.shown && !!(await page.evaluate(() => window.__glyphPoint())), JSON.stringify(hidden))
-        }
-        await page.evaluate(() => window.__tapHost(5, innerHeight / 2)) // nothing open: a no-op
-        await sleep(300)
-      } else console.log('     (no unit on this page continues onto the next)')
-
       const g = await page.evaluate(() => window.__findUnitGlyph())
       check(`${p}: a translated unit is on screen`, !!g)
       if (!g) continue
+      const start = await page.evaluate(() => window.__pageStart())
       await page.evaluate(({ x, y }) => window.__tapDoc(x, y), g)
       await sleep(600)
-      const ds = await page.evaluate(() => ({ open: window.__tsuzuri.dictState.open, english: window.__tsuzuri.dictState.english }))
-      check(`${p}: tap opens the card with Show English`, ds.open && ds.english === 'show', JSON.stringify(ds))
+      const st = () =>
+        page.evaluate((tz) => {
+          const s = window.__tsuzuri.dictState
+          const en = window.__tsuzuri.doc.querySelector(`.tsuzuri-en[data-tz="${tz}"]`)
+          const card = document.querySelector('.popup')?.getBoundingClientRect()
+          return {
+            open: s.open,
+            expanded: s.translationOpen,
+            matches: !!en && !!s.translation && s.translation === en.textContent.trim(),
+            needsDownload: s.needsDownload,
+            text: !!document.querySelector('.popup .tr-text'),
+            inView: !!card && card.left >= 0 && card.top >= 0 && card.right <= innerWidth && card.bottom <= innerHeight,
+            margins: card ? [Math.round(card.left), Math.round(innerWidth - card.right)] : null,
+            hiddenOnPage: !!en && getComputedStyle(en).display === 'none',
+          }
+        }, g.tz)
+      const s1 = await st()
+      check(`${p}: the card carries the tapped unit's English`, s1.open && s1.matches, JSON.stringify(s1))
+      if (s1.needsDownload) check(`${p}: without the dictionary the translation opens by itself`, s1.expanded && s1.text)
       await shot(`${mode}-card`)
-      await page.evaluate(() => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Show English')?.click())
-      await sleep(900)
-      const st = await page.evaluate((tz) => window.__enState(tz), g.tz)
-      const closed = !(await page.evaluate(() => window.__tsuzuri.dictState.open))
-      check(`${p}: Show English reveals the unit and closes the card`, st.shown && st.display === 'block' && closed, JSON.stringify(st))
-      const g2 = await page.evaluate(() => window.__glyphPoint())
-      check(`${p}: the tapped word stays on screen after the reveal`, !!g2)
-      if (g2) Object.assign(g, g2)
-      await shot(`${mode}-revealed`)
+      const toggle = () => page.evaluate(() => document.querySelector('.popup .tr-toggle')?.click())
+      if (s1.expanded) {
+        await toggle()
+        await sleep(250)
+      }
+      const s2 = await st()
+      check(`${p}: Show translation row collapses the English`, s2.open && !s2.expanded && !s2.text, JSON.stringify(s2))
+      await toggle()
+      await sleep(250)
+      const s3 = await st()
+      check(`${p}: expanding keeps the card open, on screen`, s3.open && s3.expanded && s3.text && s3.inView, JSON.stringify(s3))
+      if (device === 'iphone') check(`${p}: phone card has equal side margins`, !!s3.margins && Math.abs(s3.margins[0] - s3.margins[1]) <= 2, JSON.stringify(s3.margins))
+      check(`${p}: the page doesn't move (English stays off the page)`, s3.hiddenOnPage && (await page.evaluate(() => window.__pageStart())) === start)
+      check(`${p}: the tapped word is still on screen`, !!(await page.evaluate(() => window.__glyphPoint())))
+      await shot(`${mode}-translation`)
+      await page.keyboard.press('t')
+      await sleep(200)
+      const s4 = await st()
+      await page.keyboard.press('t')
+      await sleep(200)
+      const s5 = await st()
+      check(`${p}: 't' toggles the card's translation`, !s4.expanded && s5.expanded)
 
-      // Tapping the same word again offers Hide English.
+      // Any tap dismisses; the same unit reopens expanded, another unit collapsed.
+      await page.evaluate(() => window.__tapHost(5, innerHeight / 2))
+      await sleep(300)
+      check(`${p}: a tap dismisses the card`, !(await page.evaluate(() => window.__tsuzuri.dictState.open)))
       await page.evaluate(({ x, y }) => window.__tapDoc(x, y), g)
       await sleep(500)
-      const ds2 = await page.evaluate(() => window.__tsuzuri.dictState.english)
-      check(`${p}: card offers Hide English for a revealed unit`, ds2 === 'hide', ds2)
-      await page.evaluate(() => window.__tapHost(5, innerHeight / 2)) // dismiss
+      check(`${p}: the same unit reopens with its translation open`, (await st()).expanded)
+      await page.evaluate(() => window.__tapHost(5, innerHeight / 2))
       await sleep(300)
-
-      const ep = await page.evaluate((tz) => window.__englishPoint(tz), g.tz)
-      check(`${p}: revealed English is on screen`, !!ep)
-      if (ep) {
-        await page.evaluate(({ x, y }) => window.__tapDoc(x, y), ep)
-        await sleep(700)
-        const st2 = await page.evaluate((tz) => window.__enState(tz), g.tz)
-        const open = await page.evaluate(() => window.__tsuzuri.dictState.open)
-        check(`${p}: tapping revealed English hides it (no lookup)`, !st2.shown && st2.display === 'none' && !open, JSON.stringify(st2))
-        await shot(`${mode}-rehidden`)
+      const other = await page.evaluate((tz) => window.__findUnitGlyph(false, tz), g.tz)
+      if (other) {
+        await page.evaluate(({ x, y }) => window.__tapDoc(x, y), other)
+        await sleep(500)
+        const so = await page.evaluate(() => ({ s: window.__tsuzuri.dictState.translationOpen, n: window.__tsuzuri.dictState.needsDownload }))
+        check(`${p}: another unit opens collapsed (dictionary installed) or expanded (not)`, so.s === so.n, JSON.stringify(so))
+        await page.evaluate(() => window.__tapHost(5, innerHeight / 2))
+        await sleep(300)
       }
 
-      // Reveal again, then show-all clears individual reveals.
-      Object.assign(g, (await page.evaluate(() => window.__glyphPoint())) ?? {})
-      await page.evaluate(({ x, y }) => window.__tapDoc(x, y), g)
-      await sleep(500)
-      await page.evaluate(() => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Show English')?.click())
-      await sleep(400)
+      // Show-all: every unit on the page; the card has no translation; English taps are blank.
       await page.keyboard.press('e')
       await sleep(900)
-      const cleared = await page.evaluate(() => window.__tsuzuri.doc.querySelectorAll('.tsuzuri-shown').length === 0)
       const allShown = await page.evaluate(() => [...window.__tsuzuri.doc.querySelectorAll('.tsuzuri-en')].every((e) => getComputedStyle(e).display === 'block'))
-      check(`${p}: show-all shows every unit and clears reveals`, cleared && allShown)
+      check(`${p}: show-all shows every unit`, allShown)
       const ept = await page.evaluate((tz) => window.__englishPoint(tz), g.tz)
       if (ept) {
         await page.evaluate(({ x, y }) => window.__tapDoc(x, y), ept)

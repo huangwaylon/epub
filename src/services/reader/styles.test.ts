@@ -11,6 +11,7 @@ const TOKENS: ThemeTokens = {
   fontJpSans: 'JpSans',
   fontSerif: 'JpSerif',
   fontUi: 'UiSans',
+  fontLatinSerif: 'LatinSerif',
   theme: 'light',
 }
 const css = (s: Partial<ReaderSettings> = {}, t: Partial<ThemeTokens> = {}) =>
@@ -41,15 +42,19 @@ describe('appearanceCSS', () => {
     expect(css()).toMatch(/body \{[^}]*touch-action: manipulation/)
   })
 
-  it('shows English only with show-all or for revealed units', () => {
-    expect(css({ showEnglish: false })).toContain('.tsuzuri-en.tsuzuri-shown {')
+  it('shows English only with show-all', () => {
+    expect(css({ showEnglish: false })).not.toContain('display: block')
     expect(css({ showEnglish: true })).toMatch(/\.tsuzuri-en \{\s*display: block/)
     expect(css()).toContain('.tsuzuri-en { display: none; }')
   })
 
+  it('draws no border on English (a stray dash atop each column in 縦書き)', () => {
+    expect(css({ showEnglish: true })).not.toContain('border-inline-start')
+  })
+
   it('sets English in a Latin face matching the chosen family', () => {
     expect(css({ fontFamily: 'sans', showEnglish: true })).toContain('font-family: UiSans')
-    expect(css({ fontFamily: 'serif', showEnglish: true })).toContain("font-family: ui-serif, 'Iowan Old Style'")
+    expect(css({ fontFamily: 'serif', showEnglish: true })).toContain('font-family: LatinSerif')
   })
 })
 

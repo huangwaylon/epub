@@ -4,7 +4,7 @@
  * `reducedMotion`, which read the host document.
  */
 import type { ReaderSettings } from '../types'
-import { EN_CLASS, EN_SHOWN_CLASS } from '../translation'
+import { EN_CLASS } from '../translation'
 
 /** Host CSS custom properties the content stylesheet uses (docs/ui-and-design.md). */
 export interface ThemeTokens {
@@ -16,6 +16,7 @@ export interface ThemeTokens {
   fontJpSans: string
   fontSerif: string
   fontUi: string
+  fontLatinSerif: string
   /** The resolved palette (`<html data-theme>`), '' if unset. */
   theme: string
 }
@@ -34,6 +35,7 @@ export function readThemeTokens(): ThemeTokens {
     fontJpSans: tok('--font-jp-sans'),
     fontSerif: tok('--font-serif'),
     fontUi: tok('--font-ui'),
+    fontLatinSerif: tok('--font-latin-serif'),
     theme: root.dataset.theme ?? '',
   }
 }
@@ -53,30 +55,28 @@ export function appearanceCSS(s: ReaderSettings, t: ThemeTokens): string {
   if (s.writingMode === 'vertical') wm = 'writing-mode: vertical-rl !important;'
   else if (s.writingMode === 'horizontal') wm = 'writing-mode: horizontal-tb !important;'
 
-  // English (docs/translation.md): hidden unless show-all is on or its unit is revealed.
-  // Logical properties only, so it reads right in 横書き and 縦書き (sideways Latin).
-  const latin = s.fontFamily === 'sans' ? t.fontUi : `ui-serif, 'Iowan Old Style', 'Palatino', Georgia, serif`
-  const shown = s.showEnglish ? `.${EN_CLASS}` : `.${EN_CLASS}.${EN_SHOWN_CLASS}`
+  // English (docs/translation.md): hidden unless show-all is on. Set apart by face, size,
+  // colour and spacing only — a border-inline-start would be a stray dash atop each
+  // column in 縦書き. Logical properties only, so it reads right in either writing mode.
+  const latin = s.fontFamily === 'sans' ? t.fontUi : t.fontLatinSerif
   const english = `
-    .${EN_CLASS} { display: none; }
-    ${shown} {
+    .${EN_CLASS} { display: none; }${s.showEnglish ? `
+    .${EN_CLASS} {
       display: block;
-      margin-block: 0.3em 0.75em;
-      padding-inline-start: 0.7em;
-      border-inline-start: 2px solid color-mix(in srgb, ${t.accent} 40%, transparent);
+      margin-block: 0.35em 0.9em;
       font-family: ${latin};
       font-size: 0.85em;
       font-style: normal;
       font-weight: normal;
       line-height: 1.5;
       letter-spacing: normal;
-      color: ${t.inkSoft};
+      color: color-mix(in srgb, ${t.ink} 70%, ${t.paper});
       text-indent: 0;
       text-align: start;
       text-orientation: mixed;
       -webkit-hyphens: manual;
       hyphens: manual;
-    }`
+    }` : ''}`
 
   return `
     @namespace epub "http://www.idpf.org/2007/ops";

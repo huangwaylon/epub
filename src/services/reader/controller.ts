@@ -9,7 +9,7 @@ import { HighlightPainter, drawHighlight } from './highlights'
 import { appearanceCSS, readThemeTokens } from './styles'
 import { Timers } from './timers'
 import { PageTurner } from './turns'
-import type { CharAt, FoliateView, ReaderCallbacks, TurnDir } from './types'
+import type { FoliateView, ReaderCallbacks, TurnDir } from './types'
 
 /**
  * Prefetch the chunks `view.open()` imports one inside another (zip → epub → paginator),
@@ -75,7 +75,7 @@ export class ReaderController {
       signal: this.#ac.signal,
     })
     this.#highlights = new HighlightPainter(this.view, this.#timers, () => this.lastCFI)
-    this.#english = new EnglishState(this.view, this.#docIndex, settings.showEnglish, () => this.#cb.onEnglish?.())
+    this.#english = new EnglishState(this.view, settings.showEnglish, () => this.#cb.onEnglish?.())
   }
 
   /** The book lays out vertically (縦書き). */
@@ -138,7 +138,7 @@ export class ReaderController {
     this.view.addEventListener('load', (e: any) => {
       const { doc, index } = e.detail
       this.#docIndex.set(doc, index)
-      this.#english.onLoad(doc, index)
+      this.#english.onLoad(doc)
       // Must run before the writing mode is read (and before foliate's getDirection).
       this.#applyIntendedWritingMode(doc)
       // Read `body`, like foliate's getDirection, so our measure and its axis agree.
@@ -216,23 +216,12 @@ export class ReaderController {
   }
 
   /** Re-applies the injected stylesheet (theme, fonts, spacing, English). Safe to call
-   *  live; a show-all change clears individual reveals and keeps the page. */
+   *  live; a show-all change keeps the page. */
   applyAppearance(s: ReaderSettings): void {
     this.#settings = s
     const keep = this.#english.setShowAll(s.showEnglish)
     this.view.renderer?.setStyles?.(appearanceCSS(s, readThemeTokens()))
     this.#english.keepPage(keep)
-  }
-
-  /** The unit whose English is `en` is individually revealed. */
-  isRevealed(en: Element): boolean {
-    return this.#english.isRevealed(en)
-  }
-
-  /** Reveal / hide one unit's English (while show-all is off), keeping `at` (the tapped
-   *  glyph) on the page when given. */
-  setRevealed(en: Element, on: boolean, at?: CharAt | null): void {
-    this.#english.setRevealed(en, on, at)
   }
 
   /**

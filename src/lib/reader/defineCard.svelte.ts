@@ -1,8 +1,8 @@
 /**
  * The dictionary card's state machine (reader-engine.md §8, §11): open on a tapped word or
  * a tapped highlight, run the lookup (stale results dropped by key), highlight the match,
- * the footer highlight toggle, the card's Show / Hide English, and the retry once the
- * dictionary is downloaded. `Reader.svelte` routes taps here and renders `state`.
+ * the footer highlight toggle, the card's Translation (the tapped unit's English), and the
+ * retry once the dictionary is downloaded. `Reader.svelte` routes taps here and renders `state`.
  */
 import { untrack } from 'svelte'
 import { settings } from '../../stores/settings.svelte'
@@ -10,7 +10,6 @@ import { dict } from '../../stores/dict.svelte'
 import { isHighlighted, highlightAt } from '../../stores/annotations.svelte'
 import type { ReaderController, TapInfo } from '../../services/reader'
 import { extractTextAt, rangeForSpan, type CharPosition } from '../../services/jp/extract'
-import { textFrom, type TextPoint } from '../../services/translation'
 import { lookupAt, type LookupResult } from '../../services/jp/lookupClient'
 import { isDictReady, downloadAndWarmDictionary } from '../../services/jp/dictdb'
 import type { AnchorRect } from '../util/anchoredPosition'
@@ -33,8 +32,10 @@ export interface DefineCardState {
   highlighted: boolean
   /** The matched surface word (for re-adding the highlight). */
   word: string
-  /** The card's English action for the tapped unit ('' = none: no English, or show-all on). */
-  english: '' | 'show' | 'hide'
+  /** The tapped unit's English ('' = none: untranslated, or show-all on — it is on the page). */
+  translation: string
+  /** The Translation section is expanded. */
+  translationOpen: boolean
 }
 
 export interface DefineCardDeps {
@@ -42,7 +43,7 @@ export interface DefineCardDeps {
   /** Reader's single highlight create / remove pair (paint + record). */
   addHighlight: (cfi: string, text: string) => void
   removeHighlight: (cfi: string) => void
-  /** The unit's English for the card's action, or `null` (none, or show-all on). */
+  /** The unit's English for the card's Translation, or `null` (none, or show-all on). */
   englishFor: (node: Node | null | undefined) => Element | null
 }
 
@@ -75,16 +76,18 @@ function glyphAnchor(doc: Document, positions: CharPosition[], i: number, px: nu
 export function createDefineCard(deps: DefineCardDeps) {
   const state = $state<DefineCardState>({
     open: false, anchor: null, vertical: false, loading: false, needsDownload: false, result: null,
-    text: '', tapOffset: 0, lastKey: '', cfi: '', highlighted: false, word: '', english: '',
+    text: '', tapOffset: 0, lastKey: '', cfi: '', highlighted: false, word: '', translation: '',
+    translationOpen: false,
   })
 
   // Live DOM for the in-flight define (plain refs, not $state).
   let defineDoc: Document | null = null
   let definePositions: CharPosition[] = []
-  /** The tapped unit's `.tsuzuri-en`, backing `state.english`. */
+  /** The tapped unit's `.tsuzuri-en`. A card on the unit whose Translation was left open
+   *  opens expanded (mining one sentence's words); any other unit opens collapsed. Weak,
+   *  so it never pins a navigated-away section. */
   let defineEnglish: Element | null = null
-  /** The tapped glyph (or a highlight's first character): a reveal keeps it on the page. */
-  let defineGlyph: TextPoint | null = null
+  let expandedEnglish: WeakRef<Element> | null = null
 
   // Our tap and foliate's highlight `click` (show-annotation) share a gesture. The tap runs
   // immediately — never delay it — and the click stands down behind these stamps.
@@ -100,7 +103,6 @@ export function createDefineCard(deps: DefineCardDeps) {
     defineDoc = null
     definePositions = []
     defineEnglish = null
-    defineGlyph = null
   }
 
   /** A tap while the card is open only dismisses it; the caller then closes the overlays. */
@@ -120,7 +122,6 @@ export function createDefineCard(deps: DefineCardDeps) {
       doc: info.doc,
       positions: ex.positions,
       english: deps.englishFor(ex.positions[ex.tapOffset]?.node),
-      glyph: ex.positions[ex.tapOffset],
     })
     tapDefinedAt = Date.now()
     tapDefinedKey = state.lastKey
@@ -160,7 +161,6 @@ export function createDefineCard(deps: DefineCardDeps) {
       existingCfi: value,
       word,
       english: deps.englishFor(range.startContainer),
-      glyph: textFrom(range.startContainer, range.startOffset),
     })
     return true
   }
@@ -178,9 +178,8 @@ export function createDefineCard(deps: DefineCardDeps) {
     positions?: CharPosition[]
     existingCfi?: string
     word?: string
-    /** The unit's English, for the card's Show / Hide English action. */
+    /** The unit's English, for the card's Translation. */
     english?: Element | null
-    glyph?: TextPoint | null
   }) {
     const controller = deps.controller()
     const key = `${o.existingCfi ?? ''}:${o.tapOffset}:${o.text}`
@@ -188,8 +187,9 @@ export function createDefineCard(deps: DefineCardDeps) {
     defineDoc = o.doc ?? null
     definePositions = o.positions ?? []
     defineEnglish = o.english ?? null
-    defineGlyph = o.glyph ?? null
-    state.english = defineEnglish ? (controller?.isRevealed(defineEnglish) ? 'hide' : 'show') : ''
+    // Plain text (build.mjs writes no markup inside); readable while display:none.
+    state.translation = defineEnglish?.textContent?.trim() ?? ''
+    state.translationOpen = !!state.translation && defineEnglish === expandedEnglish?.deref()
     state.open = true
     state.anchor = o.anchor
     state.vertical = controller?.vertical ?? false
@@ -213,6 +213,8 @@ export function createDefineCard(deps: DefineCardDeps) {
         state.loading = false
         state.result = null
         state.needsDownload = true
+        // No word lookup yet: the translation is what this tap can give.
+        if (state.translation) state.translationOpen = true
         return
       }
       const res = await lookupAt(text, tapOffset)
@@ -266,12 +268,11 @@ export function createDefineCard(deps: DefineCardDeps) {
     state.highlighted = !state.highlighted
   }
 
-  /** Card action: reveal / hide the tapped unit's English (keeping the tapped glyph on the
-   *  page). The caller then closes the card. */
-  function toggleUnitEnglish() {
-    const en = defineEnglish
-    const controller = deps.controller()
-    if (en && controller) controller.setRevealed(en, !controller.isRevealed(en), defineGlyph)
+  /** Card action: expand / collapse the Translation. The page never changes. */
+  function toggleTranslation() {
+    if (!state.translation) return
+    state.translationOpen = !state.translationOpen
+    expandedEnglish = state.translationOpen && defineEnglish ? new WeakRef(defineEnglish) : null
   }
 
   /** A highlight record at `cfi` was deleted / restored elsewhere (the panel, its Undo). */
@@ -280,12 +281,17 @@ export function createDefineCard(deps: DefineCardDeps) {
   }
 
   // The card doesn't wait for the IPADIC warm: the effect below re-runs the pending lookup
-  // as soon as JMdict is queryable.
+  // as soon as JMdict is queryable. jpdict-idb reports the words series 'ok' early in the
+  // download (~17%), so a card still empty once the download and warm finish looks again.
   async function downloadDict() {
     try {
       await downloadAndWarmDictionary('en')
     } catch {
       /* error surfaced via the dict store */
+    }
+    if (state.open && !state.loading && !state.needsDownload && !state.result?.entries.length) {
+      state.loading = true
+      void runLookup(state.text, state.tapOffset, state.lastKey)
     }
   }
   $effect(() => {
@@ -304,7 +310,7 @@ export function createDefineCard(deps: DefineCardDeps) {
     tryDefine,
     showAnnotation,
     toggleWordHighlight,
-    toggleUnitEnglish,
+    toggleTranslation,
     highlightChanged,
     downloadDict,
   }
