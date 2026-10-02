@@ -757,6 +757,9 @@ export class Paginator extends HTMLElement {
     }
     render() {
         if (!this.#view) return
+        // TSUZURI PATCH (4): likewise skip a resize between documents (no body yet), which
+        // would otherwise throw in getVisibleRange → createTreeWalker(null).
+        if (!this.#view.document?.body) return
         this.#view.render(this.#beforeRender({
             vertical: this.#vertical,
             rtl: this.#rtl,

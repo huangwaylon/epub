@@ -126,7 +126,7 @@ npm run build    # production build → dist/ (base /epub/)
 - **Vendored foliate-js:** edit only as a documented `TSUZURI PATCH`. Current patches:
   (1) `view.js` PDF branch removed (unmarked); (2) `paginator.js` own touch page-turn disabled (our
   swipe drives turns); (3) `#turnPage` resolves immediately, holding its lock 100 ms on a
-  timer only after a section crossing; (4) `View#render` skips a document-less iframe;
+  timer only after a section crossing; (4) `View#render` and `Paginator#render` skip a body-less document;
   (5) `epubcfi.js` `fromRange`/`toRange` reject `.tsuzuri-en`, so CFIs match the
   untranslated book (a start inside English moves forward, an end back; old-format
   `.tsuzuri-ja` documents stay unfiltered).
